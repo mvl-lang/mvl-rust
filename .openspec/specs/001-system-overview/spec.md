@@ -19,6 +19,26 @@ Concretely: an engineering team on Rust adds `#[refine(x > 0)]` to a new functio
 
 **The Ferrocene angle is opportunistic, not central.** Ferrocene qualifies Rust for DO-178C already. `mvl-rust` on top of Ferrocene delivers verified-Rust-for-certified-domains without qualifying MVL itself. That is the pitch for the segment where reviewer cost is regulated to be highest. It is a segment, not the primary market — see `iheitlager/my-brain` `work/projects/mvl/claude-aviation-software.md` Wave 2b/2e.
 
+### Two facets — Gate AND Assurance Platform
+
+Like MVL itself, `mvl-rust` has two sides:
+
+- **Gate** — the five tool crates as verifiers/lints. Does this code pass? Emit rustc-style diagnostics; block the build if it doesn't. This is the compile-time enforcement side.
+- **Assurance Platform** — the same tools running in *reporting* mode, emitting structured JSON evidence: which obligations discharged at which layer, which tests ran, MC/DC coverage, aggregated assurance case. This is what Kanz calls "evidence review" ([`kanz-2026-evidence-review.md`](https://github.com/iheitlager/my-brain/blob/main/work/projects/mvl/references/kanz-2026-evidence-review.md)) and what DO-178C SOI audits consume.
+
+The `cargo mvl` meta-command surfaces both facets:
+
+| Subcommand | Facet | What it does |
+|---|---|---|
+| `cargo mvl check` | Gate | Runs all installed tools; blocks build on failure |
+| `cargo mvl prove` | Assurance | Runs `rust-refine`, emits obligation-trace JSON (layer per obligation) |
+| `cargo mvl test` | Assurance | Runs `cargo test`; emits structured test-result JSON |
+| `cargo mvl mcdc` | Assurance | Emits MC/DC coverage report via `cargo llvm-cov` MC/DC mode |
+| `cargo mvl coverage` | Assurance | Emits line + branch coverage via `cargo llvm-cov` |
+| `cargo mvl assurance` | Assurance | Aggregates the above into a claim → argument → evidence tree |
+
+Losing the assurance surface would make `mvl-rust` just another Rust lint suite. Keeping it makes `mvl-rust` the tooling side of the evidence-review argument, mirroring what the MVL playground exposes visually.
+
 ## Main structure
 
 ### Workspace layout
@@ -313,6 +333,80 @@ The `examples/` directory MUST contain at least one real Rust crate per attribut
 - WHEN CI runs
 - THEN each example MUST either compile cleanly (positive cases) or fail with the expected diagnostic (negative cases via `trybuild`)
 
+### Requirement 13: Shared assurance-JSON schema [MUST]
+
+`mvl-rust-core` MUST define a shared JSON schema for assurance-report output, versioned and stable across the six subcommands. Each tool crate MUST emit its section of the schema when invoked in reporting mode (via `--emit-assurance-json` or through `cargo mvl <subcommand>`). The aggregated schema is consumed by `cargo mvl assurance` and by external consumers (the MVL playground's assurance pane, CI dashboards, audit tooling).
+
+Top-level shape:
+
+```
+{
+  version: "1.0",
+  target: { crate: String, commit: Option<String>, timestamp: String },
+  check: { obligations: [...], diagnostics: [...] },
+  prove: { obligations: [{ id, predicate, layer: "L1"|"L2"|"L3"|"L4"|"L5"|"runtime", provenance, counterexample? }] },
+  test: { tests: [{ name, outcome, duration_ms }], summary: {...} },
+  mcdc: { conditions: [...], coverage_pct: Number },
+  coverage: { lines: {...}, branches: {...} },
+  assurance: { claim, argument_tree, leaves: [{ warrant, obligation_id, provenance }] }
+}
+```
+
+**Implementation:** `crates/mvl-rust-core/src/assurance/schema.rs`
+
+**Tests:** `crates/mvl-rust-core/tests/schema_stability.rs` (snapshot tests to catch accidental schema breaks)
+
+#### Scenario: Schema versioned
+
+- GIVEN a change to the schema shape
+- WHEN CI runs the snapshot tests
+- THEN the tests MUST fail unless the schema version has been bumped
+
+### Requirement 14: Per-tool assurance emission [MUST]
+
+Each of the five tool crates (`rust-limit`, `rust-total`, `rust-refine`, `rust-effect`, `rust-ifc`) MUST support two output modes:
+
+- **Diagnostic mode (default)** — emit rustc-style diagnostics for humans; block the build on failure. This is the Gate behaviour.
+- **Assurance mode** — emit the tool's section of the schema from Requirement 13 as JSON on stdout, without failing the build. Invoked via `--emit-assurance-json` or through `cargo mvl <subcommand>`.
+
+The two modes MUST NOT diverge — the same underlying analysis produces both. Assurance-mode output is a *view* of the analysis, not a re-analysis.
+
+**Implementation:** each `crates/rust-*/src/assurance.rs` module
+
+**Tests:** per-crate `tests/assurance_mode.rs`
+
+#### Scenario: rust-refine emits obligation-trace JSON
+
+- GIVEN a crate with three refined functions
+- WHEN `rust-refine --emit-assurance-json` runs
+- THEN the emitted JSON MUST list every obligation with its discharge layer, matching the schema in R13
+
+### Requirement 15: `cargo mvl` assurance subcommands [MUST]
+
+The `cargo-mvl` meta-command MUST expose subcommands that surface each assurance target: `cargo mvl prove`, `cargo mvl test`, `cargo mvl mcdc`, `cargo mvl coverage`, `cargo mvl assurance`. These subcommands are the primary interface for consuming the assurance surface — users don't invoke `--emit-assurance-json` directly in normal workflow.
+
+- `cargo mvl prove` — runs `rust-refine` in assurance mode, emits obligation-trace JSON.
+- `cargo mvl test` — invokes `cargo test` with the tools active, emits structured test-result JSON.
+- `cargo mvl mcdc` — shells out to `cargo llvm-cov --mcdc` (LLVM's MC/DC coverage mode); parses and re-emits per the R13 schema.
+- `cargo mvl coverage` — shells out to `cargo llvm-cov`; emits line + branch coverage per the R13 schema.
+- `cargo mvl assurance` — invokes each of the above, merges into the aggregated schema shape, writes to stdout or `target/mvl/assurance.json`.
+
+**Implementation:** `crates/cargo-mvl/src/subcommands/{prove,test,mcdc,coverage,assurance}.rs`
+
+**Tests:** `crates/cargo-mvl/tests/assurance_subcommands.rs`
+
+#### Scenario: `cargo mvl assurance` produces valid JSON
+
+- GIVEN a workspace using `rust-refine` and `rust-total`
+- WHEN `cargo mvl assurance` runs
+- THEN the emitted JSON MUST validate against the R13 schema AND MUST include sections for `check`, `prove`, `test`, and `assurance`
+
+#### Scenario: `cargo mvl mcdc` uses llvm-cov
+
+- GIVEN a workspace with tests and `#[deny(dead_code)]`
+- WHEN `cargo mvl mcdc` runs
+- THEN the output MUST include per-condition MC/DC results derived from `cargo llvm-cov --mcdc`
+
 ## Design decisions locked
 
 | Decision | Value | Alternative considered |
@@ -324,6 +418,9 @@ The `examples/` directory MUST contain at least one real Rust crate per attribut
 | CI toolchains | Stable + MSRV; Ferrocene added when accessible | Nightly-only |
 | Publish target | crates.io + docs.rs | Internal registry |
 | Publish sequence | rust-limit → rust-total → rust-refine → rust-effect → rust-ifc | Big-bang release |
+| Assurance emission | Structured JSON per Requirement 13 schema | Free-form text output |
+| MC/DC coverage tooling | `cargo llvm-cov --mcdc` | Roll our own instrumentation |
+| Coverage tooling | `cargo llvm-cov` | `tarpaulin` |
 
 Downstream ADRs (`0001-solver-integration.md`, `0002-attribute-grammar.md`, `0003-ferrocene-toolchain.md`) will document these once the initial code is landing.
 
