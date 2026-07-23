@@ -9,6 +9,7 @@ members = [
     "crates/rust-ifc",
     "crates/cargo-mvl",
 ]
+exclude = ["examples"]
 
 [workspace.package]
 version = "0.1.2"
