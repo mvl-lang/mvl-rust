@@ -1,0 +1,15 @@
+[package]
+name = "cargo-mvl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "cargo subcommand aggregating all installed mvl-rust tools (check, prove, test, mcdc, coverage, assurance)."
+
+[[bin]]
+name = "cargo-mvl"
+path = "src/main.rs"
+
+[dependencies]
+mvl-rust-core = { path = "../mvl-rust-core", version = "0.1.2" }

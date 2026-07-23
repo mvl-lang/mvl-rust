@@ -1,0 +1,11 @@
+[package]
+name = "rust-limit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Qualified-subset lint pass for mvl-rust: rejects Rust constructs outside MVL's verifiable subset."
+
+[dependencies]
+mvl-rust-core = { path = "../mvl-rust-core", version = "0.1.2" }

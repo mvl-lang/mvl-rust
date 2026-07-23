@@ -1,0 +1,11 @@
+[package]
+name = "rust-effect"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "#[effect(list)] attribute for mvl-rust: effect algebra tracking on function signatures."
+
+[dependencies]
+mvl-rust-core = { path = "../mvl-rust-core", version = "0.1.2" }

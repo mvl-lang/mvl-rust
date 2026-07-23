@@ -1,0 +1,11 @@
+[package]
+name = "rust-total"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "#[total] attribute + verifier for mvl-rust: exhaustive matches, terminating recursion."
+
+[dependencies]
+mvl-rust-core = { path = "../mvl-rust-core", version = "0.1.2" }
