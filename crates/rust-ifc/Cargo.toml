@@ -1,0 +1,11 @@
+[package]
+name = "rust-ifc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "#[label(l)] attribute for mvl-rust: Denning-lattice information flow control + declassification."
+
+[dependencies]
+mvl-rust-core = { path = "../mvl-rust-core", version = "0.1.2" }

@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/mvl-rust-core",
+    "crates/rust-limit",
+    "crates/rust-total",
+    "crates/rust-refine",
+    "crates/rust-effect",
+    "crates/rust-ifc",
+    "crates/cargo-mvl",
+]
+
+[workspace.package]
+version = "0.1.2"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/mvl-lang/mvl-rust"

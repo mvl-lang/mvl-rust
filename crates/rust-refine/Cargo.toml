@@ -1,0 +1,11 @@
+[package]
+name = "rust-refine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "#[refine(pred)] attribute for mvl-rust: refinement types discharged via L1-L5 dispatch."
+
+[dependencies]
+mvl-rust-core = { path = "../mvl-rust-core", version = "0.1.2" }
