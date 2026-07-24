@@ -1,0 +1,11 @@
+[package]
+name = "mvl-macros"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Internal proc-macro crate: no-op pass-through attributes re-exported by the `mvl` crate. Not meant to be depended on directly -- depend on `mvl` instead."
+
+[lib]
+proc-macro = true
