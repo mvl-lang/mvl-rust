@@ -32,57 +32,82 @@
 //! ordinary IFC types below, so the two are split the way
 //! `tokio`/`tokio-macros` are.)
 //!
-//! ## IFC: `Tainted`, `Secret`, `trust`
+//! ## IFC: `label` declares a label, `relabel` declares a transition
 //!
-//! Denning-lattice information flow (`Public <= Tainted <= Secret`) is
-//! modeled with real wrapper types, not an attribute — unlike the markers
-//! above, these carry actual data at runtime. `Public` values need no
-//! wrapper; they're just the bare inner type. Declassification matches
-//! MVL's own `relabel trust(value, tag)`: a real function call, named
-//! `trust`, not an attribute.
+//! Matches `mvl-lang/mvl`'s actual model (see `examples/hipaa_healthcare/ifc.mvl`
+//! and `examples/log_to_file/paths.mvl`), not a single generic "trust":
+//!
+//! - **`#[mvl::label]`** declares a new label — a lattice point — as a
+//!   zero-sized marker struct. `Labeled<L, T>` then wraps a value `T` under
+//!   label `L`; unlabeled (`Public`) values need no wrapper at all.
+//! - **`#[mvl::relabel(from = ..., to = ..., audit)]`** decorates a
+//!   *named, directional* transition function between two labels (`_`
+//!   meaning unlabeled/`Public`), mirroring MVL's
+//!   `relabel NAME: From -> To [audit]` declarations. Like every other
+//!   attribute here, it's a no-op marker for `rust-ifc` (not yet built) to
+//!   scan for and enforce — the transition's actual body (unwrap, wrap, and
+//!   any audit-logging) is ordinary code you write, the same way
+//!   `#[mvl::total]` decorates a function whose body you write yourself.
+//!
+//! `Tainted`/`Secret` are just the two labels MVL's own `std.ifc` ships
+//! built in; nothing stops a crate from declaring its own, as
+//! `hipaa_healthcare` does with `PHI`:
 //!
 //! ```
-//! let raw: mvl::Tainted<String> = mvl::Tainted("from the environment".to_string());
+//! let raw: mvl::Tainted<String> = mvl::Labeled::new("from the environment".to_string());
 //! let trusted: String = mvl::trust(raw, "LOG-PATH-001");
 //! assert_eq!(trusted, "from the environment");
 //! ```
 
-pub use mvl_macros::{decreases, effect, ensures, label, partial, refine, requires, total};
+pub use mvl_macros::{
+    decreases, effect, ensures, label, partial, refine, relabel, requires, total,
+};
 
-/// A value labeled above `Public` in the Denning lattice. `Public` values
-/// need no wrapper — they're just the bare inner type.
-pub trait Labeled {
-    type Inner;
-    fn declassified(self) -> Self::Inner;
+use std::marker::PhantomData;
+
+/// A value tagged with IFC label `L`. `L` is a zero-sized marker type
+/// declared with `#[mvl::label]`; unlabeled (`Public`) values need no
+/// wrapper at all — they're just the bare inner type.
+pub struct Labeled<L, T> {
+    value: T,
+    _label: PhantomData<L>,
 }
 
-/// Data from an untrusted source (e.g. an OS environment variable) — one
-/// level above `Public` in the lattice.
-pub struct Tainted<T>(pub T);
+impl<L, T> Labeled<L, T> {
+    /// Wrap `value` under label `L`. Called from within a `#[mvl::relabel]`
+    /// transition whose `from` is `_` (ingesting/classifying plain data
+    /// into this label) — e.g. `ingest_phi` below.
+    pub fn new(value: T) -> Self {
+        Labeled {
+            value,
+            _label: PhantomData,
+        }
+    }
 
-impl<T> Labeled for Tainted<T> {
-    type Inner = T;
-    fn declassified(self) -> T {
-        self.0
+    /// Unwrap the value, discarding the label. Called from within a
+    /// `#[mvl::relabel]` transition whose `to` is `_` (releasing/
+    /// declassifying this label) — e.g. `trust` or `hipaa_release` below.
+    pub fn into_inner(self) -> T {
+        self.value
     }
 }
 
-/// Data that must never flow to a `Public` sink without explicit
-/// declassification — the top of the lattice.
-pub struct Secret<T>(pub T);
+// ── Built-in labels, mirroring MVL's `std.ifc` ──────────────────────────
 
-impl<T> Labeled for Secret<T> {
-    type Inner = T;
-    fn declassified(self) -> T {
-        self.0
-    }
-}
+#[crate::label]
+pub struct TaintedLabel;
 
-/// Explicit declassification, matching MVL's `relabel trust(value, tag)`.
-/// `audit_tag` names *why* this declassification is trusted (e.g. an
-/// audit-log tag) — it exists purely for human auditability. It isn't
-/// checked at compile time by this crate (that's `rust-ifc`'s job) or
-/// consulted at runtime.
-pub fn trust<L: Labeled>(value: L, _audit_tag: &'static str) -> L::Inner {
-    value.declassified()
+#[crate::label]
+pub struct SecretLabel;
+
+pub type Tainted<T> = Labeled<TaintedLabel, T>;
+pub type Secret<T> = Labeled<SecretLabel, T>;
+
+/// Declassify `Tainted` data, matching MVL's `relabel trust(raw, tag)`
+/// (`examples/log_to_file/paths.mvl`). `audit_tag` names *why* this is
+/// trusted — for human auditability only; not checked at compile time here
+/// (that's `rust-ifc`'s job) or consulted at runtime by this crate.
+#[crate::relabel(from = "Tainted", to = "_", audit)]
+pub fn trust<T>(value: Tainted<T>, _audit_tag: &'static str) -> T {
+    value.into_inner()
 }

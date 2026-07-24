@@ -56,5 +56,9 @@ passthrough_attr!(
 );
 passthrough_attr!(
     label,
-    "Pass-through for `#[mvl::label(l)]`. See the crate docs."
+    "Pass-through for `#[mvl::label]`, declaring a new IFC label (lattice point). See the crate docs."
+);
+passthrough_attr!(
+    relabel,
+    "Pass-through for `#[mvl::relabel(from = ..., to = ..., audit)]`, declaring a named IFC label transition. See the crate docs."
 );
