@@ -1,16 +1,18 @@
 //! Typed AST for mvl-rust's attribute grammar.
 //!
 //! Tool crates parse plain Rust source with `syn::parse_file`, so
-//! `#[refine(...)]` and friends show up as ordinary [`syn::Attribute`] nodes
-//! — no proc-macro registration required. [`MvlAttr::try_from_attribute`]
-//! recognizes an attribute by its path and parses its argument tokens into
-//! the matching typed variant.
+//! `#[mvl::refine(...)]` and friends show up as ordinary [`syn::Attribute`]
+//! nodes — no proc-macro registration required. [`MvlAttr::try_from_attribute`]
+//! recognizes an attribute by its *last* path segment (so both the bare
+//! `#[total]` form and the real, always-qualified `#[mvl::total]` form —
+//! see the `mvl` crate — resolve the same way) and parses its argument
+//! tokens into the matching typed variant.
 
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
-use syn::{Attribute, Expr, Ident, Token};
+use syn::{Attribute, Expr, Ident, LitStr, Token};
 
-/// `#[refine(pred)]` on a function parameter or return type.
+/// `#[mvl::refine(pred)]` — a whole-function precondition.
 #[derive(Debug, Clone)]
 pub struct RefineAttr {
     pub predicate: Expr,
@@ -24,27 +26,16 @@ impl Parse for RefineAttr {
     }
 }
 
-/// `#[refine_ret(binder => pred)]` on a function return type.
-#[derive(Debug, Clone)]
-pub struct RefineRetAttr {
-    pub binder: Ident,
-    pub predicate: Expr,
-}
-
-impl Parse for RefineRetAttr {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let binder: Ident = input.parse()?;
-        input.parse::<Token![=>]>()?;
-        let predicate: Expr = input.parse()?;
-        Ok(RefineRetAttr { binder, predicate })
-    }
-}
-
-/// `#[total]` on a `fn` declaration. Carries no arguments.
+/// `#[mvl::total]` on a `fn` declaration. Carries no arguments.
 #[derive(Debug, Clone, Default)]
 pub struct TotalAttr;
 
-/// `#[decreases(measure)]` alongside `#[total]` on a recursive function.
+/// `#[mvl::partial]` on a `fn` declaration. Carries no arguments.
+#[derive(Debug, Clone, Default)]
+pub struct PartialAttr;
+
+/// `#[mvl::decreases(measure)]` alongside `#[mvl::total]` on a recursive
+/// function.
 #[derive(Debug, Clone)]
 pub struct DecreasesAttr {
     pub measure: Expr,
@@ -58,7 +49,8 @@ impl Parse for DecreasesAttr {
     }
 }
 
-/// `#[effect(Console, Time, ...)]` declaring the effects a function performs.
+/// `#[mvl::effect(Console, Time, ...)]` declaring the effects a function
+/// performs.
 #[derive(Debug, Clone, Default)]
 pub struct EffectAttr {
     pub effects: Vec<Ident>,
@@ -73,54 +65,134 @@ impl Parse for EffectAttr {
     }
 }
 
-/// `#[label(l)]` on a type declaration, placing it in the Denning lattice.
+/// `#[mvl::requires(pred)]` — a whole-function precondition, referencing
+/// parameters by their real names.
 #[derive(Debug, Clone)]
-pub struct LabelAttr {
-    pub label: Ident,
+pub struct RequiresAttr {
+    pub predicate: Expr,
 }
 
-impl Parse for LabelAttr {
+impl Parse for RequiresAttr {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        Ok(LabelAttr {
-            label: input.parse()?,
+        Ok(RequiresAttr {
+            predicate: input.parse()?,
         })
     }
 }
 
-/// `#[declassify]` on a function that is permitted to lower an IFC label.
-/// Carries no arguments.
+/// `#[mvl::ensures(pred)]` — a whole-function postcondition; `pred`
+/// conventionally references the fixed identifier `result`.
+#[derive(Debug, Clone)]
+pub struct EnsuresAttr {
+    pub predicate: Expr,
+}
+
+impl Parse for EnsuresAttr {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        Ok(EnsuresAttr {
+            predicate: input.parse()?,
+        })
+    }
+}
+
+/// `#[mvl::label]` declaring a new IFC label (lattice point). Carries no
+/// arguments — it decorates the label's own marker type.
 #[derive(Debug, Clone, Default)]
-pub struct DeclassifyAttr;
+pub struct LabelAttr;
+
+/// `#[mvl::relabel(from = "...", to = "...", audit)]` declaring a named,
+/// directional IFC label transition. `from`/`to` name labels (`"_"` means
+/// unlabeled/`Public`); `audit` is a bare, optional flag.
+#[derive(Debug, Clone)]
+pub struct RelabelAttr {
+    pub from: LitStr,
+    pub to: LitStr,
+    pub audit: bool,
+}
+
+impl Parse for RelabelAttr {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let mut from: Option<LitStr> = None;
+        let mut to: Option<LitStr> = None;
+        let mut audit = false;
+
+        let items = Punctuated::<RelabelItem, Token![,]>::parse_terminated(input)?;
+        for item in items {
+            match item {
+                RelabelItem::From(lit) => from = Some(lit),
+                RelabelItem::To(lit) => to = Some(lit),
+                RelabelItem::Audit => audit = true,
+            }
+        }
+
+        Ok(RelabelAttr {
+            from: from.ok_or_else(|| input.error("expected `from = \"...\"`"))?,
+            to: to.ok_or_else(|| input.error("expected `to = \"...\"`"))?,
+            audit,
+        })
+    }
+}
+
+enum RelabelItem {
+    From(LitStr),
+    To(LitStr),
+    Audit,
+}
+
+impl Parse for RelabelItem {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let ident: Ident = input.parse()?;
+        match ident.to_string().as_str() {
+            "from" => {
+                input.parse::<Token![=]>()?;
+                Ok(RelabelItem::From(input.parse()?))
+            }
+            "to" => {
+                input.parse::<Token![=]>()?;
+                Ok(RelabelItem::To(input.parse()?))
+            }
+            "audit" => Ok(RelabelItem::Audit),
+            other => Err(syn::Error::new(
+                ident.span(),
+                format!("unknown `relabel` key `{other}`, expected `from`, `to`, or `audit`"),
+            )),
+        }
+    }
+}
 
 /// The union of all attribute kinds `mvl-rust` recognizes, tagged by which
 /// one a given [`syn::Attribute`] parsed as.
 #[derive(Debug, Clone)]
 pub enum MvlAttr {
     Refine(RefineAttr),
-    RefineRet(RefineRetAttr),
     Total(TotalAttr),
+    Partial(PartialAttr),
     Decreases(DecreasesAttr),
     Effect(EffectAttr),
+    Requires(RequiresAttr),
+    Ensures(EnsuresAttr),
     Label(LabelAttr),
-    Declassify(DeclassifyAttr),
+    Relabel(RelabelAttr),
 }
 
 impl MvlAttr {
-    /// Recognizes `attr` by its path and parses its argument tokens
-    /// accordingly. Returns `None` for attributes mvl-rust doesn't own (e.g.
-    /// `#[derive(...)]`) so callers can skip them without erroring; returns
-    /// `Some(Err(_))` when the path matches but the argument tokens don't
-    /// parse as that attribute's grammar.
+    /// Recognizes `attr` by its last path segment and parses its argument
+    /// tokens accordingly. Returns `None` for attributes mvl-rust doesn't
+    /// own (e.g. `#[derive(...)]`) so callers can skip them without
+    /// erroring; returns `Some(Err(_))` when the path matches but the
+    /// argument tokens don't parse as that attribute's grammar.
     pub fn try_from_attribute(attr: &Attribute) -> Option<syn::Result<MvlAttr>> {
-        let ident = attr.path().get_ident()?;
-        let parsed = match ident.to_string().as_str() {
+        let last = attr.path().segments.last()?;
+        let parsed = match last.ident.to_string().as_str() {
             "refine" => attr.parse_args::<RefineAttr>().map(MvlAttr::Refine),
-            "refine_ret" => attr.parse_args::<RefineRetAttr>().map(MvlAttr::RefineRet),
             "total" => Ok(MvlAttr::Total(TotalAttr)),
+            "partial" => Ok(MvlAttr::Partial(PartialAttr)),
             "decreases" => attr.parse_args::<DecreasesAttr>().map(MvlAttr::Decreases),
             "effect" => attr.parse_args::<EffectAttr>().map(MvlAttr::Effect),
-            "label" => attr.parse_args::<LabelAttr>().map(MvlAttr::Label),
-            "declassify" => Ok(MvlAttr::Declassify(DeclassifyAttr)),
+            "requires" => attr.parse_args::<RequiresAttr>().map(MvlAttr::Requires),
+            "ensures" => attr.parse_args::<EnsuresAttr>().map(MvlAttr::Ensures),
+            "label" => Ok(MvlAttr::Label(LabelAttr)),
+            "relabel" => attr.parse_args::<RelabelAttr>().map(MvlAttr::Relabel),
             _ => return None,
         };
         Some(parsed)
