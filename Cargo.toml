@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/mvl-rust-core",
+    "crates/mvl",
     "crates/rust-limit",
     "crates/rust-total",
     "crates/rust-refine",
