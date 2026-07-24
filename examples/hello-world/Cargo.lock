@@ -12,3 +12,10 @@ dependencies = [
 [[package]]
 name = "mvl"
 version = "0.1.2"
+dependencies = [
+ "mvl-macros",
+]
+
+[[package]]
+name = "mvl-macros"
+version = "0.1.2"

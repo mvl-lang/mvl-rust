@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "No-op pass-through proc-macro attributes so #[mvl::total], #[mvl::requires(...)], etc. resolve on stable rustc. Verification logic lives entirely in the separate cargo mvl-* scanners (see mvl-rust-core, rust-limit) -- this crate exists only to make annotated code compile."
+description = "Attributes and IFC types so mvl-rust annotations resolve on stable rustc. Verification logic lives entirely in the separate cargo mvl-* scanners (see mvl-rust-core, rust-limit) -- this crate exists only to make annotated code compile and to carry real IFC labels at runtime."
 
-[lib]
-proc-macro = true
+[dependencies]
+mvl-macros = { path = "../mvl-macros" }
