@@ -138,6 +138,9 @@ name = "rust-total"
 version = "0.1.2"
 dependencies = [
  "mvl-rust-core",
+ "proc-macro2",
+ "syn 2.0.119",
+ "thiserror",
 ]
 
 [[package]]

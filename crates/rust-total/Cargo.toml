@@ -5,7 +5,14 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "#[total] attribute + verifier for mvl-rust: exhaustive matches, terminating recursion."
+description = "#[mvl::total] verifier for mvl-rust: panic-freedom and terminating recursion."
+
+[[bin]]
+name = "cargo-mvl-total"
+path = "src/main.rs"
 
 [dependencies]
 mvl-rust-core = { path = "../mvl-rust-core", version = "0.1.2" }
+syn = { version = "2", features = ["full", "extra-traits", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+thiserror = "2"
