@@ -1,9 +1,13 @@
 #![cfg(unix)]
 
-use mvl_rust_core::solver::{DischargeResult, Layer, Obligation, ShellOutSolver, SolverBackend};
+use mvl_rust_core::solver::{
+    DischargeResult, Layer, Obligation, ShellOutSolver, SolverBackend, SolverError,
+};
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 fn test_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -17,7 +21,10 @@ fn test_dir(name: &str) -> PathBuf {
 
 /// Writes an executable shell script standing in for the `mvl` binary: it
 /// discards stdin (or captures it to `capture`, if given) and prints
-/// `response_json` on stdout.
+/// `response_json` on stdout. `sync_all()`s before returning so the
+/// subsequent spawn never races the write -- without it, spawning a
+/// freshly-written executable can occasionally fail with ETXTBSY ("text
+/// file busy") on some filesystems (observed in CI).
 fn write_fake_solver(dir: &Path, response_json: &str, capture: Option<&Path>) -> PathBuf {
     let path = dir.join("fake-mvl.sh");
     let capture_line = match capture {
@@ -26,7 +33,12 @@ fn write_fake_solver(dir: &Path, response_json: &str, capture: Option<&Path>) ->
     };
     let escaped = response_json.replace('\'', "'\\''");
     let script = format!("#!/bin/sh\n{capture_line}printf '%s' '{escaped}'\n");
-    fs::write(&path, script).unwrap();
+
+    let mut file = fs::File::create(&path).unwrap();
+    file.write_all(script.as_bytes()).unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+
     let mut perms = fs::metadata(&path).unwrap().permissions();
     perms.set_mode(0o755);
     fs::set_permissions(&path, perms).unwrap();
@@ -41,13 +53,32 @@ fn sample_obligation() -> Obligation {
     }
 }
 
+/// Retries on ETXTBSY as a defense-in-depth backstop alongside the
+/// `sync_all()` above -- belt and suspenders against the same race.
+fn discharge_retrying_on_text_busy(
+    solver: &ShellOutSolver,
+    obligation: &Obligation,
+) -> Result<DischargeResult, SolverError> {
+    let mut last = None;
+    for _ in 0..5 {
+        match solver.discharge(obligation) {
+            Err(SolverError::Spawn(e)) if e.raw_os_error() == Some(26) => {
+                last = Some(SolverError::Spawn(e));
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            result => return result,
+        }
+    }
+    Err(last.expect("loop runs at least once"))
+}
+
 #[test]
 fn discharges_a_proven_obligation() {
     let dir = test_dir("proven");
     let path = write_fake_solver(&dir, r#"{"outcome":"proven","layer":"L2"}"#, None);
     let solver = ShellOutSolver::with_binary(path.to_str().unwrap());
 
-    let result = solver.discharge(&sample_obligation()).unwrap();
+    let result = discharge_retrying_on_text_busy(&solver, &sample_obligation()).unwrap();
 
     assert_eq!(result, DischargeResult::Proven { layer: Layer::L2 });
 }
@@ -62,7 +93,7 @@ fn discharges_a_violated_obligation_with_counterexample() {
     );
     let solver = ShellOutSolver::with_binary(path.to_str().unwrap());
 
-    let result = solver.discharge(&sample_obligation()).unwrap();
+    let result = discharge_retrying_on_text_busy(&solver, &sample_obligation()).unwrap();
 
     assert_eq!(
         result,
@@ -78,7 +109,7 @@ fn discharges_to_runtime_when_no_static_layer_closes_it() {
     let path = write_fake_solver(&dir, r#"{"outcome":"runtime"}"#, None);
     let solver = ShellOutSolver::with_binary(path.to_str().unwrap());
 
-    let result = solver.discharge(&sample_obligation()).unwrap();
+    let result = discharge_retrying_on_text_busy(&solver, &sample_obligation()).unwrap();
 
     assert_eq!(result, DischargeResult::Runtime);
 }
@@ -91,7 +122,7 @@ fn writes_the_obligation_as_json_on_stdin() {
     let solver = ShellOutSolver::with_binary(path.to_str().unwrap());
     let obligation = sample_obligation();
 
-    solver.discharge(&obligation).unwrap();
+    discharge_retrying_on_text_busy(&solver, &obligation).unwrap();
 
     let captured = fs::read_to_string(&capture).unwrap();
     let expected = serde_json::to_string(&obligation).unwrap();
@@ -102,9 +133,9 @@ fn writes_the_obligation_as_json_on_stdin() {
 fn missing_binary_yields_spawn_error() {
     let solver = ShellOutSolver::with_binary("/nonexistent/path/to/mvl-solver-binary");
 
-    let err = solver.discharge(&sample_obligation()).unwrap_err();
+    let err = discharge_retrying_on_text_busy(&solver, &sample_obligation()).unwrap_err();
 
-    assert!(matches!(err, mvl_rust_core::solver::SolverError::Spawn(_)));
+    assert!(matches!(err, SolverError::Spawn(_)));
 }
 
 #[test]
@@ -113,10 +144,7 @@ fn non_json_output_yields_invalid_response_error() {
     let path = write_fake_solver(&dir, "not valid json", None);
     let solver = ShellOutSolver::with_binary(path.to_str().unwrap());
 
-    let err = solver.discharge(&sample_obligation()).unwrap_err();
+    let err = discharge_retrying_on_text_busy(&solver, &sample_obligation()).unwrap_err();
 
-    assert!(matches!(
-        err,
-        mvl_rust_core::solver::SolverError::InvalidResponse(_)
-    ));
+    assert!(matches!(err, SolverError::InvalidResponse(_)));
 }
