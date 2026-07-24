@@ -15,7 +15,7 @@ help:
 	@echo "  fmt                cargo fmt (workspace + example crates)"
 	@echo "  fmt-check          cargo fmt --check (workspace + example crates)"
 	@echo "  clippy             cargo clippy --workspace --all-targets"
-	@echo "  examples           build+run hello-world and rust-limit-demo, check all (summary only)"
+	@echo "  examples           build+run hello-world, rust-limit-demo, rust-total-demo, check all (summary only)"
 	@echo "  examples-verbose   same, but print the violating example's full diagnostics"
 	@echo "  check              fmt-check + clippy + test + examples (mirrors CI)"
 	@echo "  clean              cargo clean (workspace + example crates)"
@@ -52,12 +52,16 @@ fmt:
 	cd examples/hello-world && cargo fmt
 	cd examples/rust-limit-demo/compliant && cargo fmt
 	cd examples/rust-limit-demo/violating && cargo fmt
+	cd examples/rust-total-demo/compliant && cargo fmt
+	cd examples/rust-total-demo/violating && cargo fmt
 
 fmt-check:
 	cargo fmt --check
 	cd examples/hello-world && cargo fmt --check
 	cd examples/rust-limit-demo/compliant && cargo fmt --check
 	cd examples/rust-limit-demo/violating && cargo fmt --check
+	cd examples/rust-total-demo/compliant && cargo fmt --check
+	cd examples/rust-total-demo/violating && cargo fmt --check
 
 clippy:
 	cargo clippy --workspace --all-targets
@@ -72,25 +76,41 @@ examples: build
 	./target/debug/cargo-mvl-limit examples/hello-world/src/main.rs
 	@echo "hello-world: OK (prints \"Hello, world!\", 0 diagnostics)"
 	./target/debug/cargo-mvl-limit examples/rust-limit-demo/compliant/src/main.rs
-	@echo "compliant example: OK (0 diagnostics, as expected)"
+	@echo "rust-limit compliant example: OK (0 diagnostics, as expected)"
 	@output=$$(./target/debug/cargo-mvl-limit examples/rust-limit-demo/violating/src/main.rs 2>&1); \
 	status=$$?; \
 	if [ $$status -eq 0 ]; then \
-		echo "FAIL: violating example unexpectedly passed with no diagnostics" >&2; \
+		echo "FAIL: rust-limit violating example unexpectedly passed with no diagnostics" >&2; \
 		exit 1; \
 	fi; \
 	count=$$(printf '%s\n' "$$output" | grep -c '^error:'); \
-	echo "violating example: OK ($$count diagnostics correctly rejected -- run 'make examples-verbose' to see them)"
+	echo "rust-limit violating example: OK ($$count diagnostics correctly rejected -- run 'make examples-verbose' to see them)"
+	cargo build -p rust-total --bin cargo-mvl-total
+	./target/debug/cargo-mvl-total examples/rust-total-demo/compliant/src/main.rs
+	@echo "rust-total compliant example: OK (0 diagnostics, as expected)"
+	@output=$$(./target/debug/cargo-mvl-total examples/rust-total-demo/violating/src/main.rs 2>&1); \
+	status=$$?; \
+	if [ $$status -eq 0 ]; then \
+		echo "FAIL: rust-total violating example unexpectedly passed with no diagnostics" >&2; \
+		exit 1; \
+	fi; \
+	count=$$(printf '%s\n' "$$output" | grep -c '^error:'); \
+	echo "rust-total violating example: OK ($$count diagnostics correctly rejected -- run 'make examples-verbose' to see them)"
 
 examples-verbose: build
 	cargo build -p rust-limit --bin cargo-mvl-limit
+	cargo build -p rust-total --bin cargo-mvl-total
 	cd examples/hello-world && cargo run --quiet
 	./target/debug/cargo-mvl-limit examples/hello-world/src/main.rs
 	@echo "hello-world: OK (0 diagnostics)"
 	./target/debug/cargo-mvl-limit examples/rust-limit-demo/compliant/src/main.rs
-	@echo "compliant example: OK (0 diagnostics, as expected)"
-	@echo "--- violating example (expect: exit 1; diagnostics below are INTENTIONAL) ---"
+	@echo "rust-limit compliant example: OK (0 diagnostics, as expected)"
+	@echo "--- rust-limit violating example (expect: exit 1; diagnostics below are INTENTIONAL) ---"
 	! ./target/debug/cargo-mvl-limit examples/rust-limit-demo/violating/src/main.rs
+	./target/debug/cargo-mvl-total examples/rust-total-demo/compliant/src/main.rs
+	@echo "rust-total compliant example: OK (0 diagnostics, as expected)"
+	@echo "--- rust-total violating example (expect: exit 1; diagnostics below are INTENTIONAL) ---"
+	! ./target/debug/cargo-mvl-total examples/rust-total-demo/violating/src/main.rs
 
 check: fmt-check clippy test examples
 
@@ -99,3 +119,5 @@ clean:
 	cd examples/hello-world && cargo clean
 	cd examples/rust-limit-demo/compliant && cargo clean
 	cd examples/rust-limit-demo/violating && cargo clean
+	cd examples/rust-total-demo/compliant && cargo clean
+	cd examples/rust-total-demo/violating && cargo clean
