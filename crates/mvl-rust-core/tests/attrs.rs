@@ -22,24 +22,20 @@ fn parses_refine_attr() {
 }
 
 #[test]
-fn parses_refine_ret_attr() {
-    let attrs = parse_fn_attrs("#[refine_ret(y => y >= 0)] fn f() -> i32 { 0 }");
-    match MvlAttr::try_from_attribute(&attrs[0]) {
-        Some(Ok(MvlAttr::RefineRet(r))) => {
-            assert_eq!(r.binder, "y");
-            let expected: syn::Expr = syn::parse_quote!(y >= 0);
-            assert_eq!(r.predicate, expected);
-        }
-        other => panic!("expected Ok(RefineRet(_)), got {other:?}"),
-    }
-}
-
-#[test]
 fn parses_total_attr_with_no_arguments() {
     let attrs = parse_fn_attrs("#[total] fn f() {}");
     assert!(matches!(
         MvlAttr::try_from_attribute(&attrs[0]),
         Some(Ok(MvlAttr::Total(_)))
+    ));
+}
+
+#[test]
+fn parses_partial_attr_with_no_arguments() {
+    let attrs = parse_fn_attrs("#[partial] fn f() {}");
+    assert!(matches!(
+        MvlAttr::try_from_attribute(&attrs[0]),
+        Some(Ok(MvlAttr::Partial(_)))
     ));
 }
 
@@ -77,21 +73,64 @@ fn parses_empty_effect_attr() {
 }
 
 #[test]
-fn parses_label_attr() {
-    let attrs = parse_fn_attrs("#[label(Secret)] fn f() {}");
+fn parses_requires_attr() {
+    let attrs = parse_fn_attrs("#[requires(x > 0)] fn f(x: i32) {}");
     match MvlAttr::try_from_attribute(&attrs[0]) {
-        Some(Ok(MvlAttr::Label(l))) => assert_eq!(l.label, "Secret"),
-        other => panic!("expected Ok(Label(_)), got {other:?}"),
+        Some(Ok(MvlAttr::Requires(r))) => {
+            let expected: syn::Expr = syn::parse_quote!(x > 0);
+            assert_eq!(r.predicate, expected);
+        }
+        other => panic!("expected Ok(Requires(_)), got {other:?}"),
     }
 }
 
 #[test]
-fn parses_declassify_attr_with_no_arguments() {
-    let attrs = parse_fn_attrs("#[declassify] fn f() {}");
+fn parses_ensures_attr() {
+    let attrs = parse_fn_attrs("#[ensures(result > 0)] fn f() -> i32 { 1 }");
+    match MvlAttr::try_from_attribute(&attrs[0]) {
+        Some(Ok(MvlAttr::Ensures(e))) => {
+            let expected: syn::Expr = syn::parse_quote!(result > 0);
+            assert_eq!(e.predicate, expected);
+        }
+        other => panic!("expected Ok(Ensures(_)), got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_label_attr_with_no_arguments() {
+    let file: syn::File = syn::parse_str("#[label] struct Phi;").unwrap();
+    let attrs = match &file.items[0] {
+        syn::Item::Struct(s) => &s.attrs,
+        other => panic!("expected a struct item, got {other:?}"),
+    };
     assert!(matches!(
         MvlAttr::try_from_attribute(&attrs[0]),
-        Some(Ok(MvlAttr::Declassify(_)))
+        Some(Ok(MvlAttr::Label(_)))
     ));
+}
+
+#[test]
+fn parses_relabel_attr_with_from_to_and_audit() {
+    let attrs = parse_fn_attrs(
+        r#"#[relabel(from = "Tainted", to = "_", audit)] fn f(x: i32) -> i32 { x }"#,
+    );
+    match MvlAttr::try_from_attribute(&attrs[0]) {
+        Some(Ok(MvlAttr::Relabel(r))) => {
+            assert_eq!(r.from.value(), "Tainted");
+            assert_eq!(r.to.value(), "_");
+            assert!(r.audit);
+        }
+        other => panic!("expected Ok(Relabel(_)), got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_relabel_attr_without_audit() {
+    let attrs = parse_fn_attrs(r#"#[relabel(from = "_", to = "Phi")] fn f(x: i32) -> i32 { x }"#);
+    match MvlAttr::try_from_attribute(&attrs[0]) {
+        Some(Ok(MvlAttr::Relabel(r))) => assert!(!r.audit),
+        other => panic!("expected Ok(Relabel(_)), got {other:?}"),
+    }
 }
 
 #[test]
@@ -106,5 +145,30 @@ fn malformed_refine_predicate_returns_parse_error() {
     match MvlAttr::try_from_attribute(&attrs[0]) {
         Some(Err(_)) => {}
         other => panic!("expected Some(Err(_)), got {other:?}"),
+    }
+}
+
+// Regression: real usage is always the fully-qualified `#[mvl::total]` form
+// (see the `mvl` crate) — `syn::Path::get_ident()` returns `None` for any
+// multi-segment path, so a naive `get_ident()`-based match would silently
+// fail to recognize every real annotation. Matching on the last segment
+// instead handles both forms identically.
+#[test]
+fn recognizes_fully_qualified_mvl_paths() {
+    let cases = [
+        ("#[mvl::total] fn f() {}", "total"),
+        ("#[mvl::partial] fn f() {}", "partial"),
+        ("#[mvl::refine(x > 0)] fn f(x: i32) {}", "refine"),
+        ("#[mvl::decreases(n)] fn f() {}", "decreases"),
+        ("#[mvl::effect(Console)] fn f() {}", "effect"),
+        ("#[mvl::requires(x > 0)] fn f(x: i32) {}", "requires"),
+        ("#[mvl::ensures(result > 0)] fn f() -> i32 { 1 }", "ensures"),
+    ];
+    for (src, name) in cases {
+        let attrs = parse_fn_attrs(src);
+        assert!(
+            MvlAttr::try_from_attribute(&attrs[0]).is_some(),
+            "expected #[mvl::{name}] to be recognized"
+        );
     }
 }
