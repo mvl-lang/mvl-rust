@@ -4,5 +4,6 @@
 //! the MVL playground's assurance pane, CI dashboards, audit tooling)
 //! validates against.
 
+pub mod report;
 pub mod schema;
 pub mod version;
