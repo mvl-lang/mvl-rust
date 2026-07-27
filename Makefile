@@ -96,6 +96,14 @@ examples: build
 	fi; \
 	count=$$(printf '%s\n' "$$output" | grep -c '^error:'); \
 	echo "rust-total violating example: OK ($$count diagnostics correctly rejected -- run 'make examples-verbose' to see them)"
+	cargo build -p cargo-mvl --bin cargo-mvl
+	./target/debug/cargo-mvl mvl check examples/hello-world/src/main.rs
+	@echo "cargo mvl check (hello-world): OK (0 diagnostics from limit+total, refine/effect/ifc reported not-yet-implemented)"
+	@if ./target/debug/cargo-mvl mvl check examples/rust-limit-demo/violating/src/main.rs >/dev/null 2>&1; then \
+		echo "FAIL: cargo mvl check unexpectedly passed against the rust-limit violating example" >&2; \
+		exit 1; \
+	fi
+	@echo "cargo mvl check (rust-limit violating): OK (aggregated limit diagnostics correctly rejected)"
 
 examples-verbose: build
 	cargo build -p rust-limit --bin cargo-mvl-limit
@@ -111,6 +119,11 @@ examples-verbose: build
 	@echo "rust-total compliant example: OK (0 diagnostics, as expected)"
 	@echo "--- rust-total violating example (expect: exit 1; diagnostics below are INTENTIONAL) ---"
 	! ./target/debug/cargo-mvl-total examples/rust-total-demo/violating/src/main.rs
+	cargo build -p cargo-mvl --bin cargo-mvl
+	./target/debug/cargo-mvl mvl check examples/hello-world/src/main.rs
+	@echo "cargo mvl check (hello-world): OK"
+	@echo "--- cargo mvl check against rust-limit violating example (expect: exit 1) ---"
+	! ./target/debug/cargo-mvl mvl check examples/rust-limit-demo/violating/src/main.rs
 
 check: fmt-check clippy test examples
 
