@@ -8,22 +8,20 @@
 //! independently of `#[mvl::total]`/`#[mvl::partial]` (refinement and
 //! totality are orthogonal concerns per spec Requirements 2 and 3).
 //!
-//! Only plain comparison/boolean predicates are discharged here —
-//! quantifiers (`forall i in [1..50]. pred`) aren't valid `syn::Expr`
-//! syntax and need the bespoke predicate-language parser discussed in
-//! #22, which doesn't exist yet. `#[mvl::requires]`/`#[mvl::ensures]`
-//! still only parse a `syn::Expr` (see `mvl_rust_core::attrs`), so a
-//! quantified predicate fails to parse as an attribute at all today — a
-//! known v1 gap, not something this module works around.
+//! Predicates are plain comparison/boolean expressions, or a bounded
+//! quantifier (`forall`/`exists i in [lo..hi]. pred`) — see
+//! `mvl_rust_core::attrs::Predicate` (#31) for the grammar and
+//! `mvl_rust_core::solver::native` for how each is discharged (`L1`/`L2`
+//! for plain expressions, `L3` expansion for quantifiers).
 
-use mvl_rust_core::attrs::MvlAttr;
+use mvl_rust_core::attrs::{MvlAttr, Predicate};
 use mvl_rust_core::diagnostics::{Diagnostic, Level};
 use mvl_rust_core::solver::native::discharge_predicate;
 use mvl_rust_core::solver::{DischargeResult, Layer};
 use proc_macro2::Span;
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
-use syn::{Expr, ItemFn};
+use syn::ItemFn;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -63,7 +61,7 @@ impl ObligationKind {
 pub struct FoundObligation {
     pub fn_name: String,
     pub kind: ObligationKind,
-    pub predicate: Expr,
+    pub predicate: Predicate,
     pub span: Span,
 }
 
@@ -73,8 +71,7 @@ impl FoundObligation {
     }
 
     pub fn predicate_text(&self) -> String {
-        let predicate = &self.predicate;
-        quote::quote!(#predicate).to_string()
+        self.predicate.render()
     }
 
     pub fn discharge(&self) -> DischargeResult {
@@ -231,19 +228,34 @@ mod tests {
     }
 
     #[test]
-    fn quantifier_predicate_is_silently_not_found_a_known_v1_gap() {
-        // `forall i in [1..50] . pred` isn't valid `syn::Expr` syntax (see
-        // #22) -- the attribute's *file-level* parse still succeeds
-        // (attribute args are an opaque token stream at that layer), but
-        // `RequiresAttr`'s `attr.parse_args::<Expr>()` fails, and
-        // `ObligationFinder` silently drops any attribute whose args
-        // don't parse (matching `rust-total`'s existing convention for
-        // `#[mvl::decreases]`). The predicate-language parser needed to
-        // support this is out of scope for v1 -- see the module doc.
-        let found = find_obligations(
-            "#[mvl::requires(forall i in [1..50] . sections.get(i) != None)]\nfn f() {}",
+    fn bounded_quantifier_predicate_is_found_and_discharged_at_l3() {
+        let diagnostics =
+            check_source("#[mvl::requires(forall i in [0..9] . i < 10)]\nfn f(sections: i32) {}")
+                .unwrap();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].level, Level::Note);
+        assert!(diagnostics[0].message.contains("L3"));
+    }
+
+    #[test]
+    fn bounded_quantifier_over_an_opaque_call_falls_to_runtime() {
+        // Matches the `require_dense_fleet` shape: L3 unrolling doesn't
+        // spuriously "prove" what the inner backend can't decide.
+        let diagnostics = check_source(
+            "#[mvl::requires(forall i in [1..50] . sections_get(i) != 0)]\nfn f(sections: i32) {}",
         )
         .unwrap();
-        assert!(found.is_empty());
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].level, Level::Note);
+        assert!(diagnostics[0].message.contains("runtime check"));
+    }
+
+    #[test]
+    fn genuinely_unsatisfiable_quantifier_fails_the_build() {
+        let diagnostics =
+            check_source("#[mvl::requires(forall i in [0..9] . i < 5)]\nfn f() {}").unwrap();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].level, Level::Error);
+        assert!(diagnostics[0].message.contains("i = 5"));
     }
 }
