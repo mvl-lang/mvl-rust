@@ -74,7 +74,7 @@ pub fn check_source(source: &str) -> Vec<ToolResult> {
 /// Runs just one named tool (for `cargo mvl <tool>` passthroughs). Returns
 /// `None` if `tool` isn't one of [`TOOL_ORDER`].
 pub fn check_single(tool: &str, source: &str) -> Option<ToolResult> {
-    let canonical: &'static str = *TOOL_ORDER.iter().find(|&&t| t == tool)?;
+    let canonical: &'static str = TOOL_ORDER.iter().find(|&&t| t == tool)?;
     Some(ToolResult {
         tool: canonical,
         outcome: run_tool(canonical, source),
