@@ -5,6 +5,7 @@
 //! types exported here; none of it is re-exported by those crates as part
 //! of their own public API (spec Requirement 8).
 
+pub mod assurance;
 pub mod attrs;
 pub mod diagnostics;
 pub mod solver;
