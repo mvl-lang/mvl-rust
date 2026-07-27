@@ -5,9 +5,15 @@
 //!    differ, the schema shape changed without deliberately regenerating
 //!    the committed file (and, per `assurance/version.rs`'s doc comment,
 //!    without bumping `ASSURANCE_SCHEMA_VERSION`).
-//! 2. A real, fully-populated sample report must actually validate against
-//!    that schema — proving the Rust types and the JSON Schema agree on
-//!    what's valid, not just that they're textually in sync.
+//! 2. "Rust types + JSON Schema in sync (verified via a test that
+//!    round-trips)" — a real, fully-populated sample report serializes to
+//!    JSON and deserializes back to the same value.
+//!
+//! (An earlier draft of this file validated a sample report against the
+//! schema using the `jsonschema` crate — stricter than "round-trips," but
+//! its dependency tree pulls in `icu_*`/`idna`/`url` crates that require a
+//! newer `rustc` than this workspace's MSRV, breaking CI. Reverted to what
+//! the acceptance criteria actually asks for.)
 
 use mvl_rust_core::assurance::schema::{
     AssuranceReport, AssuranceSection, CheckSection, CoverageSection, CoverageStat,
@@ -37,12 +43,7 @@ fn committed_schema_matches_the_derived_schema() {
     );
 }
 
-#[test]
-fn a_fully_populated_report_validates_against_the_derived_schema() {
-    let schema = schemars::schema_for!(AssuranceReport);
-    let schema_value = serde_json::to_value(&schema).unwrap();
-    let validator = jsonschema::validator_for(&schema_value).expect("schema itself must be valid");
-
+fn fully_populated_report() -> AssuranceReport {
     let mut report = AssuranceReport::new("rust-limit", "2026-07-27T00:00:00Z");
 
     report.check = Some(CheckSection {
@@ -104,28 +105,27 @@ fn a_fully_populated_report_validates_against_the_derived_schema() {
         leaves: vec![],
     });
 
-    let report_value = serde_json::to_value(&report).unwrap();
-    let result = validator.validate(&report_value);
-    assert!(
-        result.is_ok(),
-        "fully-populated AssuranceReport failed schema validation: {:?}",
-        result.err()
+    report
+}
+
+#[test]
+fn a_fully_populated_report_round_trips_through_json() {
+    let report = fully_populated_report();
+    let json = serde_json::to_string(&report).unwrap();
+    let decoded: AssuranceReport = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        serde_json::to_value(&decoded).unwrap(),
+        serde_json::to_value(&report).unwrap()
     );
 }
 
 #[test]
-fn a_minimal_report_with_every_section_absent_also_validates() {
-    let schema = schemars::schema_for!(AssuranceReport);
-    let schema_value = serde_json::to_value(&schema).unwrap();
-    let validator = jsonschema::validator_for(&schema_value).expect("schema itself must be valid");
-
+fn a_minimal_report_with_every_section_absent_round_trips_through_json() {
     let report = AssuranceReport::new("rust-total", "2026-07-27T00:00:00Z");
-    let report_value = serde_json::to_value(&report).unwrap();
-
-    let result = validator.validate(&report_value);
-    assert!(
-        result.is_ok(),
-        "minimal AssuranceReport failed schema validation: {:?}",
-        result.err()
+    let json = serde_json::to_string(&report).unwrap();
+    let decoded: AssuranceReport = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        serde_json::to_value(&decoded).unwrap(),
+        serde_json::to_value(&report).unwrap()
     );
 }
