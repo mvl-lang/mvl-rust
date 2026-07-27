@@ -1,20 +1,16 @@
-//! Gate subcommand: runs every tool with a real implementation against
-//! source text, in dependency order (limit → total → refine → effect →
-//! ifc), collecting each tool's diagnostics under its own origin marker.
+//! Gate subcommand: runs every tool against source text, in dependency
+//! order (limit → total → refine → effect → ifc), collecting each tool's
+//! diagnostics under its own origin marker.
 //!
-//! `rust-ifc` (still an empty placeholder crate) is reported as
-//! [`ToolOutcome::NotYetImplemented`] and skipped, not silently ignored
-//! and not faked with stub output.
-//!
-//! `rust-limit`/`rust-total`/`rust-refine`/`rust-effect` are depended on
-//! as **library crates** and called in-process
-//! (`rust_limit::lints::check_source`, `rust_total::checks::check_source`,
-//! `rust_refine::checks::check_source`, `rust_effect::checks::check_source`)
+//! All five tools are depended on as **library crates** and called
+//! in-process (`rust_limit::lints::check_source`,
+//! `rust_total::checks::check_source`, `rust_refine::checks::check_source`,
+//! `rust_effect::checks::check_source`, `rust_ifc::checks::check_source`)
 //! rather than shelled out to their separate `cargo-mvl-limit`/
-//! `cargo-mvl-total`/`cargo-mvl-refine`/`cargo-mvl-effect` binaries — each
-//! already exposes its logic as a public library function, so this avoids
-//! subprocess overhead and PATH-discovery entirely, and scales cleanly:
-//! adding `rust-ifc` later is just a new dependency and call site.
+//! `cargo-mvl-total`/`cargo-mvl-refine`/`cargo-mvl-effect`/`cargo-mvl-ifc`
+//! binaries — each already exposes its logic as a public library
+//! function, so this avoids subprocess overhead and PATH-discovery
+//! entirely.
 
 use mvl_rust_core::diagnostics::Diagnostic;
 
@@ -26,8 +22,6 @@ pub const TOOL_ORDER: &[&str] = &["limit", "total", "refine", "effect", "ifc"];
 pub enum ToolOutcome {
     /// The tool ran and produced these diagnostics (may be empty).
     Ran(Vec<Diagnostic>),
-    /// The tool has no real implementation yet; see the tracking issue.
-    NotYetImplemented { tracking_issue: &'static str },
     /// The tool ran but the source failed to parse.
     Error(String),
 }
@@ -56,8 +50,9 @@ fn run_tool(tool: &str, source: &str) -> ToolOutcome {
             Ok(diagnostics) => ToolOutcome::Ran(diagnostics),
             Err(err) => ToolOutcome::Error(err.to_string()),
         },
-        "ifc" => ToolOutcome::NotYetImplemented {
-            tracking_issue: "#10",
+        "ifc" => match rust_ifc::checks::check_source(source) {
+            Ok(diagnostics) => ToolOutcome::Ran(diagnostics),
+            Err(err) => ToolOutcome::Error(err.to_string()),
         },
         _ => unreachable!("run_tool called with an unrecognized tool name: {tool}"),
     }
