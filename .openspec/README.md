@@ -49,7 +49,9 @@ Rationale for dropping delta specs and `tasks.md`:
 
 ## ADRs
 
-(none yet — first ADR will be `0001-workspace-shape.md` when the workspace stabilizes)
+| # | ADR | Decision | Status |
+|---|-----|----------|--------|
+| [0001](adr/0001-solver-integration.md) | Solver Integration | Shell out to `mvl solve --json` for `rust-refine`; migrate to a linked solver crate once `mvl-lang/mvl` exposes one | Accepted |
 
 ## Patterns
 
