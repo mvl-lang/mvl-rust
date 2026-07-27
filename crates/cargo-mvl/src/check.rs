@@ -2,18 +2,19 @@
 //! source text, in dependency order (limit → total → refine → effect →
 //! ifc), collecting each tool's diagnostics under its own origin marker.
 //!
-//! Tools without a real implementation yet (`rust-refine`, `rust-effect`,
-//! `rust-ifc` — all still empty placeholder crates) are reported as
+//! Tools without a real implementation yet (`rust-effect`, `rust-ifc` —
+//! both still empty placeholder crates) are reported as
 //! [`ToolOutcome::NotYetImplemented`] and skipped, not silently ignored
 //! and not faked with stub output.
 //!
-//! `rust-limit`/`rust-total` are depended on as **library crates** and
-//! called in-process (`rust_limit::lints::check_source`,
-//! `rust_total::checks::check_source`) rather than shelled out to their
-//! separate `cargo-mvl-limit`/`cargo-mvl-total` binaries — both already
-//! expose their logic as public library functions, so this avoids
-//! subprocess overhead and PATH-discovery entirely, and scales cleanly:
-//! adding `rust-refine` later is just a new dependency and call site.
+//! `rust-limit`/`rust-total`/`rust-refine` are depended on as **library
+//! crates** and called in-process (`rust_limit::lints::check_source`,
+//! `rust_total::checks::check_source`, `rust_refine::checks::check_source`)
+//! rather than shelled out to their separate `cargo-mvl-limit`/
+//! `cargo-mvl-total`/`cargo-mvl-refine` binaries — each already exposes
+//! its logic as a public library function, so this avoids subprocess
+//! overhead and PATH-discovery entirely, and scales cleanly: adding
+//! `rust-effect`/`rust-ifc` later is just a new dependency and call site.
 
 use mvl_rust_core::diagnostics::Diagnostic;
 
@@ -47,8 +48,9 @@ fn run_tool(tool: &str, source: &str) -> ToolOutcome {
             Ok(diagnostics) => ToolOutcome::Ran(diagnostics),
             Err(err) => ToolOutcome::Error(err.to_string()),
         },
-        "refine" => ToolOutcome::NotYetImplemented {
-            tracking_issue: "#8",
+        "refine" => match rust_refine::checks::check_source(source) {
+            Ok(diagnostics) => ToolOutcome::Ran(diagnostics),
+            Err(err) => ToolOutcome::Error(err.to_string()),
         },
         "effect" => ToolOutcome::NotYetImplemented {
             tracking_issue: "#9",

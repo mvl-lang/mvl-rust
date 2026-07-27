@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use cargo_mvl::check::{self, ToolOutcome};
+use mvl_rust_core::diagnostics::Level;
 
 const ASSURANCE_SUBCOMMANDS: &[&str] = &["prove", "test", "mcdc", "coverage", "assurance"];
 
@@ -75,7 +76,11 @@ fn run_check(files: &[PathBuf]) -> ExitCode {
             match result.outcome {
                 ToolOutcome::Ran(diagnostics) => {
                     if !diagnostics.is_empty() {
-                        had_diagnostics = true;
+                        // Only an actual `Level::Error` fails the build --
+                        // some tools (`rust-refine`) also report
+                        // informational `Level::Note`s (e.g. "discharged
+                        // at L2") that shouldn't.
+                        had_diagnostics |= diagnostics.iter().any(|d| d.level == Level::Error);
                         eprintln!("--- {} ---", result.tool);
                         for diagnostic in &diagnostics {
                             diagnostic.emit(&source, &path.display().to_string());
@@ -127,7 +132,7 @@ fn run_single(tool: &str, files: &[PathBuf]) -> ExitCode {
 
         match result.outcome {
             ToolOutcome::Ran(diagnostics) => {
-                had_diagnostics |= !diagnostics.is_empty();
+                had_diagnostics |= diagnostics.iter().any(|d| d.level == Level::Error);
                 for diagnostic in &diagnostics {
                     diagnostic.emit(&source, &path.display().to_string());
                 }
