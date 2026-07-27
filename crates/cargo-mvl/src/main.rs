@@ -44,7 +44,7 @@ fn print_usage() {
     eprintln!("usage: cargo mvl <SUBCOMMAND> <FILE>...");
     eprintln!();
     eprintln!("Gate subcommands:");
-    eprintln!("  check              run every tool with a real implementation");
+    eprintln!("  check              run every tool");
     eprintln!("  limit|total|refine|effect|ifc   run a single tool");
     eprintln!();
     eprintln!("Assurance subcommands (not yet implemented -- see #13, #14):");
@@ -86,12 +86,6 @@ fn run_check(files: &[PathBuf]) -> ExitCode {
                             diagnostic.emit(&source, &path.display().to_string());
                         }
                     }
-                }
-                ToolOutcome::NotYetImplemented { tracking_issue } => {
-                    eprintln!(
-                        "cargo mvl check: {} not yet implemented ({tracking_issue}), skipped",
-                        result.tool
-                    );
                 }
                 ToolOutcome::Error(message) => {
                     eprintln!(
@@ -136,10 +130,6 @@ fn run_single(tool: &str, files: &[PathBuf]) -> ExitCode {
                 for diagnostic in &diagnostics {
                     diagnostic.emit(&source, &path.display().to_string());
                 }
-            }
-            ToolOutcome::NotYetImplemented { tracking_issue } => {
-                eprintln!("cargo mvl {tool}: not yet implemented ({tracking_issue})");
-                return ExitCode::from(2);
             }
             ToolOutcome::Error(message) => {
                 eprintln!("error: {message}");

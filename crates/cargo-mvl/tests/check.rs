@@ -56,9 +56,19 @@ fn effect_runs_for_real_and_finds_a_violation() {
 }
 
 #[test]
+fn ifc_runs_for_real_and_finds_a_violation() {
+    let results = check_source("fn leak<T>(value: Tainted<T>) -> T { value.into_inner() }");
+    let ifc = results.iter().find(|r| r.tool == "ifc").unwrap();
+    match &ifc.outcome {
+        ToolOutcome::Ran(diagnostics) => assert_eq!(diagnostics.len(), 1),
+        other => panic!("expected Ran(_), got {other:?}"),
+    }
+}
+
+#[test]
 fn clean_source_has_no_diagnostics_from_implemented_tools() {
     let results = check_source("fn f() -> i32 { 1 }");
-    for tool in ["limit", "total", "refine", "effect"] {
+    for tool in ["limit", "total", "refine", "effect", "ifc"] {
         let result = results.iter().find(|r| r.tool == tool).unwrap();
         match &result.outcome {
             ToolOutcome::Ran(diagnostics) => {
@@ -67,17 +77,6 @@ fn clean_source_has_no_diagnostics_from_implemented_tools() {
             other => panic!("expected Ran(_) for {tool}, got {other:?}"),
         }
     }
-}
-
-#[test]
-fn ifc_is_reported_not_yet_implemented() {
-    let results = check_source("fn f() {}");
-    let result = results.iter().find(|r| r.tool == "ifc").unwrap();
-    assert!(
-        matches!(result.outcome, ToolOutcome::NotYetImplemented { .. }),
-        "ifc: expected NotYetImplemented, got {:?}",
-        result.outcome
-    );
 }
 
 #[test]
@@ -93,18 +92,9 @@ fn check_single_returns_none_for_an_unknown_tool() {
 }
 
 #[test]
-fn check_single_reports_not_yet_implemented_for_ifc() {
-    let result = check_single("ifc", "fn f() {}").unwrap();
-    match result.outcome {
-        ToolOutcome::NotYetImplemented { tracking_issue } => assert_eq!(tracking_issue, "#10"),
-        other => panic!("expected NotYetImplemented, got {other:?}"),
-    }
-}
-
-#[test]
 fn malformed_source_yields_a_parse_error_for_implemented_tools() {
     let results = check_source("fn f( {{{");
-    for tool in ["limit", "total", "refine", "effect"] {
+    for tool in ["limit", "total", "refine", "effect", "ifc"] {
         let result = results.iter().find(|r| r.tool == tool).unwrap();
         assert!(
             matches!(result.outcome, ToolOutcome::Error(_)),
