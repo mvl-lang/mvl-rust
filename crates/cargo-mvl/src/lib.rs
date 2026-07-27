@@ -2,3 +2,5 @@
 //! tools. Shipped as the `cargo mvl` subcommand (binary `cargo-mvl`).
 
 pub mod check;
+pub mod prove;
+pub mod test;

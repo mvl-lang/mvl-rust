@@ -28,6 +28,7 @@ dependencies = [
  "rust-limit",
  "rust-refine",
  "rust-total",
+ "serde_json",
 ]
 
 [[package]]
