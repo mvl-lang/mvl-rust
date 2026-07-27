@@ -1,24 +1,32 @@
-//! Solver-integration trait for discharging refinement obligations.
+//! Obligation-discharge types and the solver-integration trait.
 //!
-//! `rust-refine` (Phase 3) needs the same L1-L5 obligation dispatcher the
-//! MVL compiler uses. [`SolverBackend`] is the abstraction point: the
-//! default [`ShellOutSolver`] shells out to `mvl solve --json` per the
-//! spec's own recommendation (start with shell-out, migrate to a linked
-//! solver crate once the compiler exposes one — see ADR-0001). The exact
-//! wire format below is a first cut; ADR-0001 owns the final contract.
-//! Real solver integration for `rust-refine` itself is out of scope here —
-//! this ticket only owns the trait and its default implementation.
+//! `rust-refine` (Phase 3) needs an obligation dispatcher, layered like the
+//! MVL compiler's own: `L1` trivial syntactic checks, `L2` interval
+//! arithmetic, `L3` bounded path enumeration, `L4` Cooper's quantifier
+//! elimination, `L5` full SMT, with an uncloseable obligation falling
+//! through to a runtime check.
+//!
+//! Per ADR-0001 (`.openspec/adr/0001-solver-integration.md`), this
+//! dispatcher is implemented **natively** in `mvl-rust-core` — not by
+//! shelling out to or linking `mvl-lang/mvl`'s own solver. Doing either
+//! would mean `rust-refine` isn't independent verification at all (the
+//! same solver with a Rust UI on top can never disagree with itself), and
+//! would pressure `mvl-lang/mvl`'s codebase to grow Rust-specific
+//! accommodations it doesn't need. There is deliberately no shell-out or
+//! linked backend here, not even as a documented fallback option.
+//!
+//! [`SolverBackend`] is the abstraction point tool crates depend on. A
+//! concrete native `L1`+`L2` backend (v0.1 scope per ADR-0001 — `L3`–`L5`
+//! deferred) is tracked as its own follow-up implementation ticket; this
+//! module owns the trait and data model only.
 
 use serde::{Deserialize, Serialize};
-use std::io::{self, Write};
-use std::process::{Command, Stdio};
-use thiserror::Error;
 
-/// The layer that discharged an obligation, mirroring the MVL compiler's
-/// dispatch order: trivial syntactic check, interval arithmetic, bounded
-/// path enumeration, Cooper's quantifier elimination, full SMT, or a
-/// runtime assertion when no static layer could close it. Serializes to the
-/// string values used by the assurance-JSON schema (spec Requirement 13).
+/// The layer that discharged an obligation: trivial syntactic check,
+/// interval arithmetic, bounded path enumeration, Cooper's quantifier
+/// elimination, full SMT, or a runtime assertion when no static layer
+/// could close it. Serializes to the string values used by the
+/// assurance-JSON schema (spec Requirement 13).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Layer {
     #[serde(rename = "L1")]
@@ -56,64 +64,11 @@ pub enum DischargeResult {
     Violated { counterexample: String },
 }
 
-#[derive(Debug, Error)]
-pub enum SolverError {
-    #[error("failed to invoke solver process: {0}")]
-    Spawn(#[source] io::Error),
-    #[error("failed to write obligation to solver stdin: {0}")]
-    Write(#[source] io::Error),
-    #[error("solver response was not valid JSON: {0}")]
-    InvalidResponse(#[source] serde_json::Error),
-}
-
-/// Abstract interface for the L1-L5 obligation dispatcher.
+/// Abstract interface for the obligation dispatcher. Implemented natively
+/// in `mvl-rust-core` (ADR-0001) — there is no shell-out or linked
+/// backend. Native reasoning always produces *some* outcome (`Proven`,
+/// `Runtime`, or `Violated`), never an I/O-style failure, so this doesn't
+/// return a `Result`.
 pub trait SolverBackend {
-    fn discharge(&self, obligation: &Obligation) -> Result<DischargeResult, SolverError>;
-}
-
-/// Default backend: shells out to `mvl solve --json` per obligation,
-/// writing the obligation as JSON on stdin and reading a `DischargeResult`
-/// as JSON from stdout.
-#[derive(Debug, Clone, Default)]
-pub struct ShellOutSolver {
-    /// Path to the `mvl` binary; defaults to `"mvl"`, resolved via `PATH`.
-    pub mvl_path: Option<String>,
-}
-
-impl ShellOutSolver {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn with_binary(mvl_path: impl Into<String>) -> Self {
-        ShellOutSolver {
-            mvl_path: Some(mvl_path.into()),
-        }
-    }
-
-    fn binary(&self) -> &str {
-        self.mvl_path.as_deref().unwrap_or("mvl")
-    }
-}
-
-impl SolverBackend for ShellOutSolver {
-    fn discharge(&self, obligation: &Obligation) -> Result<DischargeResult, SolverError> {
-        let mut child = Command::new(self.binary())
-            .args(["solve", "--json"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .map_err(SolverError::Spawn)?;
-
-        let input = serde_json::to_vec(obligation).expect("Obligation always serializes");
-        child
-            .stdin
-            .as_mut()
-            .expect("stdin was piped")
-            .write_all(&input)
-            .map_err(SolverError::Write)?;
-
-        let output = child.wait_with_output().map_err(SolverError::Spawn)?;
-        serde_json::from_slice(&output.stdout).map_err(SolverError::InvalidResponse)
-    }
+    fn discharge(&self, obligation: &Obligation) -> DischargeResult;
 }
