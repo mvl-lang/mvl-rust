@@ -5,7 +5,15 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "#[effect(list)] attribute for mvl-rust: effect algebra tracking on function signatures."
+description = "#[mvl::effect(list)] propagation checking for mvl-rust: same-file, flat effect-set enforcement across function calls."
+
+[[bin]]
+name = "cargo-mvl-effect"
+path = "src/main.rs"
 
 [dependencies]
 mvl-rust-core = { path = "../mvl-rust-core", version = "0.1.2" }
+syn = { version = "2", features = ["full", "extra-traits", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+thiserror = "2"
+serde_json = "1"

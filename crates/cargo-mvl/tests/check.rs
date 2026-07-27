@@ -43,9 +43,22 @@ fn refine_runs_for_real_and_finds_a_violation() {
 }
 
 #[test]
+fn effect_runs_for_real_and_finds_a_violation() {
+    let results = check_source(
+        "#[mvl::effect(Console)] fn log(msg: &str) { println!(\"{msg}\"); } \
+         fn f() { log(\"hi\"); }",
+    );
+    let effect = results.iter().find(|r| r.tool == "effect").unwrap();
+    match &effect.outcome {
+        ToolOutcome::Ran(diagnostics) => assert_eq!(diagnostics.len(), 1),
+        other => panic!("expected Ran(_), got {other:?}"),
+    }
+}
+
+#[test]
 fn clean_source_has_no_diagnostics_from_implemented_tools() {
     let results = check_source("fn f() -> i32 { 1 }");
-    for tool in ["limit", "total", "refine"] {
+    for tool in ["limit", "total", "refine", "effect"] {
         let result = results.iter().find(|r| r.tool == tool).unwrap();
         match &result.outcome {
             ToolOutcome::Ran(diagnostics) => {
@@ -57,16 +70,14 @@ fn clean_source_has_no_diagnostics_from_implemented_tools() {
 }
 
 #[test]
-fn effect_ifc_are_reported_not_yet_implemented() {
+fn ifc_is_reported_not_yet_implemented() {
     let results = check_source("fn f() {}");
-    for tool in ["effect", "ifc"] {
-        let result = results.iter().find(|r| r.tool == tool).unwrap();
-        assert!(
-            matches!(result.outcome, ToolOutcome::NotYetImplemented { .. }),
-            "{tool}: expected NotYetImplemented, got {:?}",
-            result.outcome
-        );
-    }
+    let result = results.iter().find(|r| r.tool == "ifc").unwrap();
+    assert!(
+        matches!(result.outcome, ToolOutcome::NotYetImplemented { .. }),
+        "ifc: expected NotYetImplemented, got {:?}",
+        result.outcome
+    );
 }
 
 #[test]
@@ -82,10 +93,10 @@ fn check_single_returns_none_for_an_unknown_tool() {
 }
 
 #[test]
-fn check_single_reports_not_yet_implemented_for_effect() {
-    let result = check_single("effect", "fn f() {}").unwrap();
+fn check_single_reports_not_yet_implemented_for_ifc() {
+    let result = check_single("ifc", "fn f() {}").unwrap();
     match result.outcome {
-        ToolOutcome::NotYetImplemented { tracking_issue } => assert_eq!(tracking_issue, "#9"),
+        ToolOutcome::NotYetImplemented { tracking_issue } => assert_eq!(tracking_issue, "#10"),
         other => panic!("expected NotYetImplemented, got {other:?}"),
     }
 }
@@ -93,7 +104,7 @@ fn check_single_reports_not_yet_implemented_for_effect() {
 #[test]
 fn malformed_source_yields_a_parse_error_for_implemented_tools() {
     let results = check_source("fn f( {{{");
-    for tool in ["limit", "total", "refine"] {
+    for tool in ["limit", "total", "refine", "effect"] {
         let result = results.iter().find(|r| r.tool == tool).unwrap();
         assert!(
             matches!(result.outcome, ToolOutcome::Error(_)),
