@@ -26,8 +26,16 @@
 //! expanded instance is attributed to `Layer::L3` regardless of which
 //! inner layer (`L1` or `L2`) actually discharged it — the expansion
 //! itself *is* the `L3` activity, matching ADR-0056's own framing.
+//!
+//! `L4` (linear arithmetic beyond plain interval containment, e.g.
+//! `a > c && b > 0 && a + b <= c`) is Fourier-Motzkin elimination plus a
+//! divisibility check for single-variable equalities -- ported from real
+//! MVL's actual `src/mvl/checker/solver/layer4.rs` (#35), not the fuller
+//! "Cooper's algorithm" its own doc comments (inaccurately) call it. See
+//! the `L4` section below for the adaptation to this backend's
+//! satisfiability framing.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use syn::visit_mut::{self, VisitMut};
 use syn::{BinOp, Expr, ExprLit, ExprUnary, Ident, Lit, UnOp};
@@ -321,12 +329,386 @@ fn discharge_expr(expr: &Expr) -> DischargeResult {
         }
     }
 
-    if undecidable {
-        return DischargeResult::Runtime;
+    if !undecidable {
+        return DischargeResult::Proven {
+            layer: if saw_bound { Layer::L2 } else { Layer::L1 },
+        };
     }
 
-    DischargeResult::Proven {
-        layer: if saw_bound { Layer::L2 } else { Layer::L1 },
+    // L1/L2 couldn't fully decide every clause (e.g. a cross-variable
+    // relation like `a + b <= c`, which isn't a `var OP literal` bound) --
+    // try L4 before giving up.
+    match discharge_l4(&clauses) {
+        Some(result) => result,
+        None => DischargeResult::Runtime,
+    }
+}
+
+// ── L4: linear arithmetic via Fourier-Motzkin elimination (#35) ────────────
+//
+// Ported from `mvl-lang/mvl`'s real `src/mvl/checker/solver/layer4.rs` --
+// despite the module's own name there ("Cooper's algorithm"), the actual
+// technique is Fourier-Motzkin elimination plus a single-variable
+// divisibility check, not full Cooper quantifier elimination (filed as
+// `mvl-lang/mvl#2022`, a real naming inaccuracy found while porting this).
+//
+// Adapted to this backend's satisfiability framing rather than real MVL's
+// call-site/hypothesis framing (`rust-refine` has no call graph -- see
+// `mvl-lang/mvl-rust#38`): every clause of the flattened `&&`-conjunction
+// (not just the ones L1/L2 left `Unknown`) is converted to a `Constraint`;
+// if every clause converts, the *conjunction itself* is checked for
+// unsatisfiability (no negation needed, unlike real MVL's refutation-based
+// validity proof -- this backend already asks "is this satisfiable", not
+// "does it always hold given hypotheses"). `Violated` if UNSAT, `Proven`
+// if satisfiable, `None` (→ `Runtime`) if any clause isn't linear.
+
+/// A linear integer expression: `constant + Σ (coeff_i · var_i)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LinTerm {
+    constant: i128,
+    vars: HashMap<String, i128>,
+}
+
+impl LinTerm {
+    fn constant(n: i128) -> Self {
+        LinTerm {
+            constant: n,
+            vars: HashMap::new(),
+        }
+    }
+
+    fn var(name: impl Into<String>) -> Self {
+        let mut vars = HashMap::new();
+        vars.insert(name.into(), 1);
+        LinTerm { constant: 0, vars }
+    }
+
+    fn add(&self, other: &LinTerm) -> LinTerm {
+        let mut vars = self.vars.clone();
+        for (k, v) in &other.vars {
+            let entry = vars.entry(k.clone()).or_insert(0);
+            *entry += v;
+            if *entry == 0 {
+                vars.remove(k);
+            }
+        }
+        LinTerm {
+            constant: self.constant + other.constant,
+            vars,
+        }
+    }
+
+    fn sub(&self, other: &LinTerm) -> LinTerm {
+        self.add(&other.negate())
+    }
+
+    fn scale(&self, c: i128) -> LinTerm {
+        if c == 0 {
+            return LinTerm::constant(0);
+        }
+        LinTerm {
+            constant: self.constant * c,
+            vars: self.vars.iter().map(|(k, v)| (k.clone(), v * c)).collect(),
+        }
+    }
+
+    fn negate(&self) -> LinTerm {
+        self.scale(-1)
+    }
+
+    fn is_constant(&self) -> bool {
+        self.vars.is_empty()
+    }
+
+    fn coeff_of(&self, var: &str) -> i128 {
+        self.vars.get(var).copied().unwrap_or(0)
+    }
+
+    fn without_var(&self, var: &str) -> LinTerm {
+        let mut t = self.clone();
+        t.vars.remove(var);
+        t
+    }
+}
+
+/// A linear constraint: `term OP 0`.
+#[derive(Debug, Clone)]
+enum Constraint {
+    /// `term ≤ 0`
+    Le(LinTerm),
+    /// `term = 0`
+    Eq(LinTerm),
+    // `Ne` constraints are intentionally not represented here -- real
+    // MVL's own `is_unsat` drops them from the Fourier-Motzkin phase
+    // entirely (only `Le`/`Eq` feed it), the same known limitation ported
+    // faithfully rather than "improved" on.
+}
+
+impl Constraint {
+    fn is_trivially_false(&self) -> bool {
+        match self {
+            Constraint::Le(t) => t.is_constant() && t.constant > 0,
+            Constraint::Eq(t) => t.is_constant() && t.constant != 0,
+        }
+    }
+
+    fn is_trivially_true(&self) -> bool {
+        match self {
+            Constraint::Le(t) => t.is_constant() && t.constant <= 0,
+            Constraint::Eq(t) => t.is_constant() && t.constant == 0,
+        }
+    }
+}
+
+/// Extracts a linear integer term from `expr`. Returns `None` for
+/// anything non-linear (function calls, variable × variable, field
+/// access, ...) -- the same bail-conservatively contract as this
+/// backend's existing `int_value`/`ident_name` helpers, generalized to a
+/// full linear combination rather than a single literal or bare ident.
+fn linterm_from_expr(expr: &Expr) -> Option<LinTerm> {
+    match expr {
+        Expr::Lit(ExprLit {
+            lit: Lit::Int(int), ..
+        }) => int.base10_parse::<i128>().ok().map(LinTerm::constant),
+        Expr::Path(path) if path.qself.is_none() => path
+            .path
+            .get_ident()
+            .map(|ident| LinTerm::var(ident.to_string())),
+        Expr::Unary(ExprUnary {
+            op: UnOp::Neg(_),
+            expr,
+            ..
+        }) => linterm_from_expr(expr).map(|t| t.negate()),
+        Expr::Paren(paren) => linterm_from_expr(&paren.expr),
+        Expr::Group(group) => linterm_from_expr(&group.expr),
+        Expr::Binary(bin) => {
+            let l = linterm_from_expr(&bin.left)?;
+            let r = linterm_from_expr(&bin.right)?;
+            match bin.op {
+                BinOp::Add(_) => Some(l.add(&r)),
+                BinOp::Sub(_) => Some(l.sub(&r)),
+                // Linear iff one side is a constant scalar.
+                BinOp::Mul(_) => {
+                    if l.is_constant() {
+                        Some(r.scale(l.constant))
+                    } else if r.is_constant() {
+                        Some(l.scale(r.constant))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Converts `term OP 0` to `Constraint`s, tightening strict integer
+/// inequalities the same way real MVL's `cmp_to_constraints` does:
+/// `t < 0` ↔ `t+1 ≤ 0`; `t > 0` ↔ `−t+1 ≤ 0`; `t >= 0` ↔ `−t ≤ 0`. `None`
+/// for non-comparison operators (`&&`, `+`, ...).
+fn cmp_to_constraints(op: &BinOp, term: LinTerm) -> Option<Vec<Constraint>> {
+    match op {
+        BinOp::Le(_) => Some(vec![Constraint::Le(term)]),
+        BinOp::Lt(_) => {
+            let mut t = term;
+            t.constant += 1;
+            Some(vec![Constraint::Le(t)])
+        }
+        BinOp::Ge(_) => Some(vec![Constraint::Le(term.negate())]),
+        BinOp::Gt(_) => {
+            let mut neg = term.negate();
+            neg.constant += 1;
+            Some(vec![Constraint::Le(neg)])
+        }
+        BinOp::Eq(_) => Some(vec![Constraint::Eq(term)]),
+        // `Ne` has no single-inequality representation; see the
+        // `Constraint` enum's own doc comment.
+        _ => None,
+    }
+}
+
+/// Converts one flattened `&&`-conjunct into constraints. `None` if the
+/// clause isn't in the linear fragment at all (disjunction, negation,
+/// non-linear terms, opaque calls, ...) -- bailing here propagates to
+/// `discharge_l4` bailing on the *whole* conjunction, matching real MVL's
+/// own all-or-nothing `ref_to_constraints` contract for a single
+/// obligation.
+fn constraints_from_clause(expr: &Expr) -> Option<Vec<Constraint>> {
+    match expr {
+        Expr::Lit(ExprLit {
+            lit: Lit::Bool(b), ..
+        }) => Some(if b.value {
+            vec![]
+        } else {
+            vec![Constraint::Le(LinTerm::constant(1))]
+        }),
+        Expr::Paren(paren) => constraints_from_clause(&paren.expr),
+        Expr::Group(group) => constraints_from_clause(&group.expr),
+        Expr::Binary(bin) => {
+            let l = linterm_from_expr(&bin.left)?;
+            let r = linterm_from_expr(&bin.right)?;
+            cmp_to_constraints(&bin.op, l.sub(&r))
+        }
+        _ => None,
+    }
+}
+
+/// Result of checking a constraint system for satisfiability. Unlike
+/// real MVL's own `is_unsat`/`fm_eliminate` (which return a bare `bool`,
+/// conflating "rigorously proven satisfiable" with "gave up due to a
+/// complexity guard" -- safe for *them* only because their caller
+/// (`try_cooper`) never claims satisfiability from this result, only ever
+/// escalating to `L5` on anything short of a proven contradiction), this
+/// backend needs the distinction explicit: it *does* want to claim
+/// `Proven` directly from a satisfiable result, so a complexity-guard
+/// bail must be kept distinguishable from a real proof of satisfiability.
+enum SatOutcome {
+    /// Rigorously proven contradictory (divisibility failure, a derived
+    /// constant contradiction, or a trivially-false input constraint).
+    /// Always safe to act on -- no complexity guard ever produces this.
+    Contradiction,
+    /// Elimination ran to completion with no contradiction found.
+    Satisfiable,
+    /// A complexity guard fired before a definite answer was reached;
+    /// could be either of the above.
+    Unknown,
+}
+
+/// Checks whether the conjunction of `constraints` is satisfiable over
+/// the integers -- divisibility check for single-variable equalities,
+/// then Fourier-Motzkin elimination over the `Le` constraints.
+/// Complexity guards (ported verbatim from real MVL): more than 5 free
+/// variables, coefficient magnitude, and intermediate constraint count.
+fn check_satisfiability(constraints: Vec<Constraint>) -> SatOutcome {
+    if constraints.iter().any(Constraint::is_trivially_false) {
+        return SatOutcome::Contradiction;
+    }
+
+    let constraints: Vec<Constraint> = constraints
+        .into_iter()
+        .filter(|c| !c.is_trivially_true())
+        .collect();
+
+    // Equality + divisibility: `a·x + c = 0` is UNSAT iff `a` doesn't
+    // divide `c` (no integer solution).
+    for c in &constraints {
+        if let Constraint::Eq(t) = c {
+            if t.vars.len() == 1 {
+                let (_name, &coeff) = t.vars.iter().next().unwrap();
+                if t.constant % coeff != 0 {
+                    return SatOutcome::Contradiction;
+                }
+            }
+        }
+    }
+
+    let le_terms: Vec<LinTerm> = constraints
+        .into_iter()
+        .filter_map(|c| {
+            if let Constraint::Le(t) = c {
+                Some(t)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if le_terms.is_empty() {
+        return SatOutcome::Satisfiable;
+    }
+
+    let mut free_vars: Vec<String> = le_terms
+        .iter()
+        .flat_map(|t| t.vars.keys().cloned())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    free_vars.sort();
+
+    if free_vars.len() > 5 {
+        return SatOutcome::Unknown; // Too complex.
+    }
+
+    fm_eliminate(le_terms, &free_vars)
+}
+
+/// Fourier-Motzkin elimination: eliminate variables one at a time. All
+/// `constraints` have the form `term ≤ 0`.
+fn fm_eliminate(constraints: Vec<LinTerm>, vars: &[String]) -> SatOutcome {
+    if constraints
+        .iter()
+        .any(|t| t.is_constant() && t.constant > 0)
+    {
+        return SatOutcome::Contradiction;
+    }
+    if vars.is_empty() {
+        return SatOutcome::Satisfiable;
+    }
+
+    let var = &vars[0];
+    let rest = &vars[1..];
+
+    // Partition by the sign of `var`'s coefficient: positive -> upper
+    // bound on var, negative -> lower bound, zero -> carries no
+    // information about var and passes through unchanged.
+    let mut uppers: Vec<(i128, LinTerm)> = Vec::new();
+    let mut lowers: Vec<(i128, LinTerm)> = Vec::new();
+    let mut new_constraints: Vec<LinTerm> = Vec::new();
+
+    for t in constraints {
+        let c = t.coeff_of(var);
+        if c == 0 {
+            new_constraints.push(t);
+        } else if c > 0 {
+            uppers.push((c, t.without_var(var)));
+        } else {
+            lowers.push((-c, t.without_var(var)));
+        }
+    }
+
+    // Each (upper a_i, lower b_j) pair produces b_j·r_i + a_i·s_j ≤ 0.
+    for (a_i, r_i) in &uppers {
+        for (b_j, s_j) in &lowers {
+            // Complexity guards (ported verbatim): bail conservatively on
+            // huge coefficients or constraint-count blow-up.
+            if a_i.unsigned_abs() > 1_000_000 || b_j.unsigned_abs() > 1_000_000 {
+                return SatOutcome::Unknown;
+            }
+            new_constraints.push(r_i.scale(*b_j).add(&s_j.scale(*a_i)));
+            if new_constraints.len() > 128 {
+                return SatOutcome::Unknown;
+            }
+        }
+    }
+
+    fm_eliminate(new_constraints, rest)
+}
+
+/// Tries to discharge a whole `&&`-flattened conjunction via `L4`. `None`
+/// if any clause isn't in the linear fragment, or if satisfiability
+/// couldn't be rigorously determined either way -- the caller falls
+/// through to `Runtime` in both cases.
+fn discharge_l4(clauses: &[&Expr]) -> Option<DischargeResult> {
+    let mut constraints = Vec::new();
+    for clause in clauses {
+        constraints.extend(constraints_from_clause(clause)?);
+    }
+
+    match check_satisfiability(constraints) {
+        SatOutcome::Contradiction => Some(DischargeResult::Violated {
+            counterexample: format!(
+                "the conjunction `{}` is unsatisfiable over the integers (L4)",
+                clauses
+                    .iter()
+                    .map(|c| quote::quote!(#c).to_string())
+                    .collect::<Vec<_>>()
+                    .join(" && ")
+            ),
+        }),
+        SatOutcome::Satisfiable => Some(DischargeResult::Proven { layer: Layer::L4 }),
+        SatOutcome::Unknown => None,
     }
 }
 
@@ -663,6 +1045,83 @@ mod tests {
         assert_eq!(
             discharge("forall i in [-5..5] . i >= -5 && i <= 5"),
             DischargeResult::Proven { layer: Layer::L3 }
+        );
+    }
+
+    // L4 tests (#35): cross-variable linear reasoning L2's per-variable
+    // interval model can't reach on its own.
+
+    #[test]
+    fn cross_variable_contradiction_is_violated_at_l4() {
+        // No single clause is a contradiction on its own; the conjunction
+        // is, via a > c, b > 0 => a + b > c, contradicting a + b <= c.
+        let result = discharge("a > c && b > 0 && a + b <= c");
+        match result {
+            DischargeResult::Violated { counterexample } => {
+                assert!(counterexample.contains("L4"), "{counterexample}");
+            }
+            other => panic!("expected Violated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn paper_motivating_example_adapted_to_satisfiability_is_violated() {
+        // The paper's own L4 example proves `x + 5 <= 245` given
+        // `x <= 240`; adapted to this backend's satisfiability framing,
+        // asserting both `x <= 240` and its negation-adjacent
+        // `x + 5 > 245` in one predicate is the analogous contradiction.
+        assert!(matches!(
+            discharge("x <= 240 && x + 5 > 245"),
+            DischargeResult::Violated { .. }
+        ));
+    }
+
+    #[test]
+    fn satisfiable_cross_variable_relation_proves_at_l4() {
+        assert_eq!(
+            discharge("a > c && b > 0 && a + b >= c"),
+            DischargeResult::Proven { layer: Layer::L4 }
+        );
+    }
+
+    #[test]
+    fn single_variable_equality_with_no_divisor_is_violated() {
+        // 2*x - 5 = 0 has no integer solution (2 does not divide 5).
+        assert!(matches!(
+            discharge("2 * x == 5"),
+            DischargeResult::Violated { .. }
+        ));
+    }
+
+    #[test]
+    fn single_variable_equality_with_a_divisor_proves_at_l4() {
+        assert_eq!(
+            discharge("2 * x == 6"),
+            DischargeResult::Proven { layer: Layer::L4 }
+        );
+    }
+
+    #[test]
+    fn more_than_five_free_variables_falls_to_runtime() {
+        assert_eq!(
+            discharge("a + b + c + d + e + f <= 100 && a + b + c + d + e + f >= 200"),
+            DischargeResult::Runtime
+        );
+    }
+
+    #[test]
+    fn non_linear_term_falls_to_runtime_not_l4() {
+        assert_eq!(discharge("x * y > 0 && x < 0"), DischargeResult::Runtime);
+    }
+
+    #[test]
+    fn l1_l2_still_take_priority_over_l4_when_they_fully_decide() {
+        // A pure per-variable interval case must still report L2, not L4,
+        // even though L4 could also decide it -- L4 only engages when
+        // L1/L2 leave an undecidable residue.
+        assert_eq!(
+            discharge("x >= 0 && x < 100"),
+            DischargeResult::Proven { layer: Layer::L2 }
         );
     }
 }
