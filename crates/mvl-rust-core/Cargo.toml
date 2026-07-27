@@ -8,7 +8,7 @@ repository.workspace = true
 description = "Shared infrastructure for mvl-rust: attribute grammar, AST walker, diagnostics, solver bindings."
 
 [dependencies]
-syn = { version = "2", features = ["full", "extra-traits", "visit"] }
+syn = { version = "2", features = ["full", "extra-traits", "visit", "visit-mut"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"
 annotate-snippets = "0.11"

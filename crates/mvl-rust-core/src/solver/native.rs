@@ -1,5 +1,6 @@
-//! The native `L1` (trivial) + `L2` (integer interval arithmetic) backend
-//! (ADR-0001 v0.1 scope).
+//! The native `L1` (trivial) + `L2` (integer interval arithmetic) + `L3`
+//! (bounded quantifier expansion) backend (ADR-0001 v0.1 scope + #31's
+//! quantifier extension).
 //!
 //! Because tool crates parse plain source text with no type information
 //! and no call-graph (spec's "Gate mode" story — see `rust-limit`/
@@ -13,29 +14,220 @@
 //! reading matches all three of spec Requirement 3's acceptance scenarios:
 //! a satisfiable interval bound discharges at `L2`, a self-contradictory
 //! one is a genuine violation, and anything this analysis can't decompose
-//! (quantifiers, function calls, disjunction, `!=`, non-integer types)
-//! falls through to a runtime check rather than blocking the build.
+//! (function calls, disjunction, `!=`, non-integer types) falls through
+//! to a runtime check rather than blocking the build.
+//!
+//! `L3` (bounded quantifiers, `forall`/`exists i in [lo..hi]. body`) is
+//! discharged by expansion, matching `mvl-lang/mvl`'s own real, accepted
+//! design (ADR-0056, confirmed against its actual solver source and test
+//! fixtures — see `crate::attrs::Predicate`'s doc comment): substitute the
+//! bound variable with each concrete integer in range, dispatch each
+//! instance recursively through this same backend, and aggregate. Every
+//! expanded instance is attributed to `Layer::L3` regardless of which
+//! inner layer (`L1` or `L2`) actually discharged it — the expansion
+//! itself *is* the `L3` activity, matching ADR-0056's own framing.
 
 use std::collections::HashMap;
 
-use syn::{BinOp, Expr, ExprLit, ExprUnary, Lit, UnOp};
+use syn::visit_mut::{self, VisitMut};
+use syn::{BinOp, Expr, ExprLit, ExprUnary, Ident, Lit, UnOp};
+
+use crate::attrs::Predicate;
 
 use super::{DischargeResult, Layer, Obligation, SolverBackend};
 
-/// Native `L1`+`L2` obligation dispatcher. Holds no state — every
+/// A range wider than this many elements (`hi - lo + 1`) isn't expanded
+/// and falls straight to `Runtime` instead — same constant and rationale
+/// as `mvl-lang/mvl`'s own `MAX_BOUNDED_EXPANSION` (`src/mvl/checker/
+/// refinements.rs`): prevents pathological blow-up on wide ranges, no
+/// L5/SMT involvement (quantifiers are L3-only in the real design, per
+/// ADR-0056).
+const MAX_BOUNDED_EXPANSION: i64 = 1000;
+
+/// Native `L1`+`L2`+`L3` obligation dispatcher. Holds no state — every
 /// obligation is analyzed independently from its own predicate text.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NativeBackend;
 
 impl SolverBackend for NativeBackend {
     fn discharge(&self, obligation: &Obligation) -> DischargeResult {
-        match syn::parse_str::<Expr>(&obligation.predicate) {
-            Ok(expr) => discharge_predicate(&expr),
-            // The predicate string came from a real `syn::Expr` in the
+        match syn::parse_str::<Predicate>(&obligation.predicate) {
+            Ok(pred) => discharge_predicate(&pred),
+            // The predicate string came from a real `Predicate` in the
             // first place (see `rust-refine`'s obligation extraction), so
             // this only fires if that invariant is ever broken elsewhere.
             Err(_) => DischargeResult::Runtime,
         }
+    }
+}
+
+/// Discharges a predicate — a plain expression via `L1`/`L2`, or a
+/// bounded quantifier via `L3` expansion (recursing back into this same
+/// function for each expanded instance, so nested quantifiers and a
+/// quantifier composed with ordinary comparisons both work without any
+/// special-casing).
+pub fn discharge_predicate(pred: &Predicate) -> DischargeResult {
+    match pred {
+        Predicate::Expr(expr) => discharge_expr(expr),
+        Predicate::Forall { var, lo, hi, body } => discharge_forall(var, *lo, *hi, body),
+        Predicate::Exists { var, lo, hi, body } => discharge_exists(var, *lo, *hi, body),
+    }
+}
+
+/// `forall x in [lo..hi]. body`: any expanded instance `Violated` ⇒ the
+/// whole quantifier `Violated` (short-circuit, counterexample names the
+/// failing `x`); all instances `Proven` ⇒ `Proven{L3}`; otherwise (some
+/// `Runtime`, none `Violated`) ⇒ `Runtime`. `hi < lo` (an empty range) is
+/// vacuously true.
+fn discharge_forall(var: &Ident, lo: i64, hi: i64, body: &Predicate) -> DischargeResult {
+    if hi < lo {
+        return DischargeResult::Proven { layer: Layer::L3 };
+    }
+    if hi - lo + 1 > MAX_BOUNDED_EXPANSION {
+        return DischargeResult::Runtime;
+    }
+
+    let mut any_runtime = false;
+    for k in lo..=hi {
+        match discharge_predicate(&substitute(body, var, k)) {
+            DischargeResult::Violated { counterexample } => {
+                return DischargeResult::Violated {
+                    counterexample: format!(
+                        "forall {var} in [{lo}..{hi}]: fails at {var} = {k}: {counterexample}"
+                    ),
+                };
+            }
+            DischargeResult::Runtime => any_runtime = true,
+            DischargeResult::Proven { .. } => {}
+        }
+    }
+
+    if any_runtime {
+        DischargeResult::Runtime
+    } else {
+        DischargeResult::Proven { layer: Layer::L3 }
+    }
+}
+
+/// `exists x in [lo..hi]. body`: dual of `forall` — any instance `Proven`
+/// ⇒ `Proven{L3}` (short-circuit); all instances `Violated` (no witness
+/// found) ⇒ `Violated`; otherwise ⇒ `Runtime`. `hi < lo` (an empty range)
+/// has no possible witness, so it's `Violated`.
+fn discharge_exists(var: &Ident, lo: i64, hi: i64, body: &Predicate) -> DischargeResult {
+    if hi < lo {
+        return DischargeResult::Violated {
+            counterexample: format!("the range [{lo}..{hi}] for `{var}` is empty; no witness"),
+        };
+    }
+    if hi - lo + 1 > MAX_BOUNDED_EXPANSION {
+        return DischargeResult::Runtime;
+    }
+
+    let mut any_runtime = false;
+    for k in lo..=hi {
+        match discharge_predicate(&substitute(body, var, k)) {
+            DischargeResult::Proven { .. } => {
+                return DischargeResult::Proven { layer: Layer::L3 };
+            }
+            DischargeResult::Runtime => any_runtime = true,
+            DischargeResult::Violated { .. } => {}
+        }
+    }
+
+    if any_runtime {
+        DischargeResult::Runtime
+    } else {
+        DischargeResult::Violated {
+            counterexample: format!(
+                "no value of `{var}` in [{lo}..{hi}] satisfies the existential"
+            ),
+        }
+    }
+}
+
+/// Substitutes every occurrence of `var` with the integer literal `value`
+/// in a cloned copy of `pred`. A nested quantifier that reuses `var` as
+/// its own bound variable shadows the outer one — its body is left
+/// untouched, matching ordinary lexical scoping.
+fn substitute(pred: &Predicate, var: &Ident, value: i64) -> Predicate {
+    match pred {
+        Predicate::Expr(expr) => {
+            let mut cloned = expr.clone();
+            SubstituteVar { var, value }.visit_expr_mut(&mut cloned);
+            Predicate::Expr(cloned)
+        }
+        Predicate::Forall {
+            var: bound,
+            lo,
+            hi,
+            body,
+        } => {
+            if bound == var {
+                pred.clone()
+            } else {
+                Predicate::Forall {
+                    var: bound.clone(),
+                    lo: *lo,
+                    hi: *hi,
+                    body: Box::new(substitute(body, var, value)),
+                }
+            }
+        }
+        Predicate::Exists {
+            var: bound,
+            lo,
+            hi,
+            body,
+        } => {
+            if bound == var {
+                pred.clone()
+            } else {
+                Predicate::Exists {
+                    var: bound.clone(),
+                    lo: *lo,
+                    hi: *hi,
+                    body: Box::new(substitute(body, var, value)),
+                }
+            }
+        }
+    }
+}
+
+struct SubstituteVar<'a> {
+    var: &'a Ident,
+    value: i64,
+}
+
+impl VisitMut for SubstituteVar<'_> {
+    fn visit_expr_mut(&mut self, expr: &mut Expr) {
+        let is_target = matches!(
+            expr,
+            Expr::Path(path) if path.qself.is_none()
+                && path.path.get_ident().is_some_and(|ident| ident == self.var)
+        );
+        if is_target {
+            *expr = int_literal_expr(self.value);
+            return;
+        }
+        visit_mut::visit_expr_mut(self, expr);
+    }
+}
+
+fn int_literal_expr(value: i64) -> Expr {
+    if value < 0 {
+        Expr::Unary(ExprUnary {
+            attrs: vec![],
+            op: UnOp::Neg(Default::default()),
+            expr: Box::new(int_literal_expr(-value)),
+        })
+    } else {
+        Expr::Lit(ExprLit {
+            attrs: vec![],
+            lit: Lit::Int(syn::LitInt::new(
+                &value.to_string(),
+                proc_macro2::Span::call_site(),
+            )),
+        })
     }
 }
 
@@ -90,8 +282,8 @@ enum Clause {
     Unknown,
 }
 
-/// Discharges a single predicate expression.
-pub fn discharge_predicate(expr: &Expr) -> DischargeResult {
+/// Discharges a plain `L1`/`L2` expression (no quantifiers).
+fn discharge_expr(expr: &Expr) -> DischargeResult {
     let mut clauses = Vec::new();
     flatten_and(expr, &mut clauses);
 
@@ -268,8 +460,8 @@ mod tests {
     use super::*;
 
     fn discharge(src: &str) -> DischargeResult {
-        let expr: Expr = syn::parse_str(src).unwrap();
-        discharge_predicate(&expr)
+        let pred: Predicate = syn::parse_str(src).unwrap();
+        discharge_predicate(&pred)
     }
 
     #[test]
@@ -363,5 +555,114 @@ mod tests {
             discharge("false && has_valid_shape(x)"),
             DischargeResult::Violated { .. }
         ));
+    }
+
+    // Quantifier tests below mirror `mvl-lang/mvl`'s own real test
+    // fixtures verbatim (`tests/solver/layer3/11_bounded_forall_
+    // conjunction.mvl`, `13_bounded_quantifier_violation.mvl`,
+    // `14_bounded_expansion_cap.mvl`), confirmed against the real
+    // implementation rather than assumed.
+
+    #[test]
+    fn bounded_forall_conjunction_proves_at_l3() {
+        // Mirrors 11_bounded_forall_conjunction.mvl: every instance
+        // reduces to a closed comparison L1 discharges.
+        assert_eq!(
+            discharge("forall i in [0..9] . i < 10"),
+            DischargeResult::Proven { layer: Layer::L3 }
+        );
+    }
+
+    #[test]
+    fn bounded_forall_violation_short_circuits_with_a_counterexample() {
+        // Mirrors 13_bounded_quantifier_violation.mvl: fails at i = 5.
+        let result = discharge("forall i in [0..9] . i < 5");
+        match result {
+            DischargeResult::Violated { counterexample } => {
+                assert!(counterexample.contains("i = 5"), "{counterexample}");
+            }
+            other => panic!("expected Violated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bounded_forall_over_cap_falls_to_runtime_not_l5() {
+        // Mirrors 14_bounded_expansion_cap.mvl: width 2001 > 1000, so this
+        // must not be expanded at all -- straight to Runtime.
+        assert_eq!(
+            discharge("forall i in [0..2000] . i >= 0"),
+            DischargeResult::Runtime
+        );
+    }
+
+    #[test]
+    fn forall_over_an_opaque_call_falls_through_to_runtime() {
+        // The require_dense_fleet shape: L3 expansion is not the same as
+        // proof -- an unrecognized call inside the body still yields
+        // Runtime per-instance, so the aggregate is Runtime, not Proven.
+        assert_eq!(
+            discharge("forall i in [1..50] . sections_get(i) != 0"),
+            DischargeResult::Runtime
+        );
+    }
+
+    #[test]
+    fn forall_over_empty_range_is_vacuously_proven() {
+        assert_eq!(
+            discharge("forall i in [5..3] . i > 100"),
+            DischargeResult::Proven { layer: Layer::L3 }
+        );
+    }
+
+    #[test]
+    fn exists_with_a_satisfying_witness_proves_at_l3() {
+        assert_eq!(
+            discharge("exists i in [0..9] . i == 5"),
+            DischargeResult::Proven { layer: Layer::L3 }
+        );
+    }
+
+    #[test]
+    fn exists_with_no_witness_is_violated() {
+        assert!(matches!(
+            discharge("exists i in [0..9] . i == 50"),
+            DischargeResult::Violated { .. }
+        ));
+    }
+
+    #[test]
+    fn exists_over_empty_range_is_violated() {
+        assert!(matches!(
+            discharge("exists i in [5..3] . true"),
+            DischargeResult::Violated { .. }
+        ));
+    }
+
+    #[test]
+    fn nested_quantifiers_discharge_correctly() {
+        // forall i in [0..2]: exists j in [0..2], i == j -- always true
+        // since j can always equal i.
+        assert_eq!(
+            discharge("forall i in [0..2] . exists j in [0..2] . i == j"),
+            DischargeResult::Proven { layer: Layer::L3 }
+        );
+    }
+
+    #[test]
+    fn shadowed_bound_variable_is_not_substituted_by_the_outer_quantifier() {
+        // The inner `forall i` rebinds `i`; substituting the outer `i`
+        // must not reach inside it.
+        assert_eq!(
+            discharge("forall i in [0..2] . forall i in [10..12] . i >= 10"),
+            DischargeResult::Proven { layer: Layer::L3 }
+        );
+    }
+
+    #[test]
+    fn negative_bounds_discharge_correctly() {
+        assert_eq!(
+            discharge("forall i in [-5..5] . i >= -5 && i <= 5"),
+            DischargeResult::Proven { layer: Layer::L3 }
+        );
     }
 }

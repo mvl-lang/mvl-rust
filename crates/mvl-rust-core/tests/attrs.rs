@@ -1,4 +1,4 @@
-use mvl_rust_core::attrs::MvlAttr;
+use mvl_rust_core::attrs::{MvlAttr, Predicate};
 use syn::Attribute;
 
 fn parse_fn_attrs(src: &str) -> Vec<Attribute> {
@@ -78,7 +78,10 @@ fn parses_requires_attr() {
     match MvlAttr::try_from_attribute(&attrs[0]) {
         Some(Ok(MvlAttr::Requires(r))) => {
             let expected: syn::Expr = syn::parse_quote!(x > 0);
-            assert_eq!(r.predicate, expected);
+            match r.predicate {
+                Predicate::Expr(e) => assert_eq!(e, expected),
+                other => panic!("expected Predicate::Expr, got {other:?}"),
+            }
         }
         other => panic!("expected Ok(Requires(_)), got {other:?}"),
     }
@@ -90,9 +93,25 @@ fn parses_ensures_attr() {
     match MvlAttr::try_from_attribute(&attrs[0]) {
         Some(Ok(MvlAttr::Ensures(e))) => {
             let expected: syn::Expr = syn::parse_quote!(result > 0);
-            assert_eq!(e.predicate, expected);
+            match e.predicate {
+                Predicate::Expr(expr) => assert_eq!(expr, expected),
+                other => panic!("expected Predicate::Expr, got {other:?}"),
+            }
         }
         other => panic!("expected Ok(Ensures(_)), got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_requires_attr_with_a_bounded_quantifier() {
+    let attrs = parse_fn_attrs(
+        "#[requires(forall i in [1..50] . sections.get(i) != None)] fn f(sections: i32) {}",
+    );
+    match MvlAttr::try_from_attribute(&attrs[0]) {
+        Some(Ok(MvlAttr::Requires(r))) => {
+            assert!(matches!(r.predicate, Predicate::Forall { .. }));
+        }
+        other => panic!("expected Ok(Requires(_)), got {other:?}"),
     }
 }
 

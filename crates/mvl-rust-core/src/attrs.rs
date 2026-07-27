@@ -12,6 +12,9 @@ use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{Attribute, Expr, Ident, LitStr, Token};
 
+mod predicate;
+pub use predicate::Predicate;
+
 /// `#[mvl::refine(pred)]` — a whole-function precondition.
 #[derive(Debug, Clone)]
 pub struct RefineAttr {
@@ -66,10 +69,12 @@ impl Parse for EffectAttr {
 }
 
 /// `#[mvl::requires(pred)]` — a whole-function precondition, referencing
-/// parameters by their real names.
+/// parameters by their real names. `pred` is a [`Predicate`]: a plain
+/// Rust boolean/comparison expression, or a bounded quantifier
+/// (`forall`/`exists i in [lo..hi]. pred`).
 #[derive(Debug, Clone)]
 pub struct RequiresAttr {
-    pub predicate: Expr,
+    pub predicate: Predicate,
 }
 
 impl Parse for RequiresAttr {
@@ -81,10 +86,11 @@ impl Parse for RequiresAttr {
 }
 
 /// `#[mvl::ensures(pred)]` — a whole-function postcondition; `pred`
-/// conventionally references the fixed identifier `result`.
+/// conventionally references the fixed identifier `result`. Same
+/// [`Predicate`] grammar as [`RequiresAttr`].
 #[derive(Debug, Clone)]
 pub struct EnsuresAttr {
-    pub predicate: Expr,
+    pub predicate: Predicate,
 }
 
 impl Parse for EnsuresAttr {
