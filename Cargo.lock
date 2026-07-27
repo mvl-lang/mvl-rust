@@ -24,6 +24,7 @@ version = "0.1.2"
 dependencies = [
  "mvl-rust-core",
  "rust-limit",
+ "rust-refine",
  "rust-total",
 ]
 
@@ -160,6 +161,11 @@ name = "rust-refine"
 version = "0.1.2"
 dependencies = [
  "mvl-rust-core",
+ "proc-macro2",
+ "quote",
+ "serde_json",
+ "syn 2.0.119",
+ "thiserror",
 ]
 
 [[package]]

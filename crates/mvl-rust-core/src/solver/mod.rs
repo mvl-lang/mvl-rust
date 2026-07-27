@@ -15,10 +15,12 @@
 //! accommodations it doesn't need. There is deliberately no shell-out or
 //! linked backend here, not even as a documented fallback option.
 //!
-//! [`SolverBackend`] is the abstraction point tool crates depend on. A
-//! concrete native `L1`+`L2` backend (v0.1 scope per ADR-0001 — `L3`–`L5`
-//! deferred) is tracked as its own follow-up implementation ticket; this
-//! module owns the trait and data model only.
+//! [`SolverBackend`] is the abstraction point tool crates depend on.
+//! [`native::NativeBackend`] is the concrete `L1`+`L2` implementation
+//! (v0.1 scope per ADR-0001 — `L3`–`L5` deferred, falling through to
+//! `DischargeResult::Runtime`) that `rust-refine` (#8) uses.
+
+pub mod native;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

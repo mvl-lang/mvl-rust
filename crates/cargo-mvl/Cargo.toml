@@ -15,3 +15,4 @@ path = "src/main.rs"
 mvl-rust-core = { path = "../mvl-rust-core", version = "0.1.2" }
 rust-limit = { path = "../rust-limit", version = "0.1.2" }
 rust-total = { path = "../rust-total", version = "0.1.2" }
+rust-refine = { path = "../rust-refine", version = "0.1.2" }

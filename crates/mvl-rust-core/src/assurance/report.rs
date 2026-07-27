@@ -3,11 +3,13 @@
 //! tool (`rust-limit`, `rust-total`, and eventually `rust-effect`/
 //! `rust-ifc`) needs the identical `Diagnostic` → `DiagnosticRecord` →
 //! `CheckSection` → `AssuranceReport` pipeline, not just one of them.
-//! `rust-refine`'s `prove` section (obligations, not diagnostics) is a
-//! different shape and isn't covered here.
+//!
+//! `rust-refine`'s `prove` section is a different shape (obligations, not
+//! diagnostics) — [`build_prove_report`] covers that one.
 
-use super::schema::{AssuranceReport, CheckSection, DiagnosticRecord};
+use super::schema::{AssuranceReport, CheckSection, DiagnosticRecord, ProveSection};
 use crate::diagnostics::{Diagnostic, Level};
+use crate::solver::{DischargeResult, Obligation};
 
 fn level_str(level: Level) -> &'static str {
     match level {
@@ -55,6 +57,27 @@ pub fn build_check_report(
     report
 }
 
+/// Builds a full assurance report for `rust-refine`'s `prove` section:
+/// every obligation it extracted, paired with the [`DischargeResult`] the
+/// native `L1`+`L2` backend ([`crate::solver::native::NativeBackend`])
+/// returned for it.
+pub fn build_prove_report(
+    tool_name: impl Into<String>,
+    timestamp: impl Into<String>,
+    obligations: &[(Obligation, DischargeResult)],
+) -> AssuranceReport {
+    use super::schema::ProvenObligationRecord;
+
+    let mut report = AssuranceReport::new(tool_name, timestamp);
+    report.prove = Some(ProveSection {
+        obligations: obligations
+            .iter()
+            .map(|(obligation, result)| ProvenObligationRecord::new(obligation, result))
+            .collect(),
+    });
+    report
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,6 +120,31 @@ mod tests {
         assert_eq!(check.diagnostics[0].level, "warning");
         assert!(check.obligations.is_empty());
         assert!(report.prove.is_none());
+        assert!(report.test.is_none());
+    }
+
+    #[test]
+    fn build_prove_report_populates_prove_section_only() {
+        let obligation = Obligation {
+            id: "f::requires".to_string(),
+            predicate: "x >= 0".to_string(),
+            provenance: "src/lib.rs:1:1".to_string(),
+        };
+        let result = DischargeResult::Proven {
+            layer: crate::solver::Layer::L2,
+        };
+
+        let report = build_prove_report(
+            "rust-refine",
+            "2026-07-27T00:00:00Z",
+            &[(obligation, result)],
+        );
+
+        assert_eq!(report.target.crate_name, "rust-refine");
+        let prove = report.prove.expect("prove section should be populated");
+        assert_eq!(prove.obligations.len(), 1);
+        assert_eq!(prove.obligations[0].id, "f::requires");
+        assert!(report.check.is_none());
         assert!(report.test.is_none());
     }
 }

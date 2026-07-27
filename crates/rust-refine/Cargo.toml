@@ -5,7 +5,16 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "#[refine(pred)] attribute for mvl-rust: refinement types discharged via L1-L5 dispatch."
+description = "#[mvl::requires]/#[mvl::ensures] refinement obligations for mvl-rust, discharged via the native L1/L2 solver backend."
+
+[[bin]]
+name = "cargo-mvl-refine"
+path = "src/main.rs"
 
 [dependencies]
 mvl-rust-core = { path = "../mvl-rust-core", version = "0.1.2" }
+syn = { version = "2", features = ["full", "extra-traits", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
+thiserror = "2"
+serde_json = "1"
