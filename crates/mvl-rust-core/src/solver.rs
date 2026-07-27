@@ -20,14 +20,17 @@
 //! deferred) is tracked as its own follow-up implementation ticket; this
 //! module owns the trait and data model only.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// The layer that discharged an obligation: trivial syntactic check,
 /// interval arithmetic, bounded path enumeration, Cooper's quantifier
 /// elimination, full SMT, or a runtime assertion when no static layer
 /// could close it. Serializes to the string values used by the
-/// assurance-JSON schema (spec Requirement 13).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// assurance-JSON schema (spec Requirement 13) -- `JsonSchema` derived
+/// here since [`crate::assurance::schema::ProvenObligationRecord`]
+/// embeds this type directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum Layer {
     #[serde(rename = "L1")]
     L1,
