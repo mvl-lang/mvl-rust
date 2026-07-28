@@ -282,6 +282,18 @@ struct CallSiteScan<'a> {
     /// A spurious return-site violation is `Level::Error` and fails the
     /// build, so it is the louder mistake of the two.
     in_tail: bool,
+    /// Whether an explicit `return` at this point returns from *this*
+    /// function. Cleared for closure and `async` bodies, which own their own
+    /// return target.
+    ///
+    /// Necessarily separate from [`Self::in_tail`]: the two answer different
+    /// questions and disagree in both directions. A `return` inside a `while`
+    /// body is not in tail position but does return from this function; a
+    /// closure's trailing expression is in tail position *of the closure* but
+    /// returns from neither. Reusing `in_tail` for this is what let a
+    /// closure's `return -1` be reported as a violating return of its
+    /// enclosing function.
+    returns_here: bool,
     found: &'a mut Vec<FoundObligation>,
 }
 
@@ -481,12 +493,17 @@ impl<'ast> Visit<'ast> for CallSiteScan<'_> {
         self.locals.truncate(locals_depth);
     }
 
-    /// An explicit `return e` is a return point wherever it appears, tail
-    /// position or not. Γ is already correct here -- branch narrowing,
-    /// propagated postconditions and #40's invalidation have all been applied
-    /// on the way down.
+    /// An explicit `return e` is a return point wherever it appears in *this*
+    /// function's body, tail position or not. Γ is already correct here --
+    /// branch narrowing, propagated postconditions and #40's invalidation have
+    /// all been applied on the way down.
+    ///
+    /// A `return` inside a closure or `async` block returns from that, not
+    /// from the enclosing function, so `returns_here` gates the obligation.
     fn visit_expr_return(&mut self, node: &'ast syn::ExprReturn) {
-        self.obligations_for_return(node.expr.as_deref(), node.span());
+        if self.returns_here {
+            self.obligations_for_return(node.expr.as_deref(), node.span());
+        }
         // The returned expression may itself contain calls, which still owe
         // their own call-site obligations. It is not in tail position for
         // *this* purpose -- the obligation above already covers it.
@@ -496,17 +513,23 @@ impl<'ast> Visit<'ast> for CallSiteScan<'_> {
     }
 
     /// A closure's trailing expression is the *closure's* return value, not
-    /// the enclosing function's. Without clearing the flag here, a closure
-    /// returning `-1` inside a function with `ensures(result > 0)` would be
-    /// reported as a violating return point of that function.
+    /// the enclosing function's, and so is an explicit `return` inside it.
+    /// Both flags have to be cleared: `in_tail` for the trailing expression,
+    /// `returns_here` for the `return`. Clearing only the first reported a
+    /// closure's `return -1` as a violating return point of the enclosing
+    /// function -- a build-failing error on correct code.
     fn visit_expr_closure(&mut self, node: &'ast syn::ExprClosure) {
+        let saved = std::mem::replace(&mut self.returns_here, false);
         self.visit_with_tail(&node.body, false);
+        self.returns_here = saved;
     }
 
-    /// An `async` block evaluates to a future, so its tail is not the
-    /// function's return value either. Same for `try` blocks.
+    /// An `async` block evaluates to a future, so neither its tail nor a
+    /// `return` inside it is the function's return value.
     fn visit_expr_async(&mut self, node: &'ast syn::ExprAsync) {
+        let saved = std::mem::replace(&mut self.returns_here, false);
         self.visit_block_with_tail(&node.block, false);
+        self.returns_here = saved;
     }
 
     /// A plain or `unsafe` block in tail position does pass its value
@@ -634,6 +657,9 @@ impl<'ast> Visit<'ast> for CallSiteScan<'_> {
             locals: Vec::new(),
             ensures: &facts.ensures,
             in_tail: true,
+            // A nested `fn` is its own return target, even when the `fn` sits
+            // inside a closure body where the enclosing scan had it cleared.
+            returns_here: true,
             found: &mut *self.found,
         };
         nested.visit_block(&node.block);
@@ -857,8 +883,10 @@ pub fn find_obligations(source: &str) -> Result<Vec<FoundObligation>, CheckError
                 locals: Vec::new(),
                 ensures,
                 // The function body's own trailing expression is its return
-                // value, so the walk starts in tail position.
+                // value, so the walk starts in tail position -- and a `return`
+                // in it returns from this function.
                 in_tail: true,
+                returns_here: true,
                 found: &mut found,
             };
             scan.visit_block(&item_fn.block);

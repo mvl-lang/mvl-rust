@@ -707,6 +707,64 @@ fn a_closure_body_is_not_the_enclosing_functions_return_point() {
 }
 
 #[test]
+fn an_explicit_return_inside_a_closure_is_not_the_enclosing_functions_return() {
+    // The case the tail-position test above misses. Clearing `in_tail` alone
+    // is not enough: `visit_expr_return` fires wherever a `return` appears,
+    // so it needs its own `returns_here` gate. Without it this reported the
+    // closure's `-1` as a violating return of `f` -- a `Level::Error` that
+    // fails the build on correct code, which is the direction #42 explicitly
+    // set out not to fail in.
+    let sites = return_sites(
+        "#[mvl::ensures(result > 0)]\n\
+         fn f(a: i64) -> i64 { let g = |x: i64| { return -1; }; 7 }",
+    );
+    assert_eq!(sites.len(), 1, "only `7` returns from `f`, got {sites:?}");
+    assert!(matches!(sites[0].1, DischargeResult::Proven { .. }));
+}
+
+#[test]
+fn an_explicit_return_inside_an_async_block_is_not_the_functions_return() {
+    // An `async` block evaluates to a future, so a `return` inside it returns
+    // from the future's body, not from `f`.
+    let sites = return_sites(
+        "#[mvl::ensures(result > 0)]\n\
+         fn f(a: i64) -> i64 { let fut = async { return -1; }; 7 }",
+    );
+    assert_eq!(sites.len(), 1, "only `7` returns from `f`, got {sites:?}");
+    assert!(matches!(sites[0].1, DischargeResult::Proven { .. }));
+}
+
+#[test]
+fn a_nested_fn_inside_a_closure_still_owns_its_own_returns() {
+    // `returns_here` is cleared for the closure body, but a nested `fn` in
+    // there is its own return target and must re-establish it -- otherwise
+    // the gate that fixes the case above would silently swallow real
+    // violations.
+    let found = find_obligations(
+        "fn outer() {\n\
+             let g = || {\n\
+                 #[mvl::ensures(result > 0)]\n\
+                 fn inner(b: i64) -> i64 { return -1; }\n\
+                 inner(1)\n\
+             };\n\
+         }",
+    )
+    .expect("fixture parses");
+    let sites: Vec<_> = found
+        .iter()
+        .filter(|f| f.kind == ObligationKind::ReturnSite)
+        .map(|f| (f.fn_name.clone(), f.discharge()))
+        .collect();
+    assert_eq!(sites.len(), 1, "`inner`'s own return, got {sites:?}");
+    assert_eq!(sites[0].0, "inner");
+    assert!(
+        matches!(sites[0].1, DischargeResult::Violated { .. }),
+        "`(-1) > 0` is false and must still be caught, got {:?}",
+        sites[0].1
+    );
+}
+
+#[test]
 fn a_while_body_is_not_a_return_point_but_a_return_inside_it_is() {
     // A `while` evaluates to `()`, so nothing in its body becomes the return
     // value except through an explicit `return` -- which still gets the
