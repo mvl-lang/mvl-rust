@@ -45,6 +45,7 @@ same backend.**
 |---|---|---|
 | Declaration (`#[mvl::requires]` on `f`) | is the predicate coherent? | `discharge_predicate` |
 | Call site (`g(args)` in `f`'s body) | does `Γ_f` entail `g`'s precondition with `args` substituted? | `discharge_entailment` |
+| Return site (`f` returns `e`) — added by #42 | does `Γ_f` entail `f`'s postcondition with `result := e`? | `discharge_entailment` |
 
 A declaration site has no arguments to reason about, so coherence is the only
 question available there — it is not a weaker approximation of entailment, it is
@@ -168,9 +169,18 @@ an unnoticed hole.
   not which layers exist or where they live. The no-dependency-on-`mvl-lang/mvl`
   constraint is likewise untouched: this reads its source as a design reference,
   which is what an independent reimplementation is supposed to do.
-- Not attempted here, and still open: return-site obligations (does the body
-  establish its own `ensures`?), struct construction, coercions, `match`-arm
-  narrowing, and cross-file resolution.
+- Return-site obligations landed separately in #42, on this same Γ: a body's
+  return points must now establish its own `ensures`, which is what makes the
+  postcondition propagation above sound rather than merely conventional. Return
+  points are recognised structurally (trailing expression, explicit `return`,
+  and through `if`/`else`, `match` arms, and plain or `unsafe` blocks in tail
+  position); anything else yields no obligation rather than a guessed one, since
+  a false return-site violation is an error that fails the build. `?` is
+  explicitly not a return point — its early `Err(…)` is not `result`-shaped
+  under `syn`'s type-free view.
+- Not attempted here, and still open: struct construction, coercions,
+  `match`-arm narrowing (a `match` arm *is* a return point since #42, but its
+  pattern still contributes nothing to Γ), and cross-file resolution.
 
 ## Links
 

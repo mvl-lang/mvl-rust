@@ -1,8 +1,8 @@
 //! Finds every refinement obligation in a source file and discharges it
 //! through the native backend (`mvl_rust_core::solver::native`, ADR-0001).
 //!
-//! Obligations arise at two kinds of program point (#38), asking different
-//! questions of the solver:
+//! Obligations arise at three kinds of program point (#38, #42), asking
+//! different questions of the solver:
 //!
 //! - **Declaration sites** — a `#[mvl::requires(p)]`/`#[mvl::ensures(p)]`
 //!   on a function. Nothing is known about arguments here, so the question
@@ -12,6 +12,11 @@
 //!   `#[mvl::requires(p)]`. The question is the one real MVL's own solver
 //!   asks: does `f`'s hypothesis context Γ entail `p[params := args]`
 //!   ([`discharge_entailment`])?
+//! - **Return sites** — each point `f`'s body produces its value, where `f`
+//!   declares `#[mvl::ensures(p)]`. Does Γ entail `p[result := e]` for the
+//!   returned expression `e`? This is what makes the postcondition
+//!   propagation below sound: a fact assumed at a call site has to be
+//!   established somewhere, and this is where.
 //!
 //! Γ accumulates three kinds of fact, mirroring real MVL's own Γ:
 //!
@@ -21,7 +26,7 @@
 //! 3. Postcondition propagation — after `let y = g(x);`, `g`'s `ensures`
 //!    holds with `result` bound to `y`. Assumed rather than re-derived,
 //!    as in any modular verifier (and as in real MVL): `g`'s own
-//!    obligation to establish it is a separate obligation.
+//!    obligation to establish it is the return-site obligation above.
 //!
 //! Scope, deliberately the same boundary `rust-effect` (#9) draws for the
 //! same reason — `syn`-based scanning has no type information and no
@@ -37,6 +42,19 @@
 //! - A quantified `requires` (`forall i in [lo..hi]. …`) is a fine *goal*
 //!   but isn't added to Γ as a hypothesis — Γ clauses are `&&`-flattened
 //!   expressions, and a quantifier has no such form.
+//! - **Return points are recognised structurally**, and only where a value
+//!   provably flows outwards: a trailing expression, an explicit `return`,
+//!   and through `if`/`else`, `match` arms, and plain or `unsafe` blocks in
+//!   tail position. A construct not on that list yields no obligation rather
+//!   than a guessed one — the pre-#42 silence is the safe direction, since a
+//!   false return-site violation is an error that fails the build.
+//! - **`?` is not a return point** here. It is an early return of `Err(…)`
+//!   whose value isn't `result`-shaped under `syn`'s type-free view, so
+//!   nothing is claimed about it either way.
+//! - A postcondition over a term containing a **call** (`ensures(result ==
+//!   g(a))`) falls to a runtime check: L1 reflexivity is gated to call-free
+//!   terms because it is unsound for an impure term (#44). #45 tracks the
+//!   purity signal that would lift this.
 //!
 //! Predicates are plain comparison/boolean expressions, or a bounded
 //! quantifier (`forall`/`exists i in [lo..hi]. pred`) — see
@@ -76,6 +94,11 @@ pub enum ObligationKind {
     /// A call to `callee`, whose `requires` must be entailed by the
     /// caller's hypothesis context.
     CallSite { callee: String },
+    /// A return point in the function's own body, whose returned expression
+    /// must establish the function's `ensures` (#42). Distinct from
+    /// [`ObligationKind::Ensures`], which only asks whether the
+    /// postcondition is internally coherent.
+    ReturnSite,
 }
 
 impl ObligationKind {
@@ -84,6 +107,7 @@ impl ObligationKind {
             ObligationKind::Requires => "requires",
             ObligationKind::Ensures => "ensures",
             ObligationKind::CallSite { .. } => "call-site requires",
+            ObligationKind::ReturnSite => "return-site ensures",
         }
     }
 }
@@ -111,6 +135,7 @@ impl FoundObligation {
             ObligationKind::CallSite { callee } => {
                 format!("{}::calls::{callee}::requires", self.fn_name)
             }
+            ObligationKind::ReturnSite => format!("{}::returns::ensures", self.fn_name),
             kind => format!("{}::{}", self.fn_name, kind.as_str()),
         }
     }
@@ -130,12 +155,19 @@ impl FoundObligation {
             .join(" && ")
     }
 
+    /// Matched exhaustively on purpose: a `_` arm here would route a new
+    /// obligation kind to `discharge_predicate`, i.e. ask whether the
+    /// predicate is *coherent* rather than whether it *holds*. That is
+    /// exactly the bug #42 fixed, so the compiler is made to force the
+    /// choice for whatever kind comes next.
     pub fn discharge(&self) -> DischargeResult {
         match self.kind {
-            ObligationKind::CallSite { .. } => {
+            ObligationKind::CallSite { .. } | ObligationKind::ReturnSite => {
                 discharge_entailment(&self.hypotheses, &self.predicate)
             }
-            _ => discharge_predicate(&self.predicate),
+            ObligationKind::Requires | ObligationKind::Ensures => {
+                discharge_predicate(&self.predicate)
+            }
         }
     }
 }
@@ -236,6 +268,20 @@ struct CallSiteScan<'a> {
     /// local (closure, function pointer), not the same-file free function
     /// that happens to share its name.
     locals: Vec<String>,
+    /// This function's own `ensures` clauses -- the goals every return point
+    /// has to establish (#42). Empty for a function without a postcondition,
+    /// which makes the whole return-point walk a no-op.
+    ensures: &'a [Predicate],
+    /// Whether the node being visited is in tail position of *this*
+    /// function, i.e. whether its value becomes the return value.
+    ///
+    /// Defaults to cleared and is only forwarded by nodes known to pass
+    /// their value outwards. That asymmetry is deliberate: a construct this
+    /// scan doesn't understand then yields *no* return obligation, which is
+    /// the pre-#42 behaviour (a missing check), rather than a *false* one.
+    /// A spurious return-site violation is `Level::Error` and fails the
+    /// build, so it is the louder mistake of the two.
+    in_tail: bool,
     found: &'a mut Vec<FoundObligation>,
 }
 
@@ -259,6 +305,69 @@ impl CallSiteScan<'_> {
     fn invalidate_all(&mut self, names: &[String]) {
         for name in names {
             self.invalidate(name);
+        }
+    }
+
+    /// Visits `expr` with the tail flag forced to `tail`, restoring it
+    /// afterwards. Every override that recurses by hand instead of going
+    /// through `visit::visit_expr_*` has to route through this, or the flag
+    /// leaks into a position whose value is not the function's return value.
+    fn visit_with_tail(&mut self, expr: &Expr, tail: bool) {
+        let saved = std::mem::replace(&mut self.in_tail, tail);
+        self.visit_expr(expr);
+        self.in_tail = saved;
+    }
+
+    /// Same, for a block (`if`/`while` bodies arrive as `Block`, not `Expr`).
+    fn visit_block_with_tail(&mut self, block: &Block, tail: bool) {
+        let saved = std::mem::replace(&mut self.in_tail, tail);
+        self.visit_block(block);
+        self.in_tail = saved;
+    }
+
+    /// Routes an expression sitting in tail position. Control flow forwards
+    /// the flag inwards and reports from whichever leaf actually produces the
+    /// value; anything else *is* that value and takes the obligation here.
+    ///
+    /// Without the split, `fn f() -> i64 { if c { 1 } else { 2 } }` would
+    /// report three times: once per branch, plus once for the whole `if` with
+    /// `result` bound to the `if` expression itself.
+    fn visit_tail_expr(&mut self, expr: &Expr) {
+        if forwards_tail(expr) {
+            self.visit_with_tail(expr, true);
+        } else {
+            self.obligations_for_return(Some(expr), expr.span());
+            self.visit_with_tail(expr, false);
+        }
+    }
+
+    /// One obligation per `ensures` clause, with `result` bound to the
+    /// expression actually being returned, discharged against Γ as it stands
+    /// at this point in the body (#42).
+    ///
+    /// `returned` is `None` for a bare `return;`, which yields nothing: there
+    /// is no value to substitute, and a function with a postcondition worth
+    /// checking returns something.
+    fn obligations_for_return(&mut self, returned: Option<&Expr>, span: Span) {
+        if self.ensures.is_empty() {
+            return;
+        }
+        let Some(returned) = returned else { return };
+        if is_diverging(returned) {
+            return; // Produces no `result` -- see `is_diverging`.
+        }
+
+        let bindings: HashMap<String, Expr> =
+            HashMap::from([("result".to_string(), returned.clone())]);
+
+        for ensures in self.ensures {
+            self.found.push(FoundObligation {
+                fn_name: self.caller.to_string(),
+                kind: ObligationKind::ReturnSite,
+                predicate: substitute_exprs(ensures, &bindings),
+                hypotheses: self.gamma.clone(),
+                span,
+            });
         }
     }
 
@@ -345,14 +454,88 @@ impl<'ast> Visit<'ast> for CallSiteScan<'_> {
 
     /// A block scopes Γ: facts learned by `let`s inside it don't outlive it,
     /// and neither do the bindings that shadow a free function's name.
+    ///
+    /// It also decides tail position: only the final statement can carry the
+    /// block's value outwards, and only when it is a trailing expression with
+    /// no semicolon (`Stmt::Expr(e, None)`). Everything earlier is visited
+    /// with the flag cleared.
     fn visit_block(&mut self, node: &'ast Block) {
         let depth = self.gamma.len();
         let locals_depth = self.locals.len();
-        for stmt in &node.stmts {
-            self.visit_stmt(stmt);
+        let block_is_tail = self.in_tail;
+        let last = node.stmts.len().saturating_sub(1);
+
+        for (i, stmt) in node.stmts.iter().enumerate() {
+            match stmt {
+                syn::Stmt::Expr(expr, None) if block_is_tail && i == last => {
+                    self.visit_tail_expr(expr)
+                }
+                _ => {
+                    let saved = std::mem::replace(&mut self.in_tail, false);
+                    self.visit_stmt(stmt);
+                    self.in_tail = saved;
+                }
+            }
         }
         self.gamma.truncate(depth);
         self.locals.truncate(locals_depth);
+    }
+
+    /// An explicit `return e` is a return point wherever it appears, tail
+    /// position or not. Γ is already correct here -- branch narrowing,
+    /// propagated postconditions and #40's invalidation have all been applied
+    /// on the way down.
+    fn visit_expr_return(&mut self, node: &'ast syn::ExprReturn) {
+        self.obligations_for_return(node.expr.as_deref(), node.span());
+        // The returned expression may itself contain calls, which still owe
+        // their own call-site obligations. It is not in tail position for
+        // *this* purpose -- the obligation above already covers it.
+        let saved = std::mem::replace(&mut self.in_tail, false);
+        visit::visit_expr_return(self, node);
+        self.in_tail = saved;
+    }
+
+    /// A closure's trailing expression is the *closure's* return value, not
+    /// the enclosing function's. Without clearing the flag here, a closure
+    /// returning `-1` inside a function with `ensures(result > 0)` would be
+    /// reported as a violating return point of that function.
+    fn visit_expr_closure(&mut self, node: &'ast syn::ExprClosure) {
+        self.visit_with_tail(&node.body, false);
+    }
+
+    /// An `async` block evaluates to a future, so its tail is not the
+    /// function's return value either. Same for `try` blocks.
+    fn visit_expr_async(&mut self, node: &'ast syn::ExprAsync) {
+        self.visit_block_with_tail(&node.block, false);
+    }
+
+    /// A plain or `unsafe` block in tail position does pass its value
+    /// outwards, so the flag is forwarded rather than cleared.
+    fn visit_expr_block(&mut self, node: &'ast syn::ExprBlock) {
+        self.visit_block(&node.block);
+    }
+
+    fn visit_expr_unsafe(&mut self, node: &'ast syn::ExprUnsafe) {
+        self.visit_block(&node.block);
+    }
+
+    /// Each arm of a `match` in tail position is a return point. Arm patterns
+    /// do not narrow Γ (see the module doc's scope note), so each arm is
+    /// discharged against the enclosing Γ -- imprecise, never unsound, since
+    /// a missing hypothesis can only fail to prove a goal.
+    fn visit_expr_match(&mut self, node: &'ast syn::ExprMatch) {
+        let arms_are_tail = self.in_tail;
+        self.visit_with_tail(&node.expr, false);
+        for arm in &node.arms {
+            if let Some((_, guard)) = &arm.guard {
+                self.visit_with_tail(guard, false);
+            }
+            if arms_are_tail {
+                self.visit_tail_expr(&arm.body);
+            } else {
+                self.visit_with_tail(&arm.body, false);
+            }
+        }
     }
 
     /// The initializer is evaluated before the binding takes effect, so it
@@ -400,28 +583,35 @@ impl<'ast> Visit<'ast> for CallSiteScan<'_> {
     /// negation in the `else` arm. An `else if` chain nests through the
     /// same path, so each arm accumulates the negations of every condition
     /// before it.
+    /// Both arms inherit tail position from the `if` itself, so a return
+    /// point inside one is discharged against that branch's narrowed Γ. The
+    /// condition never does -- its value is not returned.
     fn visit_expr_if(&mut self, node: &'ast ExprIf) {
-        self.visit_expr(&node.cond);
+        let arms_are_tail = self.in_tail;
+        self.visit_with_tail(&node.cond, false);
 
         let depth = self.gamma.len();
         self.gamma.push((*node.cond).clone());
-        self.visit_block(&node.then_branch);
+        self.visit_block_with_tail(&node.then_branch, arms_are_tail);
         self.gamma.truncate(depth);
 
         if let Some((_, else_branch)) = &node.else_branch {
             self.gamma.push(negate_condition(&node.cond));
-            self.visit_expr(else_branch);
+            self.visit_with_tail(else_branch, arms_are_tail);
             self.gamma.truncate(depth);
         }
     }
 
     /// A `while` body only runs when the condition holds — the same
-    /// narrowing as an `if`.
+    /// narrowing as an `if`. Its body is never in tail position: a `while`
+    /// evaluates to `()`, so nothing in it becomes the return value except
+    /// through an explicit `return`, which `visit_expr_return` catches on its
+    /// own and with this same narrowed Γ.
     fn visit_expr_while(&mut self, node: &'ast ExprWhile) {
-        self.visit_expr(&node.cond);
+        self.visit_with_tail(&node.cond, false);
         let depth = self.gamma.len();
         self.gamma.push((*node.cond).clone());
-        self.visit_block(&node.body);
+        self.visit_block_with_tail(&node.body, false);
         self.gamma.truncate(depth);
     }
 
@@ -434,14 +624,53 @@ impl<'ast> Visit<'ast> for CallSiteScan<'_> {
     /// only, the same boundary `rust-effect` draws.
     fn visit_item_fn(&mut self, node: &'ast ItemFn) {
         let caller = node.sig.ident.to_string();
+        // Its own contract, not the enclosing function's -- a nested `fn`'s
+        // return points establish *its* `ensures`.
+        let facts = FnFacts::of(node);
         let mut nested = CallSiteScan {
             caller: &caller,
             functions: self.functions,
-            gamma: FnFacts::of(node).hypotheses(),
+            gamma: facts.hypotheses(),
             locals: Vec::new(),
+            ensures: &facts.ensures,
+            in_tail: true,
             found: &mut *self.found,
         };
         nested.visit_block(&node.block);
+    }
+}
+
+/// Whether `expr` hands its value outwards to sub-expressions rather than
+/// being that value. These forward tail position and let the leaf that
+/// actually produces the value carry the obligation; everything else is a
+/// leaf for this purpose. `Return` is included because
+/// [`CallSiteScan::visit_expr_return`] owns that case.
+fn forwards_tail(expr: &Expr) -> bool {
+    matches!(
+        strip_groups(expr),
+        Expr::Block(_) | Expr::Unsafe(_) | Expr::If(_) | Expr::Match(_) | Expr::Return(_)
+    )
+}
+
+/// Macros that never produce a value, so a body ending in one has no return
+/// point to check -- `fn f() -> i64 { panic!() }` establishes its
+/// postcondition vacuously, the same conclusion the solver reaches for an
+/// unreachable program point (ADR-0002).
+///
+/// `rust-total`'s `PANICKING_MACROS` covers the first three for panic-freedom;
+/// `unreachable` is added here because divergence, not panicking, is what
+/// matters for this question.
+const DIVERGING_MACROS: &[&str] = &["panic", "todo", "unimplemented", "unreachable"];
+
+fn is_diverging(expr: &Expr) -> bool {
+    match strip_groups(expr) {
+        Expr::Macro(mac) => mac
+            .mac
+            .path
+            .segments
+            .last()
+            .is_some_and(|seg| DIVERGING_MACROS.contains(&seg.ident.to_string().as_str())),
+        _ => false,
     }
 }
 
@@ -618,15 +847,18 @@ pub fn find_obligations(source: &str) -> Result<Vec<FoundObligation>, CheckError
     for item in &file.items {
         if let Item::Fn(item_fn) = item {
             let caller = item_fn.sig.ident.to_string();
-            let gamma = functions
-                .get(&caller)
-                .map(FnFacts::hypotheses)
-                .unwrap_or_default();
+            let facts = functions.get(&caller);
+            let gamma = facts.map(FnFacts::hypotheses).unwrap_or_default();
+            let ensures: &[Predicate] = facts.map(|f| f.ensures.as_slice()).unwrap_or(&[]);
             let mut scan = CallSiteScan {
                 caller: &caller,
                 functions: &functions,
                 gamma,
                 locals: Vec::new(),
+                ensures,
+                // The function body's own trailing expression is its return
+                // value, so the walk starts in tail position.
+                in_tail: true,
                 found: &mut found,
             };
             scan.visit_block(&item_fn.block);
@@ -644,7 +876,55 @@ pub fn find_obligations(source: &str) -> Result<Vec<FoundObligation>, CheckError
 pub fn to_diagnostic(found: &FoundObligation, result: &DischargeResult) -> Diagnostic {
     match &found.kind {
         ObligationKind::CallSite { callee } => call_site_diagnostic(found, callee, result),
-        _ => declaration_diagnostic(found, result),
+        ObligationKind::ReturnSite => return_site_diagnostic(found, result),
+        ObligationKind::Requires | ObligationKind::Ensures => declaration_diagnostic(found, result),
+    }
+}
+
+/// A return site's diagnostic quotes the *substituted* postcondition, so the
+/// returned expression appears in place of `result` and the reader sees the
+/// claim that actually failed. Mirrors [`call_site_diagnostic`], including
+/// naming what was known at that point on a `Runtime` outcome.
+fn return_site_diagnostic(found: &FoundObligation, result: &DischargeResult) -> Diagnostic {
+    let name = &found.fn_name;
+    match result {
+        DischargeResult::Proven { layer } => Diagnostic::new(
+            Level::Note,
+            format!(
+                "`{name}` postcondition `{}` established at {} by this return",
+                found.predicate_text(),
+                layer_str(*layer)
+            ),
+            found.span,
+        )
+        .with_label("proven"),
+        DischargeResult::Runtime => {
+            let known = found.hypotheses_text();
+            let known = if known.is_empty() {
+                "nothing is known here".to_string()
+            } else {
+                format!("known here: {known}")
+            };
+            Diagnostic::new(
+                Level::Note,
+                format!(
+                    "`{name}` postcondition `{}` is not established by this return ({known}), \
+                     inserting a runtime check",
+                    found.predicate_text()
+                ),
+                found.span,
+            )
+            .with_label("runtime fallback")
+        }
+        DischargeResult::Violated { counterexample } => Diagnostic::new(
+            Level::Error,
+            format!(
+                "`{name}` postcondition `{}` cannot hold for this return value: {counterexample}",
+                found.predicate_text()
+            ),
+            found.span,
+        )
+        .with_label("postcondition violated"),
     }
 }
 
@@ -774,10 +1054,16 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(found.len(), 2);
+        // Three since #42: the two declaration-site coherence checks, plus
+        // the return-site obligation for the body's `b & 15`. Declaration
+        // sites come first -- `DeclarationFinder` runs over the whole file
+        // before any body is scanned.
+        assert_eq!(found.len(), 3);
         assert_eq!(found[0].kind, ObligationKind::Requires);
         assert_eq!(found[0].fn_name, "mask_low_nibble");
         assert_eq!(found[1].kind, ObligationKind::Ensures);
+        assert_eq!(found[2].kind, ObligationKind::ReturnSite);
+        assert_eq!(found[2].fn_name, "mask_low_nibble");
     }
 
     #[test]

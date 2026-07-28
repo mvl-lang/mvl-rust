@@ -521,3 +521,284 @@ fn a_local_binding_shadowing_a_free_fn_is_not_resolved_against_it() {
         "a shadowed name must not resolve to the free fn, got {sites:?}"
     );
 }
+
+// ── Return-site obligations (#42) ─────────────────────────────────────────
+//
+// `ensures` used to be checked only for internal coherence, never against the
+// body. Since #38 propagates a callee's postcondition into the caller's Γ,
+// an unverified `ensures` was not merely bad documentation -- it was a premise
+// the solver proved other things from. These pin the return points that now
+// have to establish it.
+//
+// The mechanism is the mirror of `propagate_postcondition`: bind `result` to
+// the returned expression instead of to a `let` binding, then discharge
+// against Γ as it stands at that point in the body.
+
+/// Every return-site obligation in `source`, as `(rendered goal, outcome)`.
+fn return_sites(source: &str) -> Vec<(String, DischargeResult)> {
+    find_obligations(source)
+        .expect("fixture parses")
+        .iter()
+        .filter(|found| found.kind == ObligationKind::ReturnSite)
+        .map(|found| (found.predicate_text(), found.discharge()))
+        .collect()
+}
+
+/// The single return-site outcome in `source` -- asserts there is exactly
+/// one, so a fixture that stops producing an obligation fails loudly.
+fn only_return_site(source: &str) -> DischargeResult {
+    let sites = return_sites(source);
+    assert_eq!(
+        sites.len(),
+        1,
+        "expected exactly one return-site obligation, got {sites:?}"
+    );
+    sites.into_iter().next().unwrap().1
+}
+
+#[test]
+fn a_body_contradicting_its_own_ensures_is_violated() {
+    // The motivating case from #42. Before return sites existed this whole
+    // file reported green: the `ensures` line said "discharged at L2",
+    // meaning `result > 0` is coherent, and nothing read the `-1`.
+    let result = only_return_site(
+        "#[mvl::ensures(result > 0)]\n\
+         fn always_positive(a: i64) -> i64 { -1 }",
+    );
+    assert!(
+        matches!(result, DischargeResult::Violated { .. }),
+        "a body returning -1 cannot establish `result > 0`, got {result:?}"
+    );
+}
+
+#[test]
+fn a_body_establishing_its_ensures_is_proven() {
+    assert_proven_at(
+        &only_return_site(
+            "#[mvl::ensures(result > 0)]\n\
+             fn five(a: i64) -> i64 { 5 }",
+        ),
+        Layer::L1,
+    );
+}
+
+#[test]
+fn a_functional_postcondition_closes_by_reflexivity() {
+    // The shape #43 existed to make provable, and the reason it blocked this
+    // issue: substitution produces `(a + b) == a + b`, grouped on one side,
+    // which only L1 structural reflexivity reaches. Every functional
+    // postcondition was `Runtime` before #44.
+    assert_proven_at(
+        &only_return_site(
+            "#[mvl::ensures(result == a + b)]\n\
+             fn add(a: i64, b: i64) -> i64 { a + b }",
+        ),
+        Layer::L1,
+    );
+}
+
+#[test]
+fn a_postcondition_over_a_call_stays_runtime_until_the_purity_signal_lands() {
+    // Known limitation, not a defect: #44 gated L1 reflexivity to call-free
+    // terms because reflexivity is unsound for an impure term. A body that
+    // returns a call therefore cannot be discharged by tree comparison, and
+    // return expressions are very often calls. #45 tracks the real fix.
+    let result = only_return_site(
+        "#[mvl::ensures(result == double(a))]\n\
+         fn twice(a: i64) -> i64 { double(a) }\n\
+         fn double(x: i64) -> i64 { x * 2 }",
+    );
+    assert_eq!(result, DischargeResult::Runtime);
+}
+
+#[test]
+fn an_explicit_return_is_a_return_point() {
+    let result = only_return_site(
+        "#[mvl::ensures(result > 0)]\n\
+         fn f(a: i64) -> i64 { return -7; }",
+    );
+    assert!(
+        matches!(result, DischargeResult::Violated { .. }),
+        "expected Violated, got {result:?}"
+    );
+}
+
+#[test]
+fn the_postcondition_is_discharged_against_the_callers_own_requires() {
+    // Γ at a return point starts from the function's own precondition, so a
+    // postcondition that follows from it proves without any literal in play.
+    assert_proven_at(
+        &only_return_site(
+            "#[mvl::requires(a > 100)]\n\
+             #[mvl::ensures(result > 50)]\n\
+             fn f(a: i64) -> i64 { a }",
+        ),
+        Layer::L2,
+    );
+}
+
+#[test]
+fn a_return_inside_a_narrowed_branch_uses_that_branchs_gamma() {
+    // `a` alone establishes nothing; `a` under the `then` branch of
+    // `if a > 10` does. Both arms are return points and both must close.
+    let sites = return_sites(
+        "#[mvl::ensures(result > 0)]\n\
+         fn f(a: i64) -> i64 { if a > 10 { a } else { 1 } }",
+    );
+    assert_eq!(sites.len(), 2, "both arms are return points, got {sites:?}");
+    for (goal, result) in &sites {
+        assert!(
+            matches!(result, DischargeResult::Proven { .. }),
+            "`{goal}` should be proven under its branch, got {result:?}"
+        );
+    }
+}
+
+#[test]
+fn each_tail_match_arm_is_its_own_return_point() {
+    // Arm patterns do not narrow Γ (module doc's scope note), so each arm is
+    // discharged against the enclosing Γ -- imprecise, never unsound. The
+    // `-3` arm is still caught, because a literal needs no hypotheses.
+    let sites = return_sites(
+        "#[mvl::ensures(result > 0)]\n\
+         fn f(a: i64) -> i64 { match a { 0 => -3, _ => 2 } }",
+    );
+    assert_eq!(sites.len(), 2, "one per arm, got {sites:?}");
+    assert!(sites
+        .iter()
+        .any(|(_, r)| matches!(r, DischargeResult::Violated { .. })));
+}
+
+#[test]
+fn a_diverging_body_has_no_return_point_to_check() {
+    // `panic!()` produces no `result`, so there is nothing to substitute and
+    // the postcondition holds vacuously -- the same conclusion the solver
+    // reaches for an unreachable program point (ADR-0002).
+    for body in [
+        "panic!(\"no\")",
+        "todo!()",
+        "unimplemented!()",
+        "unreachable!()",
+    ] {
+        let source = format!(
+            "#[mvl::ensures(result > 0)]\n\
+             fn f(a: i64) -> i64 {{ {body} }}"
+        );
+        let sites = return_sites(&source);
+        assert!(
+            sites.is_empty(),
+            "`{body}` is not a return point, got {sites:?}"
+        );
+    }
+}
+
+#[test]
+fn a_closure_body_is_not_the_enclosing_functions_return_point() {
+    // The trap in tail-position tracking: `syn` descends into a closure by
+    // default, so an unclear flag would report the closure's `-1` as a
+    // violating return of `f`. A false return-site violation is an error that
+    // fails the build, so this is the louder failure mode of the two.
+    let sites = return_sites(
+        "#[mvl::ensures(result > 0)]\n\
+         fn f(a: i64) -> i64 { let g = |x: i64| -1; 7 }",
+    );
+    assert_eq!(sites.len(), 1, "only `7` returns from `f`, got {sites:?}");
+    assert!(matches!(sites[0].1, DischargeResult::Proven { .. }));
+}
+
+#[test]
+fn a_while_body_is_not_a_return_point_but_a_return_inside_it_is() {
+    // A `while` evaluates to `()`, so nothing in its body becomes the return
+    // value except through an explicit `return` -- which still gets the
+    // loop condition in Γ.
+    let sites = return_sites(
+        "#[mvl::ensures(result > 0)]\n\
+         fn f(a: i64) -> i64 { while a > 0 { return a; } 1 }",
+    );
+    assert_eq!(
+        sites.len(),
+        2,
+        "the `return a` and the tail `1`, got {sites:?}"
+    );
+    for (goal, result) in &sites {
+        assert!(
+            matches!(result, DischargeResult::Proven { .. }),
+            "`{goal}` should prove, got {result:?}"
+        );
+    }
+}
+
+#[test]
+fn a_block_in_statement_position_is_not_a_return_point() {
+    // Only a *trailing* expression carries the block's value outwards.
+    let sites = return_sites(
+        "#[mvl::ensures(result > 0)]\n\
+         fn f(a: i64) -> i64 { { let _q = -5; } 3 }",
+    );
+    assert_eq!(sites.len(), 1, "only the tail `3`, got {sites:?}");
+    assert!(matches!(sites[0].1, DischargeResult::Proven { .. }));
+}
+
+#[test]
+fn a_nested_block_in_tail_position_forwards_through() {
+    let result = only_return_site(
+        "#[mvl::ensures(result > 0)]\n\
+         fn f(a: i64) -> i64 { { -2 } }",
+    );
+    assert!(
+        matches!(result, DischargeResult::Violated { .. }),
+        "the inner `-2` is the return value, got {result:?}"
+    );
+}
+
+#[test]
+fn a_nested_fns_postcondition_does_not_leak_to_its_parent() {
+    // A nested `fn` has its own contract and its own Γ; its return points
+    // establish *its* `ensures`, attributed to its own name.
+    let found = find_obligations(
+        "#[mvl::ensures(result > 0)]\n\
+         fn outer(a: i64) -> i64 {\n\
+             #[mvl::ensures(result > 100)]\n\
+             fn inner(b: i64) -> i64 { 5 }\n\
+             9\n\
+         }",
+    )
+    .expect("fixture parses");
+    let sites: Vec<_> = found
+        .iter()
+        .filter(|f| f.kind == ObligationKind::ReturnSite)
+        .map(|f| (f.fn_name.clone(), f.predicate_text(), f.discharge()))
+        .collect();
+    assert_eq!(sites.len(), 2, "one per function, got {sites:?}");
+    let inner = sites.iter().find(|(n, ..)| n == "inner").expect("inner");
+    assert!(
+        matches!(inner.2, DischargeResult::Violated { .. }),
+        "`5 > 100` is false, got {:?}",
+        inner.2
+    );
+    let outer = sites.iter().find(|(n, ..)| n == "outer").expect("outer");
+    assert!(matches!(outer.2, DischargeResult::Proven { .. }));
+}
+
+#[test]
+fn a_function_without_ensures_produces_no_return_obligation() {
+    assert!(return_sites("fn f(a: i64) -> i64 { -1 }").is_empty());
+}
+
+#[test]
+fn a_violated_return_site_is_an_error_and_fails_the_build() {
+    // Only `Level::Error` fails the Gate, so this is what makes #42 more
+    // than a reporting change.
+    let diagnostics = check_source(
+        "#[mvl::ensures(result > 0)]\n\
+         fn f(a: i64) -> i64 { -1 }",
+    )
+    .expect("fixture parses");
+    assert!(
+        diagnostics.iter().any(|d| d.level == Level::Error
+            && d.message.contains("postcondition")
+            && d.message.contains("cannot hold")),
+        "expected a postcondition error, got {:?}",
+        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}

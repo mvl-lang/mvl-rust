@@ -9,6 +9,13 @@
 //! where the argument, the caller's own preconditions, branch conditions
 //! and propagated postconditions all take part.
 
+// Since #42 the `ensures` is also checked against the body, not just for
+// coherence. Here that lands on a runtime check rather than a proof: the
+// return-site goal is `0 <= (b & 15) && (b & 15) <= 15`, and `&` is not in
+// the `Le`/`Eq` linear fragment the native backend reasons over -- bitwise
+// masking needs L5 (#37). A runtime check is the honest outcome, and
+// `at_least_ten` below shows the same obligation closing at L1 when the
+// returned expression *is* linear.
 #[mvl::total]
 #[mvl::requires(0 <= b && b <= 255)]
 #[mvl::ensures(0 <= result && result <= 15)]
@@ -71,6 +78,10 @@ fn narrowed_by_a_branch(x: i32) -> i32 {
     }
 }
 
+// Two obligations now, from one attribute: the declaration-site coherence
+// check, and the return-site obligation that the body actually establishes
+// it (#42) -- `result := 10` gives `(10) >= 10`, closed at L1. That second
+// one is what makes the propagation below sound rather than assumed.
 #[mvl::ensures(result >= 10)]
 fn at_least_ten() -> i32 {
     10
