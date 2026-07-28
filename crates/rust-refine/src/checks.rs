@@ -232,14 +232,43 @@ struct CallSiteScan<'a> {
     caller: &'a str,
     functions: &'a HashMap<String, FnFacts>,
     gamma: Vec<Expr>,
+    /// Names bound by a `let` in scope. A call through one of these is a
+    /// local (closure, function pointer), not the same-file free function
+    /// that happens to share its name.
+    locals: Vec<String>,
     found: &'a mut Vec<FoundObligation>,
 }
 
 impl CallSiteScan<'_> {
+    /// Drops everything Γ knew about `name`: it has just been rebound,
+    /// assigned, or mutably borrowed, so those facts describe a previous
+    /// value. Keeping them is how a stale hypothesis proves a false goal.
+    ///
+    /// Clauses are replaced by `true` rather than removed because Γ's
+    /// scoping is index-based — leaving a narrowed region truncates back
+    /// to a saved depth, so positions have to stay stable.
+    fn invalidate(&mut self, name: &str) {
+        for clause in &mut self.gamma {
+            if mentions_ident(clause, name) {
+                *clause = true_expr();
+            }
+        }
+    }
+
+    /// Every name a construct rebinds or mutates, invalidated together.
+    fn invalidate_all(&mut self, names: &[String]) {
+        for name in names {
+            self.invalidate(name);
+        }
+    }
+
     fn obligations_for_call(&mut self, node: &ExprCall) {
         let Some(callee) = called_fn_name(&node.func) else {
             return;
         };
+        if self.locals.contains(&callee) {
+            return; // Shadowed by a local binding — not the free function.
+        }
         let Some(facts) = self.functions.get(&callee) else {
             return; // Unresolvable (other file, other crate, a method, ...).
         };
@@ -287,6 +316,9 @@ impl CallSiteScan<'_> {
         let Some(callee) = called_fn_name(&call.func) else {
             return;
         };
+        if self.locals.contains(&callee) {
+            return; // Shadowed by a local binding — not the free function.
+        }
         let Some(facts) = self.functions.get(&callee) else {
             return;
         };
@@ -311,15 +343,22 @@ impl<'ast> Visit<'ast> for CallSiteScan<'_> {
         visit::visit_expr_call(self, node);
     }
 
-    /// A block scopes Γ: facts learned by `let`s inside it don't outlive it.
+    /// A block scopes Γ: facts learned by `let`s inside it don't outlive it,
+    /// and neither do the bindings that shadow a free function's name.
     fn visit_block(&mut self, node: &'ast Block) {
         let depth = self.gamma.len();
+        let locals_depth = self.locals.len();
         for stmt in &node.stmts {
             self.visit_stmt(stmt);
         }
         self.gamma.truncate(depth);
+        self.locals.truncate(locals_depth);
     }
 
+    /// The initializer is evaluated before the binding takes effect, so it
+    /// sees the old Γ. Afterwards the bound names are invalidated (a `let`
+    /// may shadow a variable Γ has facts about) and only then does this
+    /// call's own postcondition enter Γ.
     fn visit_local(&mut self, node: &'ast Local) {
         if let Some(init) = &node.init {
             self.visit_expr(&init.expr);
@@ -327,7 +366,34 @@ impl<'ast> Visit<'ast> for CallSiteScan<'_> {
                 self.visit_expr(&diverge.1);
             }
         }
+        let bound = pattern_idents(&node.pat);
+        self.invalidate_all(&bound);
+        self.locals.extend(bound);
         self.propagate_postcondition(node);
+    }
+
+    /// `x = …` replaces `x`'s value, so Γ's facts about it no longer hold.
+    fn visit_expr_assign(&mut self, node: &'ast syn::ExprAssign) {
+        visit::visit_expr_assign(self, node);
+        self.invalidate_all(&assigned_idents(&node.left));
+    }
+
+    /// Compound assignment (`x += 1`) is a `Binary` node in `syn`, not an
+    /// `Assign` one, but mutates `x` just the same.
+    fn visit_expr_binary(&mut self, node: &'ast syn::ExprBinary) {
+        visit::visit_expr_binary(self, node);
+        if is_assign_op(&node.op) {
+            self.invalidate_all(&assigned_idents(&node.left));
+        }
+    }
+
+    /// `&mut x` hands out the power to change `x`, and this backend can't
+    /// see whether the callee uses it. Conservatively assume it does.
+    fn visit_expr_reference(&mut self, node: &'ast syn::ExprReference) {
+        visit::visit_expr_reference(self, node);
+        if node.mutability.is_some() {
+            self.invalidate_all(&assigned_idents(&node.expr));
+        }
     }
 
     /// Branch narrowing: the condition holds in the `then` arm, its
@@ -372,10 +438,84 @@ impl<'ast> Visit<'ast> for CallSiteScan<'_> {
             caller: &caller,
             functions: self.functions,
             gamma: FnFacts::of(node).hypotheses(),
+            locals: Vec::new(),
             found: &mut *self.found,
         };
         nested.visit_block(&node.block);
     }
+}
+
+/// Whether `expr` mentions `name` anywhere — the test for which Γ clauses
+/// a rebinding invalidates.
+fn mentions_ident(expr: &Expr, name: &str) -> bool {
+    struct Search<'a> {
+        name: &'a str,
+        found: bool,
+    }
+    impl<'ast> Visit<'ast> for Search<'_> {
+        fn visit_ident(&mut self, ident: &'ast proc_macro2::Ident) {
+            if ident == self.name {
+                self.found = true;
+            }
+        }
+    }
+    let mut search = Search { name, found: false };
+    search.visit_expr(expr);
+    search.found
+}
+
+fn true_expr() -> Expr {
+    syn::parse_str::<Expr>("true").expect("`true` parses")
+}
+
+/// Every name a pattern binds (`let (a, b) = …` binds both).
+fn pattern_idents(pat: &Pat) -> Vec<String> {
+    struct Collect {
+        names: Vec<String>,
+    }
+    impl<'ast> Visit<'ast> for Collect {
+        fn visit_pat_ident(&mut self, node: &'ast syn::PatIdent) {
+            self.names.push(node.ident.to_string());
+            visit::visit_pat_ident(self, node);
+        }
+    }
+    let mut collect = Collect { names: Vec::new() };
+    collect.visit_pat(pat);
+    collect.names
+}
+
+/// The names an assignment target touches. A plain `x` is exact; for
+/// `xs[i] = …` or `s.f = …` every identifier in the target is invalidated,
+/// which is imprecise but never wrong in the unsafe direction.
+fn assigned_idents(target: &Expr) -> Vec<String> {
+    struct Collect {
+        names: Vec<String>,
+    }
+    impl<'ast> Visit<'ast> for Collect {
+        fn visit_ident(&mut self, ident: &'ast proc_macro2::Ident) {
+            self.names.push(ident.to_string());
+        }
+    }
+    let mut collect = Collect { names: Vec::new() };
+    collect.visit_expr(target);
+    collect.names
+}
+
+fn is_assign_op(op: &syn::BinOp) -> bool {
+    use syn::BinOp::*;
+    matches!(
+        op,
+        AddAssign(_)
+            | SubAssign(_)
+            | MulAssign(_)
+            | DivAssign(_)
+            | RemAssign(_)
+            | BitXorAssign(_)
+            | BitAndAssign(_)
+            | BitOrAssign(_)
+            | ShlAssign(_)
+            | ShrAssign(_)
+    )
 }
 
 /// A bare function name in call position (`g(…)`). Anything else — a
@@ -486,6 +626,7 @@ pub fn find_obligations(source: &str) -> Result<Vec<FoundObligation>, CheckError
                 caller: &caller,
                 functions: &functions,
                 gamma,
+                locals: Vec::new(),
                 found: &mut found,
             };
             scan.visit_block(&item_fn.block);

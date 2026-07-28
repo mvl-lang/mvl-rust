@@ -405,3 +405,119 @@ fn a_quantified_precondition_is_a_usable_call_site_goal() {
     );
     assert_proven_at(&result, Layer::L3);
 }
+
+// ── Γ invalidation: a fact only survives while its variable does ──────────
+//
+// Γ's clauses describe named variables. The moment a name is rebound or
+// mutated, whatever Γ recorded about it describes a value that is no longer
+// there -- and a stale hypothesis is strictly worse than a missing one,
+// because it proves goals that are actually false. Each of these reported
+// `Proven` before #40's review.
+
+#[test]
+fn a_shadowing_let_invalidates_the_hypotheses_about_that_name() {
+    let result = only_call_site(
+        "#[mvl::requires(x > 10)]\n\
+         fn caller(x: i64) { let x = -5; require_positive(x); }\n\
+         #[mvl::requires(v > 0)]\n\
+         fn require_positive(v: i64) {}",
+    );
+    assert!(
+        !matches!(result, DischargeResult::Proven { .. }),
+        "`let x = -5` must retire `x > 10`, got {result:?}"
+    );
+}
+
+#[test]
+fn assigning_a_mut_parameter_invalidates_its_hypotheses() {
+    let result = only_call_site(
+        "#[mvl::requires(x > 10)]\n\
+         fn caller(mut x: i64) { x = -5; require_positive(x); }\n\
+         #[mvl::requires(v > 0)]\n\
+         fn require_positive(v: i64) {}",
+    );
+    assert!(
+        !matches!(result, DischargeResult::Proven { .. }),
+        "`x = -5` must retire `x > 10`, got {result:?}"
+    );
+}
+
+#[test]
+fn compound_assignment_invalidates_its_hypotheses() {
+    // `-=` is a `Binary` node in syn, not an `Assign` one.
+    let result = only_call_site(
+        "#[mvl::requires(x > 10)]\n\
+         fn caller(mut x: i64) { x -= 100; require_positive(x); }\n\
+         #[mvl::requires(v > 0)]\n\
+         fn require_positive(v: i64) {}",
+    );
+    assert!(
+        !matches!(result, DischargeResult::Proven { .. }),
+        "`x -= 100` must retire `x > 10`, got {result:?}"
+    );
+}
+
+#[test]
+fn a_mutable_borrow_invalidates_its_hypotheses() {
+    // This backend cannot see whether `bump` writes through the reference,
+    // so it assumes the worst.
+    let result = only_call_site(
+        "#[mvl::requires(x > 10)]\n\
+         fn caller(mut x: i64) { bump(&mut x); require_positive(x); }\n\
+         fn bump(v: &mut i64) {}\n\
+         #[mvl::requires(v > 0)]\n\
+         fn require_positive(v: i64) {}",
+    );
+    assert!(
+        !matches!(result, DischargeResult::Proven { .. }),
+        "`&mut x` must retire `x > 10`, got {result:?}"
+    );
+}
+
+#[test]
+fn shadowing_a_binding_retires_its_propagated_postcondition() {
+    let result = only_call_site(
+        "#[mvl::ensures(result > 0)]\n\
+         fn produce(a: i64) -> i64 { 1 }\n\
+         fn caller(a: i64) { let y = produce(a); let y = -1; require_positive(y); }\n\
+         #[mvl::requires(v > 0)]\n\
+         fn require_positive(v: i64) {}",
+    );
+    assert!(
+        !matches!(result, DischargeResult::Proven { .. }),
+        "the second `let y` must retire `produce`'s postcondition, got {result:?}"
+    );
+}
+
+#[test]
+fn an_unrelated_assignment_leaves_other_hypotheses_intact() {
+    // Invalidation is per-name, not a blanket reset -- otherwise the fix
+    // above would quietly disable call-site checking for any function that
+    // assigns anything.
+    let result = only_call_site(
+        "#[mvl::requires(x > 10)]\n\
+         fn caller(x: i64, mut other: i64) { other = -5; require_positive(x); }\n\
+         #[mvl::requires(v > 0)]\n\
+         fn require_positive(v: i64) {}",
+    );
+    assert_proven_at(&result, Layer::L2);
+}
+
+#[test]
+fn a_local_binding_shadowing_a_free_fn_is_not_resolved_against_it() {
+    // `callee` here is a closure; the free function of the same name is a
+    // different thing entirely. Resolving to it reported a hard error on
+    // correct code.
+    let sites = call_sites(
+        "fn caller() {\n\
+         let require_positive = |v: i64| v;\n\
+         require_positive(-5);\n\
+         }\n\
+         #[mvl::requires(v > 0)]\n\
+         fn require_positive(v: i64) -> i64 { v }",
+    );
+    assert!(
+        sites.is_empty(),
+        "a shadowed name must not resolve to the free fn, got {sites:?}"
+    );
+}

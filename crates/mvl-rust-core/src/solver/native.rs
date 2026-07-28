@@ -60,6 +60,32 @@ use super::{DischargeResult, Layer, Obligation, SolverBackend};
 /// ADR-0056).
 const MAX_BOUNDED_EXPANSION: i64 = 1000;
 
+/// Total instances a predicate expands to — the product of its quantifier
+/// widths, `1` for a quantifier-free one, `None` on overflow.
+///
+/// The per-quantifier check inside [`quantify_forall`] is not enough on its
+/// own: nesting two legal 1000-wide ranges passes it twice and still expands
+/// to a million instances. Checking the product once, up front, is the bound
+/// that constant was always meant to express.
+fn expansion_size(pred: &Predicate) -> Option<i64> {
+    match pred {
+        Predicate::Expr(_) => Some(1),
+        Predicate::Forall { lo, hi, body, .. } | Predicate::Exists { lo, hi, body, .. } => {
+            let width = hi.checked_sub(*lo)?.checked_add(1)?.max(0);
+            width.checked_mul(expansion_size(body)?)
+        }
+    }
+}
+
+/// Whether expanding `pred` is affordable. An empty range (`width` 0) is
+/// decided without expanding anything, so it is always affordable.
+fn expansion_is_affordable(pred: &Predicate) -> bool {
+    match expansion_size(pred) {
+        Some(size) => size <= MAX_BOUNDED_EXPANSION,
+        None => false,
+    }
+}
+
 /// Native `L1`+`L2`+`L3` obligation dispatcher. Holds no state — every
 /// obligation is analyzed independently from its own predicate text.
 #[derive(Debug, Clone, Copy, Default)]
@@ -89,6 +115,9 @@ impl SolverBackend for NativeBackend {
 /// [`discharge_entailment`] — a different question, deliberately kept as
 /// a separate entry point rather than folded in here (#38).
 pub fn discharge_predicate(pred: &Predicate) -> DischargeResult {
+    if !expansion_is_affordable(pred) {
+        return DischargeResult::Runtime;
+    }
     match pred {
         Predicate::Expr(expr) => discharge_expr(expr),
         Predicate::Forall { var, lo, hi, body } => {
@@ -426,6 +455,9 @@ fn discharge_expr(expr: &Expr) -> DischargeResult {
 /// clauses, narrowed branch conditions, and propagated postconditions as
 /// separate expressions.
 pub fn discharge_entailment(hypotheses: &[Expr], goal: &Predicate) -> DischargeResult {
+    if !expansion_is_affordable(goal) {
+        return DischargeResult::Runtime;
+    }
     match goal {
         Predicate::Expr(expr) => entail_expr(hypotheses, expr),
         Predicate::Forall { var, lo, hi, body } => {
@@ -509,6 +541,19 @@ fn entail_expr(hypotheses: &[Expr], goal: &Expr) -> DischargeResult {
         matches!(check_satisfiability(system), SatOutcome::Contradiction)
     });
     if all_entailed {
+        return DischargeResult::Proven { layer: Layer::L4 };
+    }
+
+    // The interval check above only sees Γ contradict itself one variable
+    // at a time; `x + y <= 0 ∧ x >= 5 ∧ y >= 5` needs the linear system to
+    // show it. Same conclusion either way — an unreachable program point
+    // entails anything — but it has to be reached before the test below,
+    // which would otherwise read "no value Γ permits satisfies the goal"
+    // off a Γ that permits no values at all and call it a violation.
+    if matches!(
+        check_satisfiability(hyp_constraints.clone()),
+        SatOutcome::Contradiction
+    ) {
         return DischargeResult::Proven { layer: Layer::L4 };
     }
 

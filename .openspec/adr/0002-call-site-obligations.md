@@ -100,6 +100,19 @@ no cross-file resolution:
   opaque token stream).
 - A quantified `requires` is a usable *goal* but not a Γ hypothesis — Γ clauses
   are `&&`-flattened expressions and a quantifier has no such form.
+- **Γ is invalidated per name, not tracked through dataflow.** Rebinding (`let x
+  = …`), assignment (`x = …`, `x += …`), or a mutable borrow (`&mut x`) retires
+  every Γ clause mentioning that name. This is deliberately blunt: the backend
+  cannot see whether a callee writes through a `&mut`, so it assumes the worst.
+  Costs precision, and the alternative — keeping a fact about a value that is no
+  longer there — is unsound rather than merely imprecise.
+- **Arithmetic is over unbounded ℤ, with no overflow modelling.** `x >= i64::MAX
+  ⊢ x + i64::MAX > 0` is `Proven`, though the Rust expression would overflow.
+  Refinement predicates describe mathematical integers here, as they do in real
+  MVL; catching overflow is `rust-limit`'s concern, not this one.
+- **Bounded expansion is capped on the product of quantifier widths**, not each
+  width independently — nesting two legal 1000-wide ranges would otherwise expand
+  to a million instances, each running a full entailment query.
 
 Each is asserted by a test so it stays a deliberate boundary rather than becoming
 an unnoticed hole.

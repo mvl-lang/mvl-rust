@@ -32,11 +32,18 @@ An earlier draft of this ADR picked shelling out to `mvl solve --json` (reusing 
 
 **v0.1 scope, to keep this tractable:** implement **`L1` (trivial syntactic checks) and `L2` (interval arithmetic) natively**, in Rust, with no external solver dependency — both are well-understood, tractable techniques on their own. Any obligation that would need `L3` (path enumeration), `L4` (Cooper quantifier elimination), or `L5` (SMT) falls through to a **runtime check** instead, matching spec Requirement 3's own "uncloseable obligation surfaces as runtime check" scenario. `L3`–`L5` are deferred to their own future tickets, not attempted as part of `rust-refine` v0.1 or this ADR.
 
+> **Scope since delivered** (the paragraph above records the v0.1 decision, not current state):
+> `L3` landed as bounded-quantifier expansion in #31, and `L4` as Fourier–Motzkin
+> elimination in #35 — note that is *not* the Cooper quantifier elimination named
+> above, an upstream naming inaccuracy tracked as [`mvl-lang/mvl`#2022](https://github.com/mvl-lang/mvl/issues/2022).
+> #38 (ADR-0002) added call-site obligations against a hypothesis context, so the
+> dispatcher is no longer coherence-only. `L5` (SMT) remains deferred to #37.
+
 `mvl_rust_core::solver::SolverBackend` (`crates/mvl-rust-core/src/solver.rs`, from #3) is still the right abstraction point — `rust-refine` (#8) depends on the trait, not a concrete backend. What changes is the default/only backend: a native `L1`+`L2` implementation replaces `ShellOutSolver` as what actually ships. `ShellOutSolver` itself is removed, not kept as a fallback option — there is no scenario in this decision where shelling out to `mvl solve` is the right answer, so keeping it around as dead-but-compiling code would misrepresent the architecture to the next reader.
 
 ## Consequences
 
-- `rust-refine` v0.1 can only prove obligations that reduce to `L1`/`L2` reasoning (e.g. `x >= 0 && x < 100`, `x == 5`); anything needing path-sensitivity, quantifiers, or full SMT gets a runtime check instead of a compile-time proof, until `L3`–`L5` land as later work.
+- `rust-refine` v0.1 can only prove obligations that reduce to `L1`/`L2` reasoning (e.g. `x >= 0 && x < 100`, `x == 5`); anything needing path-sensitivity, quantifiers, or full SMT gets a runtime check instead of a compile-time proof, until `L3`–`L5` land as later work. (Since delivered: `L3` in #31, `L4` in #35 — see the scope note above. Only `L5` still falls through.)
 - No external tool dependency (`mvl` binary, `PATH` requirements) for any crate using `rust-refine` — a meaningful simplification over the shell-out story.
 - `mvl-lang/mvl`'s own codebase is never asked to accommodate `mvl-rust`'s needs.
 - `crates/mvl-rust-core/src/solver.rs` needs rework: `ShellOutSolver` removed, a native interval/trivial-check backend added in its place.

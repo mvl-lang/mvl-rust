@@ -167,7 +167,9 @@ Exact grammar of predicate DSLs lands per-crate; `mvl-rust-core` provides the sh
 
 ### Requirement 3: Refinement attribute [MUST]
 
-`rust-refine` MUST provide `#[refine(pred)]` on function parameters and return types, and MUST discharge the resulting obligations through the same layered dispatch (L1 trivial → L2 intervals → L3 path enumeration → L4 Cooper QE → L5 SMT → runtime) that the MVL compiler uses. Obligations MUST be attributable to a specific layer in the diagnostic output — this is the load-bearing UX for the certified-domain pitch.
+`rust-refine` MUST provide `#[mvl::requires(pred)]` and `#[mvl::ensures(pred)]` on functions, and MUST discharge the resulting obligations through the same layered dispatch (L1 trivial → L2 intervals → L3 bounded-quantifier expansion → L4 linear arithmetic → L5 SMT → runtime) that the MVL compiler uses. Obligations MUST be attributable to a specific layer in the diagnostic output — this is the load-bearing UX for the certified-domain pitch.
+
+L4 is implemented as Fourier–Motzkin elimination (#35). The MVL compiler names this layer "Cooper QE", which is inaccurate for what it actually runs — an upstream naming issue tracked as [`mvl-lang/mvl`#2022](https://github.com/mvl-lang/mvl/issues/2022) — so this spec names the technique rather than inheriting the label.
 
 Obligations arise at two kinds of program point (ADR-0002). At a **declaration site** the predicate is checked for internal coherence — nothing is known about arguments there. At a **call site** the callee's precondition, with the actual arguments substituted, MUST be discharged against the caller's hypothesis context Γ, which accumulates the caller's own parameter refinements, branch-condition narrowing, and callees' propagated postconditions.
 
