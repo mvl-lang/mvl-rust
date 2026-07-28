@@ -112,8 +112,10 @@ fn an_equality_hypothesis_reaches_fourier_motzkin() {
 
 #[test]
 fn an_equality_goal_is_entailed_only_when_the_context_pins_it() {
-    // `¬(t = 0)` has no single-inequality form, so L4 can't negate an
-    // equality goal -- L2's point interval is what closes this one.
+    // L2's point interval closes the first one before the L4 split is ever
+    // reached. The second is the boundary the split must respect: `x == 5`
+    // is satisfiable under `x >= 5` but not entailed by it, and requiring
+    // *both* halves of the negation to be unsat is what keeps it `Runtime`.
     assert_proven_at(entail(&["x == 5"], "x == 5"), Layer::L2);
     assert_eq!(entail(&["x >= 5"], "x == 5"), DischargeResult::Runtime);
 }
@@ -209,14 +211,26 @@ fn a_satisfiable_gamma_that_rules_the_goal_out_is_still_violated() {
 }
 
 #[test]
-fn an_equality_goal_ruled_out_by_gamma_falls_to_runtime_not_violated() {
-    // Precision limit, not unsoundness, and it predates #38's entailment
-    // path: `system_constraints` expands an equality *hypothesis* into its
-    // two inequalities so Fourier-Motzkin can use it, but the `Γ ∧ goal`
-    // check feeds goal clauses in raw, and the ported L4 drops equalities.
-    // So `x >= 5 ∧ x == 3` is not detected as the contradiction it is.
-    // Recorded here so the asymmetry is deliberate rather than forgotten.
+fn an_equality_goal_ruled_out_by_gamma_is_violated() {
+    // Was `Runtime` until #43: `system_constraints` expanded an equality
+    // *hypothesis* into its two inequalities so Fourier-Motzkin could use
+    // it, but the `Γ ∧ goal` check fed goal clauses in raw and the ported
+    // L4 drops equalities, so `x >= 5 ∧ x == 3` was never seen as the
+    // contradiction it is. Both sides now get the same expansion.
     let result = entail(&["x >= 5"], "x == 3");
+    assert!(
+        matches!(result, DischargeResult::Violated { .. }),
+        "expected Violated, got {result:?}"
+    );
+}
+
+#[test]
+fn an_equality_goal_merely_unproven_by_gamma_stays_runtime() {
+    // The boundary the two-inequality split must respect: `x == 7` is
+    // satisfiable under `x >= 5` but not entailed by it, so it is neither
+    // `Proven` nor `Violated`. Requiring *both* halves of the negation to
+    // be unsat is what keeps this from becoming a false `Proven`.
+    let result = entail(&["x >= 5"], "x == 7");
     assert!(
         matches!(result, DischargeResult::Runtime),
         "expected Runtime, got {result:?}"
@@ -247,4 +261,185 @@ fn nested_quantifiers_within_the_cap_still_expand() {
     // turn every nested quantifier into an unconditional `Runtime`.
     let pred = goal("forall i in [0..19] . forall j in [0..19] . i + j < n");
     assert_proven_at(discharge_entailment(&gamma(&["n > 100"]), &pred), Layer::L3);
+}
+
+// ── Equality goals (#43) ──────────────────────────────────────────────────
+//
+// An equality goal used to be unprovable outside the narrow case where Γ
+// pinned the variable to a point interval -- not even a syntactic identity.
+// Two independent mechanisms close it, and neither subsumes the other:
+// L1 reflexivity reaches non-linear terms the L4 split cannot represent,
+// and the L4 split reaches rearranged terms L1's structural match misses.
+
+#[test]
+fn a_reflexive_goal_is_proven_at_l1() {
+    assert_proven_at(entail(&[], "a == a"), Layer::L1);
+    assert_proven_at(entail(&[], "a <= a"), Layer::L1);
+    assert_proven_at(entail(&[], "a >= a"), Layer::L1);
+}
+
+#[test]
+fn an_irreflexive_goal_is_violated_at_l1() {
+    for text in ["a != a", "a < a", "a > a"] {
+        let result = entail(&[], text);
+        assert!(
+            matches!(result, DischargeResult::Violated { .. }),
+            "`{text}` can never hold, got {result:?}"
+        );
+    }
+}
+
+#[test]
+fn reflexivity_sees_through_one_sided_parenthesization() {
+    // The return-site shape: one expression replaces `result` wholesale, so
+    // the obligation for `ensures(result == a + b)` with body `a + b` is
+    // grouped on one side only. A plain `==` on `syn::Expr` would miss it.
+    // The call-site shape is per-operand instead -- see
+    // `reflexivity_needs_per_operand_grouping_transparency`.
+    assert_proven_at(entail(&[], "(a + b) == a + b"), Layer::L1);
+    assert_proven_at(entail(&[], "((a)) == a"), Layer::L1);
+}
+
+#[test]
+fn a_non_linear_identity_is_reachable_only_by_l1() {
+    // `a * b` is outside the linear fragment, so `constraints_from_clause`
+    // rejects it and the L4 split never sees it -- yet
+    // `#[mvl::ensures(result == a * b)] fn mul(a, b) { a * b }` is an
+    // ordinary postcondition. Structural reflexivity is what discharges it.
+    assert_proven_at(entail(&[], "(a * b) == a * b"), Layer::L1);
+}
+
+#[test]
+fn a_rearranged_equality_is_reachable_only_by_l4() {
+    // Structurally different, arithmetically identical -- the mirror image
+    // of the case above, and why L1 reflexivity is not sufficient alone.
+    assert_proven_at(entail(&[], "(a + b) == b + a"), Layer::L4);
+    assert_proven_at(entail(&[], "(a + a) == 2 * a"), Layer::L4);
+}
+
+#[test]
+fn an_equality_goal_entailed_by_gamma_is_proven() {
+    // Two-sided constant bounds intersect to a point interval, so L2 closes
+    // this one without needing the split at all.
+    assert_proven_at(entail(&["x >= 7", "x <= 7"], "x == 7"), Layer::L2);
+}
+
+#[test]
+fn a_cross_variable_equality_goal_needs_the_l4_split() {
+    // `y >= x` is not a constant bound, so L2 cannot represent either the
+    // hypotheses or the goal. Only running both halves of the negation
+    // through Fourier-Motzkin closes it.
+    assert_proven_at(entail(&["y >= x", "y <= x"], "y == x"), Layer::L4);
+    // ...and one-sided is correctly not enough.
+    assert_eq!(entail(&["y >= x"], "y == x"), DischargeResult::Runtime);
+}
+
+#[test]
+fn reflexivity_does_not_fire_on_a_term_containing_a_call() {
+    // Reflexivity is structural, so without a purity gate it is wrong in
+    // *both* directions on an impure term -- and call-site substitution
+    // produces exactly this shape, since `substitute_exprs` parenthesizes
+    // each argument: `span(gen(), gen())` against `requires(lo <= hi)`
+    // arrives as `(gen()) <= (gen())`. Proving it would drop a check that
+    // can genuinely fail; refuting `!=` would reject a valid call. Two
+    // calls to `gen` are the same tokens, not the same value.
+    assert_eq!(entail(&[], "f() == f()"), DischargeResult::Runtime);
+    assert_eq!(entail(&[], "f() != f()"), DischargeResult::Runtime);
+    assert_eq!(entail(&[], "f() <= f()"), DischargeResult::Runtime);
+    assert_eq!(
+        entail(&[], "a.next() == a.next()"),
+        DischargeResult::Runtime
+    );
+    // The gate is recursive, so a call buried in an operand is caught too.
+    assert_eq!(entail(&[], "a + f() == a + f()"), DischargeResult::Runtime);
+    // ...while the call-free terms it guards are unaffected.
+    assert_proven_at(entail(&[], "a + b == a + b"), Layer::L1);
+}
+
+#[test]
+fn reflexivity_needs_per_operand_grouping_transparency() {
+    // The shape call-site substitution actually produces: `substitute_exprs`
+    // parenthesizes each spliced identifier individually, so the grouping is
+    // *inside* each operand, not one-sided at the top. Peeling only the
+    // outermost layer would miss it.
+    //
+    // Non-linear on purpose: `a * b` is outside the linear fragment, so if
+    // `exprs_equivalent`'s operand recursion ever regresses, L4 cannot cover
+    // for it and this fails loudly. The `+` variants would silently fall
+    // back to `Proven { L4 }` instead.
+    assert_proven_at(entail(&[], "(a) * (b) == a * b"), Layer::L1);
+    assert_proven_at(entail(&[], "(a) + (b) == a + b"), Layer::L1);
+}
+
+#[test]
+fn reflexivity_recurses_through_unary_negation() {
+    // `exprs_equivalent`'s `Expr::Unary` arm, otherwise unexercised.
+    assert_proven_at(entail(&[], "-a == -a"), Layer::L1);
+    let result = entail(&[], "-a != -a");
+    assert!(
+        matches!(result, DischargeResult::Violated { .. }),
+        "expected Violated, got {result:?}"
+    );
+}
+
+#[test]
+fn reflexivity_also_decides_the_declaration_site() {
+    // `classify_clause` is shared, so #43's rule reaches `discharge_predicate`
+    // too -- the first rule that does. Pinned here because every other test
+    // for this feature goes through `discharge_entailment`, so a refactor
+    // that patched only `entail_expr` would leave no failing test.
+    assert_proven_at(discharge_predicate(&goal("a == a")), Layer::L1);
+    assert_proven_at(discharge_predicate(&goal("a * b == a * b")), Layer::L1);
+    for text in ["a != a", "a < a", "a > a"] {
+        let result = discharge_predicate(&goal(text));
+        assert!(
+            matches!(result, DischargeResult::Violated { .. }),
+            "`{text}` can never hold, got {result:?}"
+        );
+    }
+    // The purity gate applies at declaration sites as well.
+    assert_eq!(
+        discharge_predicate(&goal("f() == f()")),
+        DischargeResult::Runtime
+    );
+}
+
+#[test]
+fn reflexivity_composes_with_a_conjunctive_goal() {
+    // The fold happens per conjunct inside `flatten_and`'s clause list, not
+    // on the whole expression -- confirm a reflexive clause folds away
+    // without swallowing the rest, and an irreflexive one sinks the whole
+    // conjunction.
+    assert_eq!(entail(&[], "a == a && b > 0"), DischargeResult::Runtime);
+    assert_proven_at(entail(&["b > 0"], "a == a && b > 0"), Layer::L2);
+    let result = entail(&[], "b > 0 && a != a");
+    assert!(
+        matches!(result, DischargeResult::Violated { .. }),
+        "expected Violated, got {result:?}"
+    );
+}
+
+#[test]
+fn reflexivity_is_reached_through_bounded_quantifier_expansion() {
+    // `quantify_forall` substitutes and re-dispatches per instance, so the
+    // reflexivity fold has to fire post-substitution.
+    assert_proven_at(entail(&[], "forall i in [0..3] . i == i"), Layer::L3);
+    assert!(matches!(
+        discharge_predicate(&goal("forall i in [0..3] . i != i")),
+        DischargeResult::Violated { .. }
+    ));
+}
+
+#[test]
+fn an_unreachable_program_point_entails_an_irreflexive_goal() {
+    // Γ here is unsatisfiable, but only by combining all three clauses --
+    // the per-variable interval check cannot see it. An unreachable point
+    // entails anything, this goal included, so Γ's own feasibility has to be
+    // settled before a clause that is false on its face is called a
+    // violation. Erroring here would be a spurious compile error on dead
+    // code, and the same Γ correctly proves an ordinary goal.
+    let gamma = &["x + y <= 0", "x >= 5", "y >= 5"];
+    assert_proven_at(entail(gamma, "a < a"), Layer::L4);
+    assert_proven_at(entail(gamma, "a != a"), Layer::L4);
+    assert_proven_at(entail(gamma, "a > 0"), Layer::L4);
 }

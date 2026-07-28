@@ -49,8 +49,10 @@ same backend.**
 A declaration site has no arguments to reason about, so coherence is the only
 question available there — it is not a weaker approximation of entailment, it is
 a different and independently useful check (a self-contradictory `requires` is a
-real defect, and stays an error). Keeping it also means this change adds
-obligations without altering any existing outcome.
+real defect, and stays an error). Keeping it separate meant #38 added obligations
+without altering any existing outcome; that is no longer true in general, since
+the two entry points share `classify_clause` and #43 added a rule there — see the
+reflexivity item in the scope list.
 
 Call-site outcomes mirror real MVL's own literal-vs-symbolic split in `impl_z3`:
 
@@ -78,8 +80,11 @@ conjunction is a disjunction, which the `Le`/`Eq` representation cannot hold.
 Rather than adding disjunction support, `¬(c₁ ∧ … ∧ cₙ)` is checked one disjunct
 at a time — `Γ ∧ ¬cᵢ` UNSAT for every `i` ⇒ proven — and over the integers
 `¬(t ≤ 0)` is `t ≥ 1`, so each disjunct is a single inequality. Fourier-Motzkin
-needed no new machinery. An equality goal has no such form, so L4 cannot negate
-one; L2's point interval covers that case instead.
+needed no new machinery. An equality clause's negation is a genuine disjunction
+(`¬(t = 0)` is `t ≤ -1 ∨ t ≥ 1`) and is not represented directly either: since
+`t = 0` holds exactly when `t ≤ 0` and `t ≥ 0` both do, each half is refuted as
+its own query and both must come back unsat (#43). The same
+one-disjunct-at-a-time trick, one level down.
 
 **Hypotheses may be dropped; goal clauses may not.** A hypothesis outside the
 linear fragment (an opaque call, a non-linear term) is skipped rather than
@@ -113,6 +118,28 @@ no cross-file resolution:
 - **Bounded expansion is capped on the product of quantifier widths**, not each
   width independently — nesting two legal 1000-wide ranges would otherwise expand
   to a million instances, each running a full entailment query.
+- **Equality goals close by two independent mechanisms, neither subsuming the
+  other** (#43). L1 reflexivity decides `t == t` structurally, which is the only
+  route to a *non-linear* identity (`a * b == a * b`) since the linear fragment
+  cannot represent one. The L4 split decides rearranged terms (`a + b == b + a`)
+  that no tree comparison matches. Ported from real MVL's `preds_equivalent`,
+  which puts this at L1 for the same reason.
+- **L1 reflexivity applies only to call-free terms.** Reflexivity is structural,
+  so it is wrong in both directions for an impure term, and call-site substitution
+  reaches both: `span(gen(), gen())` against `requires(lo <= hi)` would be
+  `Proven` — dropping a check that can genuinely fail — and `requires(a != b)`
+  would be `Violated`, a compile error on a valid call. Two calls to `gen` are the
+  same tokens, not the same value. `is_call_free` therefore gates the rule to an
+  allow-list of shapes that cannot invoke user code. This is not a restriction
+  relative to upstream: MVL's `RefExpr` grammar cannot express a call at all, so
+  the fragment *is* the upstream one. The residual gap is that call-free is a
+  syntactic approximation of purity; the real signal belongs in `rust-effect`,
+  which already models `#[mvl::effect(...)]`.
+- **L1 reflexivity assumes integer semantics and is unsound for floats.** `x == x`
+  is `false` when `x` is NaN, and scanning `syn` alone carries no type information
+  to exclude an `f64`. Sound within the unbounded-ℤ scope above, and a reason to
+  keep the rule to `Eq | Le | Ge | Ne | Lt | Gt` rather than generalising it; any
+  future admission of float-typed terms needs a real type signal first.
 
 Each is asserted by a test so it stays a deliberate boundary rather than becoming
 an unnoticed hole.

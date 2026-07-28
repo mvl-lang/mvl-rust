@@ -427,8 +427,10 @@ fn discharge_expr(expr: &Expr) -> DischargeResult {
 // three things; its query is `Γ ∧ ¬pred(arg)`, and `unsat` ⇒ proven.)
 //
 // Both questions are wanted, at their own program points, so this is a
-// separate entry point rather than a change to `discharge_predicate` —
-// which also means every existing declaration-site outcome is untouched.
+// separate entry point rather than a change to `discharge_predicate`. The
+// one thing the two share is `classify_clause`, so a rule added there
+// reaches both — #43's reflexivity is the first that does, which is why
+// `a != a` is a declaration-site violation now too.
 //
 // Three outcomes, mirroring real MVL's own literal-vs-symbolic split in
 // `impl_z3`:
@@ -439,9 +441,13 @@ fn discharge_expr(expr: &Expr) -> DischargeResult {
 // | `Γ ∧ goal` UNSAT       | goal fails for every value Γ allows | `Violated` |
 // | neither                | may hold, may not               | `Runtime`  |
 //
-// Negation stays inside the `Le`/`Eq` constraint fragment (no disjunction
-// needed): `¬(c₁ ∧ … ∧ cₙ)` is checked one disjunct at a time, and over
-// the integers `¬(t ≤ 0)` is `t ≥ 1`.
+// Negation stays inside the `Le`/`Eq` constraint fragment: `¬(c₁ ∧ … ∧ cₙ)`
+// is checked one disjunct at a time, and over the integers `¬(t ≤ 0)` is
+// `t ≥ 1`. An equality clause's negation is itself a disjunction
+// (`¬(t = 0)` is `t ≤ -1 ∨ t ≥ 1`), handled the same way one level down —
+// both halves must be independently unsat (#43). No disjunction is ever
+// represented inside the solver either time; it becomes one query per
+// disjunct.
 //
 // Hypotheses this backend can't decompose are **dropped**, not bailed on.
 // That's sound in both directions: fewer facts make `Γ ∧ ¬goal` easier to
@@ -501,6 +507,8 @@ fn entail_expr(hypotheses: &[Expr], goal: &Expr) -> DischargeResult {
         return DischargeResult::Proven { layer: Layer::L2 };
     }
 
+    let hyp_constraints = system_constraints(&hyp_clauses);
+
     // L1/L2: a goal clause is entailed when it's a tautology, or when what
     // Γ knows about its variable fits inside the interval it demands.
     let mut unresolved: Vec<&Expr> = Vec::new();
@@ -508,6 +516,19 @@ fn entail_expr(hypotheses: &[Expr], goal: &Expr) -> DischargeResult {
         match classify_clause(clause) {
             Clause::Constant(true) => {}
             Clause::Constant(false) => {
+                // A clause false on its face still doesn't make the call a
+                // violation if Γ permits no values at all -- an unreachable
+                // program point entails anything, this clause included. The
+                // interval check above only catches Γ contradicting itself
+                // one variable at a time, so ask the linear system too
+                // before erroring. Same reasoning as the check below the L4
+                // attempt, which this return would otherwise pre-empt.
+                if matches!(
+                    check_satisfiability(hyp_constraints.clone()),
+                    SatOutcome::Contradiction
+                ) {
+                    return DischargeResult::Proven { layer: Layer::L4 };
+                }
                 return DischargeResult::Violated {
                     counterexample: format!("`{}` is always false", quote::quote!(#clause)),
                 };
@@ -531,15 +552,9 @@ fn entail_expr(hypotheses: &[Expr], goal: &Expr) -> DischargeResult {
     }
 
     // L4: `Γ ∧ ¬clause` must be UNSAT for every clause L1/L2 left open.
-    let hyp_constraints = system_constraints(&hyp_clauses);
-    let all_entailed = unresolved.iter().all(|clause| {
-        let Some(negated) = negated_constraints(clause) else {
-            return false;
-        };
-        let mut system = hyp_constraints.clone();
-        system.extend(negated);
-        matches!(check_satisfiability(system), SatOutcome::Contradiction)
-    });
+    let all_entailed = unresolved
+        .iter()
+        .all(|clause| refutes_negation(&hyp_constraints, clause));
     if all_entailed {
         return DischargeResult::Proven { layer: Layer::L4 };
     }
@@ -564,7 +579,9 @@ fn entail_expr(hypotheses: &[Expr], goal: &Expr) -> DischargeResult {
     let mut goal_is_linear = true;
     for clause in &goal_clauses {
         match constraints_from_clause(clause) {
-            Some(constraints) => system.extend(constraints),
+            // Without the expansion Fourier-Motzkin drops goal equalities,
+            // and `x >= 5 ∧ x == 3` is never seen as the contradiction it is.
+            Some(constraints) => system.extend(with_equality_bounds(constraints)),
             None => {
                 goal_is_linear = false;
                 break;
@@ -587,43 +604,59 @@ fn entail_expr(hypotheses: &[Expr], goal: &Expr) -> DischargeResult {
 /// fragment are skipped rather than failing the whole conversion (see this
 /// section's own note on why dropping hypotheses is sound in both
 /// directions).
-///
-/// Equalities are additionally emitted as their two inequalities so
-/// Fourier-Motzkin can use them. Real MVL's `is_unsat` drops equalities
-/// from that phase entirely — a limitation worth inheriting where this
-/// backend ports its algorithm verbatim ([`discharge_l4`]), but not here,
-/// where `x == 5` as a hypothesis is exactly the kind of fact a call site
-/// needs propagated.
 fn system_constraints(clauses: &[&Expr]) -> Vec<Constraint> {
-    let mut out = Vec::new();
-    for clause in clauses {
-        let Some(constraints) = constraints_from_clause(clause) else {
-            continue;
-        };
-        for constraint in constraints {
-            if let Constraint::Eq(term) = &constraint {
-                out.push(Constraint::Le(term.clone()));
-                out.push(Constraint::Le(term.negate()));
-            }
-            out.push(constraint);
+    clauses
+        .iter()
+        .filter_map(|clause| constraints_from_clause(clause))
+        .flat_map(with_equality_bounds)
+        .collect()
+}
+
+/// Each `Eq(t)` accompanied by the two inequalities it implies (`t ≤ 0`
+/// and `-t ≤ 0`), so Fourier-Motzkin — which only consumes `Le` — can use
+/// it. The equality itself is kept for the divisibility check.
+///
+/// Real MVL's `is_unsat` drops equalities from that phase entirely — a
+/// limitation worth inheriting where this backend ports its algorithm
+/// verbatim ([`discharge_l4`]), but not on either side of an entailment
+/// query, where `x == 5` is exactly the kind of fact that needs to travel.
+fn with_equality_bounds(constraints: Vec<Constraint>) -> Vec<Constraint> {
+    let mut out = Vec::with_capacity(constraints.len());
+    for constraint in constraints {
+        if let Constraint::Eq(term) = &constraint {
+            out.push(Constraint::Le(term.clone()));
+            out.push(Constraint::Le(term.negate()));
         }
+        out.push(constraint);
     }
     out
 }
 
-/// `¬clause` as linear constraints. Over the integers `¬(t ≤ 0)` is
-/// `t ≥ 1`, so a clause that converts to a single inequality negates to a
-/// single inequality — no disjunction, no new machinery. An equality (or
-/// anything else) has no such form, so `None`: the caller treats that
-/// clause as not entailed rather than guessing.
-fn negated_constraints(clause: &Expr) -> Option<Vec<Constraint>> {
-    match constraints_from_clause(clause)?.as_slice() {
-        [Constraint::Le(term)] => {
-            let mut negated = term.negate();
-            negated.constant += 1;
-            Some(vec![Constraint::Le(negated)])
+/// Whether `hypotheses ∧ ¬clause` is unsatisfiable, i.e. whether Γ entails
+/// `clause`. `false` when the clause is outside the linear fragment, which
+/// is treated as not entailed rather than guessed at.
+///
+/// An equality has no single-inequality negation — `¬(t = 0)` is
+/// `t ≤ -1 ∨ t ≥ 1` — but proving one never requires negating it as a
+/// whole. `t = 0` holds exactly when `t ≤ 0` and `t ≥ 0` both do, so it
+/// splits into two inequality questions this backend already answers, and
+/// *both* must come back unsat. The dual of the conjunctive-goal
+/// decomposition, one level down: that one proves every conjunct, this one
+/// refutes every disjunct (#43).
+fn refutes_negation(hypotheses: &[Constraint], clause: &Expr) -> bool {
+    let unsat_with = |negated: LinTerm| {
+        let mut system = hypotheses.to_vec();
+        system.push(Constraint::Le(negated));
+        matches!(check_satisfiability(system), SatOutcome::Contradiction)
+    };
+    match constraints_from_clause(clause).as_deref() {
+        // ¬(t ≤ 0) is t ≥ 1, i.e. `-t + 1 ≤ 0`.
+        Some([Constraint::Le(term)]) => unsat_with(term.negate().plus_one()),
+        // t = 0 ⟺ t ≤ 0 ∧ t ≥ 0; refute each half on its own.
+        Some([Constraint::Eq(term)]) => {
+            unsat_with(term.negate().plus_one()) && unsat_with(term.plus_one())
         }
-        _ => None,
+        _ => false,
     }
 }
 
@@ -763,6 +796,15 @@ impl LinTerm {
         self.scale(-1)
     }
 
+    /// `self + 1` — the integer tightening behind every strict bound here
+    /// (`t < 0` ⟺ `t + 1 ≤ 0`).
+    fn plus_one(&self) -> LinTerm {
+        LinTerm {
+            constant: self.constant + 1,
+            ..self.clone()
+        }
+    }
+
     fn is_constant(&self) -> bool {
         self.vars.is_empty()
     }
@@ -858,17 +900,9 @@ fn linterm_from_expr(expr: &Expr) -> Option<LinTerm> {
 fn cmp_to_constraints(op: &BinOp, term: LinTerm) -> Option<Vec<Constraint>> {
     match op {
         BinOp::Le(_) => Some(vec![Constraint::Le(term)]),
-        BinOp::Lt(_) => {
-            let mut t = term;
-            t.constant += 1;
-            Some(vec![Constraint::Le(t)])
-        }
+        BinOp::Lt(_) => Some(vec![Constraint::Le(term.plus_one())]),
         BinOp::Ge(_) => Some(vec![Constraint::Le(term.negate())]),
-        BinOp::Gt(_) => {
-            let mut neg = term.negate();
-            neg.constant += 1;
-            Some(vec![Constraint::Le(neg)])
-        }
+        BinOp::Gt(_) => Some(vec![Constraint::Le(term.negate().plus_one())]),
         BinOp::Eq(_) => Some(vec![Constraint::Eq(term)]),
         // `Ne` has no single-inequality representation; see the
         // `Constraint` enum's own doc comment.
@@ -1087,6 +1121,21 @@ fn classify_clause(expr: &Expr) -> Clause {
 }
 
 fn classify_comparison(bin: &syn::ExprBinary) -> Clause {
+    // `L1` reflexivity, before any var/lit analysis: comparing a call-free
+    // term with itself is decided by its operator alone, whatever the term
+    // is. This is the only rule that reaches a *non-linear* identity
+    // (`a * b == a * b`), which the `L4` split below cannot represent.
+    //
+    // `is_call_free` is checked on one side only -- `exprs_equivalent` has
+    // already established the two are the same tree.
+    if exprs_equivalent(&bin.left, &bin.right) && is_call_free(&bin.left) {
+        match bin.op {
+            BinOp::Eq(_) | BinOp::Le(_) | BinOp::Ge(_) => return Clause::Constant(true),
+            BinOp::Ne(_) | BinOp::Lt(_) | BinOp::Gt(_) => return Clause::Constant(false),
+            _ => {}
+        }
+    }
+
     let left_var = ident_name(&bin.left);
     let left_lit = int_value(&bin.left);
     let right_var = ident_name(&bin.right);
@@ -1109,6 +1158,88 @@ fn classify_comparison(bin: &syn::ExprBinary) -> Clause {
             None => Clause::Unknown,
         },
         _ => Clause::Unknown,
+    }
+}
+
+/// Structural equality on two expressions, transparent to parenthesization
+/// on either side independently. Ported from `mvl-lang/mvl`'s
+/// `preds_equivalent` (`src/mvl/checker/solver/layer1.rs`), whose `Grouped`
+/// arm matches one-sided grouping the same way.
+///
+/// Per-operand transparency is what carries the weight here, not just
+/// one-sided grouping at the top: [`SubstituteExprs`] wraps *each*
+/// identifier it splices in, so a predicate `lo <= hi` substituted with
+/// `lo := a, hi := b` arrives as `(a) <= (b)` — grouped inside each operand.
+/// Peeling only the outermost layer and comparing with `==` would still see
+/// those `Paren` nodes and say no. (A return-site obligation, where one
+/// expression replaces `result` wholesale, is the one-sided
+/// `(a + b) == a + b` shape instead; both need to work.)
+///
+/// Structural only: it answers "same tree?", not "same value?". Whether a
+/// term may be compared with itself at all is [`is_call_free`]'s question,
+/// asked separately by the one caller that needs it.
+fn exprs_equivalent(a: &Expr, b: &Expr) -> bool {
+    let (a, b) = (ungroup(a), ungroup(b));
+    match (a, b) {
+        (Expr::Binary(x), Expr::Binary(y)) => {
+            x.op == y.op
+                && exprs_equivalent(&x.left, &y.left)
+                && exprs_equivalent(&x.right, &y.right)
+        }
+        (Expr::Unary(x), Expr::Unary(y)) => x.op == y.op && exprs_equivalent(&x.expr, &y.expr),
+        // `syn`'s `PartialEq` (the `extra-traits` feature) compares token
+        // structure and ignores spans, which is exactly the comparison
+        // wanted for the leaves.
+        _ => a == b,
+    }
+}
+
+/// `expr` with any layers of parenthesization or invisible grouping peeled off.
+fn ungroup(expr: &Expr) -> &Expr {
+    match expr {
+        Expr::Paren(paren) => ungroup(&paren.expr),
+        Expr::Group(group) => ungroup(&group.expr),
+        other => other,
+    }
+}
+
+/// Whether `expr` is built only from shapes that cannot invoke user code,
+/// which is what makes comparing it with itself decidable by the operator
+/// alone (#43).
+///
+/// Without this gate reflexivity is wrong in both directions, and call-site
+/// substitution reaches both: `substitute_exprs` parenthesizes each argument
+/// independently, so `span(gen(), gen())` against `requires(lo <= hi)`
+/// becomes `(gen ()) <= (gen ())` — `Proven`, dropping a check that can
+/// genuinely fail — while `requires(a != b)` becomes `(gen ()) != (gen ())`
+/// — `Violated`, a compile error on a valid call. Two calls to `gen` are the
+/// same *tokens* but not the same *value*.
+///
+/// An allow-list rather than a list of shapes to reject, matching
+/// [`linterm_from_expr`]'s bail-conservatively contract: anything
+/// unrecognized is assumed able to call something. Operators are taken to
+/// mean integer arithmetic rather than arbitrary `impl`s, which is the same
+/// assumption the unbounded-ℤ scope already makes everywhere else here.
+/// `Deref` is left out deliberately — reading through a pointer twice is a
+/// question about aliasing, not about arithmetic.
+///
+/// Real MVL needs no such check: its `RefExpr` grammar cannot express a call
+/// at all, so restricting to this fragment is what *matches* upstream. A
+/// real purity signal belongs in `rust-effect`, which already models
+/// `#[mvl::effect(...)]`; this is the syntactic approximation until then.
+fn is_call_free(expr: &Expr) -> bool {
+    match expr {
+        Expr::Lit(_) => true,
+        Expr::Path(path) => path.qself.is_none(),
+        Expr::Paren(paren) => is_call_free(&paren.expr),
+        Expr::Group(group) => is_call_free(&group.expr),
+        Expr::Binary(bin) => is_call_free(&bin.left) && is_call_free(&bin.right),
+        Expr::Unary(unary) => {
+            matches!(unary.op, UnOp::Neg(_) | UnOp::Not(_)) && is_call_free(&unary.expr)
+        }
+        Expr::Field(field) => is_call_free(&field.base),
+        Expr::Index(index) => is_call_free(&index.expr) && is_call_free(&index.index),
+        _ => false,
     }
 }
 
