@@ -167,13 +167,17 @@ Exact grammar of predicate DSLs lands per-crate; `mvl-rust-core` provides the sh
 
 ### Requirement 3: Refinement attribute [MUST]
 
-`rust-refine` MUST provide `#[refine(pred)]` on function parameters and return types, and MUST discharge the resulting obligations through the same layered dispatch (L1 trivial → L2 intervals → L3 path enumeration → L4 Cooper QE → L5 SMT → runtime) that the MVL compiler uses. Obligations MUST be attributable to a specific layer in the diagnostic output — this is the load-bearing UX for the certified-domain pitch.
+`rust-refine` MUST provide `#[mvl::requires(pred)]` and `#[mvl::ensures(pred)]` on functions, and MUST discharge the resulting obligations through the same layered dispatch (L1 trivial → L2 intervals → L3 bounded-quantifier expansion → L4 linear arithmetic → L5 SMT → runtime) that the MVL compiler uses. Obligations MUST be attributable to a specific layer in the diagnostic output — this is the load-bearing UX for the certified-domain pitch.
 
-**Implementation:** `crates/rust-refine/src/dispatch.rs`, `crates/rust-refine/src/attr_parser.rs`
+L4 is implemented as Fourier–Motzkin elimination (#35). The MVL compiler names this layer "Cooper QE", which is inaccurate for what it actually runs — an upstream naming issue tracked as [`mvl-lang/mvl`#2022](https://github.com/mvl-lang/mvl/issues/2022) — so this spec names the technique rather than inheriting the label.
 
-**Tests:** `crates/rust-refine/tests/refinements.rs`
+Obligations arise at two kinds of program point (ADR-0002). At a **declaration site** the predicate is checked for internal coherence — nothing is known about arguments there. At a **call site** the callee's precondition, with the actual arguments substituted, MUST be discharged against the caller's hypothesis context Γ, which accumulates the caller's own parameter refinements, branch-condition narrowing, and callees' propagated postconditions.
 
-**Blocked on:** ADR-0001 (solver integration story).
+**Implementation:** `crates/rust-refine/src/checks.rs`, `crates/mvl-rust-core/src/solver/native.rs`, `crates/mvl-rust-core/src/attrs/predicate.rs`
+
+**Tests:** `crates/rust-refine/tests/call_sites.rs`, `crates/mvl-rust-core/tests/entailment.rs`
+
+**Blocked on:** ADR-0001 (solver integration story), ADR-0002 (call-site obligation model).
 
 #### Scenario: Simple bound proven at L2
 
@@ -192,6 +196,30 @@ Exact grammar of predicate DSLs lands per-crate; `mvl-rust-core` provides the sh
 - GIVEN `#[refine(x < 0)] fn f(x: i32) { ... }` called with `f(5)`
 - WHEN the crate compiles
 - THEN compilation MUST fail with a diagnostic including the counterexample from the solver (`x = 5` violates `x < 0`)
+
+#### Scenario: Call-site precondition entailed by the caller's own refinements
+
+- GIVEN `#[mvl::requires(n > 5)] fn g(n: i32)` and a caller `#[mvl::requires(x > 10 && y > x)] fn f(x: i32, y: i32) { g(y) }`
+- WHEN `rust-refine` runs
+- THEN the call MUST be reported as proven, attributed to the layer that closed it (L4 — no single clause bounds `y`, so this needs linear arithmetic over the hypotheses plus the negated goal)
+
+#### Scenario: Branch condition narrows the hypothesis context
+
+- GIVEN `#[mvl::requires(n > 0)] fn g(n: i32)` and a caller `fn f(x: i32) { if x > 0 { g(x) } else { g(x) } }`
+- WHEN `rust-refine` runs
+- THEN the call in the `then` arm MUST be proven at L2, AND the call in the `else` arm MUST be an error (the negated condition puts `x <= 0` in Γ, which no value satisfying `n > 0` can meet)
+
+#### Scenario: Callee postcondition propagates to a later call
+
+- GIVEN `#[mvl::ensures(result >= 10)] fn produce() -> i32`, `#[mvl::requires(n > 5)] fn g(n: i32)`, and a caller `fn f() { let y = produce(); g(y) }`
+- WHEN `rust-refine` runs
+- THEN the call `g(y)` MUST be proven, discharged against the postcondition `produce` guarantees for `y`
+
+#### Scenario: Unresolvable call produces no obligation
+
+- GIVEN a call to a function not defined as a free function in the same file
+- WHEN `rust-refine` runs
+- THEN no obligation MUST be reported for that call (same-file resolution boundary, matching `rust-effect`)
 
 ### Requirement 4: Effect attribute [SHOULD]
 

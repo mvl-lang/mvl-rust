@@ -2,20 +2,28 @@
 //! (bounded quantifier expansion) backend (ADR-0001 v0.1 scope + #31's
 //! quantifier extension).
 //!
-//! Because tool crates parse plain source text with no type information
-//! and no call-graph (spec's "Gate mode" story — see `rust-limit`/
-//! `rust-total`), there's no way to check a `#[mvl::requires]`/
-//! `#[mvl::ensures]` predicate against real call-site arguments or a
-//! function's actual runtime behavior. What *is* tractable, and what this
-//! backend actually discharges, is whether the predicate is **internally
-//! coherent** — a tautology, or a conjunction of integer bounds whose
-//! intersection is non-empty — as opposed to self-contradictory (e.g.
-//! `x >= 10 && x < 5`, which no value of `x` can ever satisfy). That
-//! reading matches all three of spec Requirement 3's acceptance scenarios:
-//! a satisfiable interval bound discharges at `L2`, a self-contradictory
-//! one is a genuine violation, and anything this analysis can't decompose
-//! (function calls, disjunction, `!=`, non-integer types) falls through
-//! to a runtime check rather than blocking the build.
+//! Two questions, two entry points:
+//!
+//! - [`discharge_predicate`] — **coherence**, at a declaration site. Is
+//!   the predicate internally consistent: a tautology, or a conjunction of
+//!   integer bounds whose intersection is non-empty, as opposed to
+//!   self-contradictory (`x >= 10 && x < 5`, which no value of `x` can ever
+//!   satisfy)? A declaration site has no arguments to reason about, so this
+//!   is the only question available there. It covers all three of spec
+//!   Requirement 3's original acceptance scenarios: a satisfiable interval
+//!   bound discharges at `L2`, a self-contradictory one is a genuine
+//!   violation, and anything this analysis can't decompose (function calls,
+//!   disjunction, `!=`, non-integer types) falls through to a runtime check
+//!   rather than blocking the build.
+//! - [`discharge_entailment`] — **entailment**, at a call site (#38). Does
+//!   the caller's hypothesis context Γ entail the callee's precondition
+//!   with the actual arguments substituted in? This is the question real
+//!   MVL's own solver asks, and needs the call graph `rust-refine` now
+//!   builds; see that function's own section for the framing.
+//!
+//! Because tool crates parse plain source text with no type information,
+//! call resolution is same-file only and free-functions only — the same
+//! boundary `rust-effect` documents for the same reason.
 //!
 //! `L3` (bounded quantifiers, `forall`/`exists i in [lo..hi]. body`) is
 //! discharged by expansion, matching `mvl-lang/mvl`'s own real, accepted
@@ -52,6 +60,32 @@ use super::{DischargeResult, Layer, Obligation, SolverBackend};
 /// ADR-0056).
 const MAX_BOUNDED_EXPANSION: i64 = 1000;
 
+/// Total instances a predicate expands to — the product of its quantifier
+/// widths, `1` for a quantifier-free one, `None` on overflow.
+///
+/// The per-quantifier check inside [`quantify_forall`] is not enough on its
+/// own: nesting two legal 1000-wide ranges passes it twice and still expands
+/// to a million instances. Checking the product once, up front, is the bound
+/// that constant was always meant to express.
+fn expansion_size(pred: &Predicate) -> Option<i64> {
+    match pred {
+        Predicate::Expr(_) => Some(1),
+        Predicate::Forall { lo, hi, body, .. } | Predicate::Exists { lo, hi, body, .. } => {
+            let width = hi.checked_sub(*lo)?.checked_add(1)?.max(0);
+            width.checked_mul(expansion_size(body)?)
+        }
+    }
+}
+
+/// Whether expanding `pred` is affordable. An empty range (`width` 0) is
+/// decided without expanding anything, so it is always affordable.
+fn expansion_is_affordable(pred: &Predicate) -> bool {
+    match expansion_size(pred) {
+        Some(size) => size <= MAX_BOUNDED_EXPANSION,
+        None => false,
+    }
+}
+
 /// Native `L1`+`L2`+`L3` obligation dispatcher. Holds no state — every
 /// obligation is analyzed independently from its own predicate text.
 #[derive(Debug, Clone, Copy, Default)]
@@ -74,11 +108,24 @@ impl SolverBackend for NativeBackend {
 /// function for each expanded instance, so nested quantifiers and a
 /// quantifier composed with ordinary comparisons both work without any
 /// special-casing).
+///
+/// This is the **declaration-site** question: is the predicate internally
+/// coherent? For the **call-site** question (does a caller's hypothesis
+/// context entail a callee's precondition), see
+/// [`discharge_entailment`] — a different question, deliberately kept as
+/// a separate entry point rather than folded in here (#38).
 pub fn discharge_predicate(pred: &Predicate) -> DischargeResult {
+    if !expansion_is_affordable(pred) {
+        return DischargeResult::Runtime;
+    }
     match pred {
         Predicate::Expr(expr) => discharge_expr(expr),
-        Predicate::Forall { var, lo, hi, body } => discharge_forall(var, *lo, *hi, body),
-        Predicate::Exists { var, lo, hi, body } => discharge_exists(var, *lo, *hi, body),
+        Predicate::Forall { var, lo, hi, body } => {
+            quantify_forall(var, *lo, *hi, body, &discharge_predicate)
+        }
+        Predicate::Exists { var, lo, hi, body } => {
+            quantify_exists(var, *lo, *hi, body, &discharge_predicate)
+        }
     }
 }
 
@@ -87,7 +134,18 @@ pub fn discharge_predicate(pred: &Predicate) -> DischargeResult {
 /// failing `x`); all instances `Proven` ⇒ `Proven{L3}`; otherwise (some
 /// `Runtime`, none `Violated`) ⇒ `Runtime`. `hi < lo` (an empty range) is
 /// vacuously true.
-fn discharge_forall(var: &Ident, lo: i64, hi: i64, body: &Predicate) -> DischargeResult {
+///
+/// `dispatch` decides each expanded instance, so the same expansion drives
+/// both the coherence question ([`discharge_predicate`]) and the
+/// entailment one ([`discharge_entailment`], which closes over Γ) — the
+/// `L3` expansion itself is identical either way.
+fn quantify_forall(
+    var: &Ident,
+    lo: i64,
+    hi: i64,
+    body: &Predicate,
+    dispatch: &dyn Fn(&Predicate) -> DischargeResult,
+) -> DischargeResult {
     if hi < lo {
         return DischargeResult::Proven { layer: Layer::L3 };
     }
@@ -97,7 +155,7 @@ fn discharge_forall(var: &Ident, lo: i64, hi: i64, body: &Predicate) -> Discharg
 
     let mut any_runtime = false;
     for k in lo..=hi {
-        match discharge_predicate(&substitute(body, var, k)) {
+        match dispatch(&substitute(body, var, k)) {
             DischargeResult::Violated { counterexample } => {
                 return DischargeResult::Violated {
                     counterexample: format!(
@@ -120,8 +178,15 @@ fn discharge_forall(var: &Ident, lo: i64, hi: i64, body: &Predicate) -> Discharg
 /// `exists x in [lo..hi]. body`: dual of `forall` — any instance `Proven`
 /// ⇒ `Proven{L3}` (short-circuit); all instances `Violated` (no witness
 /// found) ⇒ `Violated`; otherwise ⇒ `Runtime`. `hi < lo` (an empty range)
-/// has no possible witness, so it's `Violated`.
-fn discharge_exists(var: &Ident, lo: i64, hi: i64, body: &Predicate) -> DischargeResult {
+/// has no possible witness, so it's `Violated`. `dispatch` as in
+/// [`quantify_forall`].
+fn quantify_exists(
+    var: &Ident,
+    lo: i64,
+    hi: i64,
+    body: &Predicate,
+    dispatch: &dyn Fn(&Predicate) -> DischargeResult,
+) -> DischargeResult {
     if hi < lo {
         return DischargeResult::Violated {
             counterexample: format!("the range [{lo}..{hi}] for `{var}` is empty; no witness"),
@@ -133,7 +198,7 @@ fn discharge_exists(var: &Ident, lo: i64, hi: i64, body: &Predicate) -> Discharg
 
     let mut any_runtime = false;
     for k in lo..=hi {
-        match discharge_predicate(&substitute(body, var, k)) {
+        match dispatch(&substitute(body, var, k)) {
             DischargeResult::Proven { .. } => {
                 return DischargeResult::Proven { layer: Layer::L3 };
             }
@@ -277,6 +342,13 @@ impl Interval {
     fn is_empty(self) -> bool {
         self.lo > self.hi
     }
+
+    /// Whether every value in `other` is also in `self` (`other ⊆ self`) —
+    /// the entailment test at `L2`: a goal bound is entailed when what the
+    /// hypotheses already establish for that variable fits inside it.
+    fn contains(self, other: Interval) -> bool {
+        self.lo <= other.lo && other.hi <= self.hi
+    }
 }
 
 /// What one AND-clause of the predicate reduced to.
@@ -344,6 +416,280 @@ fn discharge_expr(expr: &Expr) -> DischargeResult {
     }
 }
 
+// ── Entailment: `Γ ⊢ goal`, the call-site framing (#38) ───────────────────
+//
+// Everything above answers "is this predicate internally coherent?" — the
+// right question at a *declaration* site, where there are no arguments to
+// reason about. At a *call* site the question is real MVL's own: does the
+// caller's hypothesis context Γ entail the callee's precondition, with the
+// actual arguments substituted in? (`try_z3(pred, arg, var_refs, _)` in
+// `mvl-lang/mvl`'s `src/mvl/checker/solver/layer5.rs` takes exactly those
+// three things; its query is `Γ ∧ ¬pred(arg)`, and `unsat` ⇒ proven.)
+//
+// Both questions are wanted, at their own program points, so this is a
+// separate entry point rather than a change to `discharge_predicate` —
+// which also means every existing declaration-site outcome is untouched.
+//
+// Three outcomes, mirroring real MVL's own literal-vs-symbolic split in
+// `impl_z3`:
+//
+// | Query                  | Meaning                          | Result     |
+// |------------------------|----------------------------------|------------|
+// | `Γ ∧ ¬goal` UNSAT      | goal holds for every value Γ allows | `Proven` |
+// | `Γ ∧ goal` UNSAT       | goal fails for every value Γ allows | `Violated` |
+// | neither                | may hold, may not               | `Runtime`  |
+//
+// Negation stays inside the `Le`/`Eq` constraint fragment (no disjunction
+// needed): `¬(c₁ ∧ … ∧ cₙ)` is checked one disjunct at a time, and over
+// the integers `¬(t ≤ 0)` is `t ≥ 1`.
+//
+// Hypotheses this backend can't decompose are **dropped**, not bailed on.
+// That's sound in both directions: fewer facts make `Γ ∧ ¬goal` easier to
+// satisfy (harder to prove) and `Γ ∧ goal` easier to satisfy (harder to
+// call violated). Goal clauses are never dropped — every one must be
+// decided for `Proven`.
+
+/// Discharges `hypotheses ⊢ goal`: whether the goal predicate follows from
+/// everything the hypothesis context establishes. `hypotheses` are
+/// `&&`-flattened independently, so a caller can pass its own `requires`
+/// clauses, narrowed branch conditions, and propagated postconditions as
+/// separate expressions.
+pub fn discharge_entailment(hypotheses: &[Expr], goal: &Predicate) -> DischargeResult {
+    if !expansion_is_affordable(goal) {
+        return DischargeResult::Runtime;
+    }
+    match goal {
+        Predicate::Expr(expr) => entail_expr(hypotheses, expr),
+        Predicate::Forall { var, lo, hi, body } => {
+            quantify_forall(var, *lo, *hi, body, &|instance| {
+                discharge_entailment(hypotheses, instance)
+            })
+        }
+        Predicate::Exists { var, lo, hi, body } => {
+            quantify_exists(var, *lo, *hi, body, &|instance| {
+                discharge_entailment(hypotheses, instance)
+            })
+        }
+    }
+}
+
+fn entail_expr(hypotheses: &[Expr], goal: &Expr) -> DischargeResult {
+    let mut hyp_clauses: Vec<&Expr> = Vec::new();
+    for hypothesis in hypotheses {
+        flatten_and(hypothesis, &mut hyp_clauses);
+    }
+    let mut goal_clauses: Vec<&Expr> = Vec::new();
+    flatten_and(goal, &mut goal_clauses);
+
+    // What Γ establishes as a per-variable interval (L2's view of it).
+    let mut hyp_bounds: HashMap<String, Interval> = HashMap::new();
+    for clause in &hyp_clauses {
+        if let Clause::Bound { var, interval } = classify_clause(clause) {
+            hyp_bounds
+                .entry(var)
+                .and_modify(|existing| *existing = existing.intersect(interval))
+                .or_insert(interval);
+        }
+    }
+
+    // Contradictory Γ means this program point is unreachable, so anything
+    // is entailed here — `Γ ∧ ¬goal` is unsat for want of a satisfiable Γ.
+    // Real MVL reaches the same conclusion the same way (its Z3 query goes
+    // unsat on the hypotheses alone); reporting it as proven rather than as
+    // its own outcome keeps this backend's three-way result shape.
+    if hyp_bounds.values().any(|interval| interval.is_empty()) {
+        return DischargeResult::Proven { layer: Layer::L2 };
+    }
+
+    // L1/L2: a goal clause is entailed when it's a tautology, or when what
+    // Γ knows about its variable fits inside the interval it demands.
+    let mut unresolved: Vec<&Expr> = Vec::new();
+    for clause in &goal_clauses {
+        match classify_clause(clause) {
+            Clause::Constant(true) => {}
+            Clause::Constant(false) => {
+                return DischargeResult::Violated {
+                    counterexample: format!("`{}` is always false", quote::quote!(#clause)),
+                };
+            }
+            Clause::Bound { var, interval } => match hyp_bounds.get(&var) {
+                Some(known) if interval.contains(*known) => {}
+                _ => unresolved.push(clause),
+            },
+            Clause::Unknown => unresolved.push(clause),
+        }
+    }
+
+    if unresolved.is_empty() {
+        return DischargeResult::Proven {
+            layer: if hyp_bounds.is_empty() {
+                Layer::L1
+            } else {
+                Layer::L2
+            },
+        };
+    }
+
+    // L4: `Γ ∧ ¬clause` must be UNSAT for every clause L1/L2 left open.
+    let hyp_constraints = system_constraints(&hyp_clauses);
+    let all_entailed = unresolved.iter().all(|clause| {
+        let Some(negated) = negated_constraints(clause) else {
+            return false;
+        };
+        let mut system = hyp_constraints.clone();
+        system.extend(negated);
+        matches!(check_satisfiability(system), SatOutcome::Contradiction)
+    });
+    if all_entailed {
+        return DischargeResult::Proven { layer: Layer::L4 };
+    }
+
+    // The interval check above only sees Γ contradict itself one variable
+    // at a time; `x + y <= 0 ∧ x >= 5 ∧ y >= 5` needs the linear system to
+    // show it. Same conclusion either way — an unreachable program point
+    // entails anything — but it has to be reached before the test below,
+    // which would otherwise read "no value Γ permits satisfies the goal"
+    // off a Γ that permits no values at all and call it a violation.
+    if matches!(
+        check_satisfiability(hyp_constraints.clone()),
+        SatOutcome::Contradiction
+    ) {
+        return DischargeResult::Proven { layer: Layer::L4 };
+    }
+
+    // Not provable — but is it definitely *false*? `Γ ∧ goal` UNSAT means
+    // no value Γ permits can satisfy the goal, so the call can never be
+    // valid: a compile-time error rather than a runtime check.
+    let mut system = hyp_constraints;
+    let mut goal_is_linear = true;
+    for clause in &goal_clauses {
+        match constraints_from_clause(clause) {
+            Some(constraints) => system.extend(constraints),
+            None => {
+                goal_is_linear = false;
+                break;
+            }
+        }
+    }
+    if goal_is_linear && matches!(check_satisfiability(system), SatOutcome::Contradiction) {
+        return DischargeResult::Violated {
+            counterexample: format!(
+                "no value satisfying the hypotheses can satisfy `{}`",
+                quote::quote!(#goal)
+            ),
+        };
+    }
+
+    DischargeResult::Runtime
+}
+
+/// Constraints for a hypothesis system: clauses outside the linear
+/// fragment are skipped rather than failing the whole conversion (see this
+/// section's own note on why dropping hypotheses is sound in both
+/// directions).
+///
+/// Equalities are additionally emitted as their two inequalities so
+/// Fourier-Motzkin can use them. Real MVL's `is_unsat` drops equalities
+/// from that phase entirely — a limitation worth inheriting where this
+/// backend ports its algorithm verbatim ([`discharge_l4`]), but not here,
+/// where `x == 5` as a hypothesis is exactly the kind of fact a call site
+/// needs propagated.
+fn system_constraints(clauses: &[&Expr]) -> Vec<Constraint> {
+    let mut out = Vec::new();
+    for clause in clauses {
+        let Some(constraints) = constraints_from_clause(clause) else {
+            continue;
+        };
+        for constraint in constraints {
+            if let Constraint::Eq(term) = &constraint {
+                out.push(Constraint::Le(term.clone()));
+                out.push(Constraint::Le(term.negate()));
+            }
+            out.push(constraint);
+        }
+    }
+    out
+}
+
+/// `¬clause` as linear constraints. Over the integers `¬(t ≤ 0)` is
+/// `t ≥ 1`, so a clause that converts to a single inequality negates to a
+/// single inequality — no disjunction, no new machinery. An equality (or
+/// anything else) has no such form, so `None`: the caller treats that
+/// clause as not entailed rather than guessing.
+fn negated_constraints(clause: &Expr) -> Option<Vec<Constraint>> {
+    match constraints_from_clause(clause)?.as_slice() {
+        [Constraint::Le(term)] => {
+            let mut negated = term.negate();
+            negated.constant += 1;
+            Some(vec![Constraint::Le(negated)])
+        }
+        _ => None,
+    }
+}
+
+/// Substitutes each named variable with an arbitrary expression — the
+/// call-site substitution step (`pred[params := args]`). A quantifier that
+/// binds one of the names shadows it, as in [`substitute`].
+pub fn substitute_exprs(pred: &Predicate, bindings: &HashMap<String, Expr>) -> Predicate {
+    match pred {
+        Predicate::Expr(expr) => {
+            let mut cloned = expr.clone();
+            SubstituteExprs { bindings }.visit_expr_mut(&mut cloned);
+            Predicate::Expr(cloned)
+        }
+        Predicate::Forall { var, lo, hi, body } => Predicate::Forall {
+            var: var.clone(),
+            lo: *lo,
+            hi: *hi,
+            body: Box::new(substitute_exprs(body, &without(bindings, var))),
+        },
+        Predicate::Exists { var, lo, hi, body } => Predicate::Exists {
+            var: var.clone(),
+            lo: *lo,
+            hi: *hi,
+            body: Box::new(substitute_exprs(body, &without(bindings, var))),
+        },
+    }
+}
+
+/// `bindings` minus any entry the quantifier's own bound variable shadows.
+fn without(bindings: &HashMap<String, Expr>, bound: &Ident) -> HashMap<String, Expr> {
+    let bound = bound.to_string();
+    bindings
+        .iter()
+        .filter(|(name, _)| **name != bound)
+        .map(|(name, expr)| (name.clone(), expr.clone()))
+        .collect()
+}
+
+struct SubstituteExprs<'a> {
+    bindings: &'a HashMap<String, Expr>,
+}
+
+impl VisitMut for SubstituteExprs<'_> {
+    fn visit_expr_mut(&mut self, expr: &mut Expr) {
+        let replacement = match &expr {
+            Expr::Path(path) if path.qself.is_none() => path
+                .path
+                .get_ident()
+                .and_then(|ident| self.bindings.get(&ident.to_string()))
+                .cloned(),
+            _ => None,
+        };
+        if let Some(replacement) = replacement {
+            // Parenthesized so a compound argument (`n - 1`, `a + b`)
+            // keeps its own precedence once spliced into the predicate.
+            *expr = Expr::Paren(syn::ExprParen {
+                attrs: vec![],
+                paren_token: Default::default(),
+                expr: Box::new(replacement),
+            });
+            return;
+        }
+        visit_mut::visit_expr_mut(self, expr);
+    }
+}
+
 // ── L4: linear arithmetic via Fourier-Motzkin elimination (#35) ────────────
 //
 // Ported from `mvl-lang/mvl`'s real `src/mvl/checker/solver/layer4.rs` --
@@ -352,9 +698,10 @@ fn discharge_expr(expr: &Expr) -> DischargeResult {
 // divisibility check, not full Cooper quantifier elimination (filed as
 // `mvl-lang/mvl#2022`, a real naming inaccuracy found while porting this).
 //
-// Adapted to this backend's satisfiability framing rather than real MVL's
-// call-site/hypothesis framing (`rust-refine` has no call graph -- see
-// `mvl-lang/mvl-rust#38`): every clause of the flattened `&&`-conjunction
+// Adapted to the coherence framing this path serves -- declaration sites,
+// where there are no arguments to reason about -- rather than real MVL's
+// call-site/hypothesis framing, which lives in `entail_expr` above (#38):
+// every clause of the flattened `&&`-conjunction
 // (not just the ones L1/L2 left `Unknown`) is converted to a `Constraint`;
 // if every clause converts, the *conjunction itself* is checked for
 // unsatisfiability (no negation needed, unlike real MVL's refutation-based
