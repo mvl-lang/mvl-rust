@@ -209,14 +209,26 @@ fn a_satisfiable_gamma_that_rules_the_goal_out_is_still_violated() {
 }
 
 #[test]
-fn an_equality_goal_ruled_out_by_gamma_falls_to_runtime_not_violated() {
-    // Precision limit, not unsoundness, and it predates #38's entailment
-    // path: `system_constraints` expands an equality *hypothesis* into its
-    // two inequalities so Fourier-Motzkin can use it, but the `Γ ∧ goal`
-    // check feeds goal clauses in raw, and the ported L4 drops equalities.
-    // So `x >= 5 ∧ x == 3` is not detected as the contradiction it is.
-    // Recorded here so the asymmetry is deliberate rather than forgotten.
+fn an_equality_goal_ruled_out_by_gamma_is_violated() {
+    // Was `Runtime` until #43: `system_constraints` expanded an equality
+    // *hypothesis* into its two inequalities so Fourier-Motzkin could use
+    // it, but the `Γ ∧ goal` check fed goal clauses in raw and the ported
+    // L4 drops equalities, so `x >= 5 ∧ x == 3` was never seen as the
+    // contradiction it is. Both sides now get the same expansion.
     let result = entail(&["x >= 5"], "x == 3");
+    assert!(
+        matches!(result, DischargeResult::Violated { .. }),
+        "expected Violated, got {result:?}"
+    );
+}
+
+#[test]
+fn an_equality_goal_merely_unproven_by_gamma_stays_runtime() {
+    // The boundary the two-inequality split must respect: `x == 7` is
+    // satisfiable under `x >= 5` but not entailed by it, so it is neither
+    // `Proven` nor `Violated`. Requiring *both* halves of the negation to
+    // be unsat is what keeps this from becoming a false `Proven`.
+    let result = entail(&["x >= 5"], "x == 7");
     assert!(
         matches!(result, DischargeResult::Runtime),
         "expected Runtime, got {result:?}"
@@ -247,4 +259,85 @@ fn nested_quantifiers_within_the_cap_still_expand() {
     // turn every nested quantifier into an unconditional `Runtime`.
     let pred = goal("forall i in [0..19] . forall j in [0..19] . i + j < n");
     assert_proven_at(discharge_entailment(&gamma(&["n > 100"]), &pred), Layer::L3);
+}
+
+// ── Equality goals (#43) ──────────────────────────────────────────────────
+//
+// An equality goal used to be unprovable outside the narrow case where Γ
+// pinned the variable to a point interval -- not even a syntactic identity.
+// Two independent mechanisms close it, and neither subsumes the other:
+// L1 reflexivity reaches non-linear terms the L4 split cannot represent,
+// and the L4 split reaches rearranged terms L1's structural match misses.
+
+#[test]
+fn a_reflexive_goal_is_proven_at_l1() {
+    assert_proven_at(entail(&[], "a == a"), Layer::L1);
+    assert_proven_at(entail(&[], "a <= a"), Layer::L1);
+    assert_proven_at(entail(&[], "a >= a"), Layer::L1);
+}
+
+#[test]
+fn an_irreflexive_goal_is_violated_at_l1() {
+    for text in ["a != a", "a < a", "a > a"] {
+        let result = entail(&[], text);
+        assert!(
+            matches!(result, DischargeResult::Violated { .. }),
+            "`{text}` can never hold, got {result:?}"
+        );
+    }
+}
+
+#[test]
+fn reflexivity_sees_through_one_sided_parenthesization() {
+    // The shape call-site substitution actually produces: `substitute_exprs`
+    // parenthesizes every argument it splices in, so a return-site
+    // obligation for `ensures(result == a + b)` with body `a + b` arrives
+    // grouped on one side only. A plain `==` on `syn::Expr` would miss it.
+    assert_proven_at(entail(&[], "(a + b) == a + b"), Layer::L1);
+    assert_proven_at(entail(&[], "((a)) == a"), Layer::L1);
+}
+
+#[test]
+fn a_non_linear_identity_is_reachable_only_by_l1() {
+    // `a * b` is outside the linear fragment, so `constraints_from_clause`
+    // rejects it and the L4 split never sees it -- yet
+    // `#[mvl::ensures(result == a * b)] fn mul(a, b) { a * b }` is an
+    // ordinary postcondition. Structural reflexivity is what discharges it.
+    assert_proven_at(entail(&[], "(a * b) == a * b"), Layer::L1);
+}
+
+#[test]
+fn a_rearranged_equality_is_reachable_only_by_l4() {
+    // Structurally different, arithmetically identical -- the mirror image
+    // of the case above, and why L1 reflexivity is not sufficient alone.
+    assert_proven_at(entail(&[], "(a + b) == b + a"), Layer::L4);
+    assert_proven_at(entail(&[], "(a + a) == 2 * a"), Layer::L4);
+}
+
+#[test]
+fn an_equality_goal_entailed_by_gamma_is_proven() {
+    // Two-sided constant bounds intersect to a point interval, so L2 closes
+    // this one without needing the split at all.
+    assert_proven_at(entail(&["x >= 7", "x <= 7"], "x == 7"), Layer::L2);
+}
+
+#[test]
+fn a_cross_variable_equality_goal_needs_the_l4_split() {
+    // `y >= x` is not a constant bound, so L2 cannot represent either the
+    // hypotheses or the goal. Only running both halves of the negation
+    // through Fourier-Motzkin closes it.
+    assert_proven_at(entail(&["y >= x", "y <= x"], "y == x"), Layer::L4);
+    // ...and one-sided is correctly not enough.
+    assert_eq!(entail(&["y >= x"], "y == x"), DischargeResult::Runtime);
+}
+
+#[test]
+fn reflexivity_is_structural_and_does_not_check_purity() {
+    // Deliberate, and a known deviation: `mvl-lang/mvl`'s `preds_equivalent`
+    // is also purely structural, but its `RefExpr` grammar cannot express a
+    // call in the first place, so the question never arises there. Ours can.
+    // If `f` is impure this conclusion is wrong. Recorded in ADR-0002's
+    // scope list; the fix is a purity signal from `rust-effect`, not a
+    // change here. Pinned so the deviation stays deliberate.
+    assert_proven_at(entail(&[], "f() == f()"), Layer::L1);
 }

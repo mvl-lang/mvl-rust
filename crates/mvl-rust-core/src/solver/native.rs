@@ -530,15 +530,18 @@ fn entail_expr(hypotheses: &[Expr], goal: &Expr) -> DischargeResult {
         };
     }
 
-    // L4: `Γ ∧ ¬clause` must be UNSAT for every clause L1/L2 left open.
+    // L4: `Γ ∧ ¬clause` must be UNSAT for every clause L1/L2 left open --
+    // and for an equality clause, for both halves of its negation.
     let hyp_constraints = system_constraints(&hyp_clauses);
     let all_entailed = unresolved.iter().all(|clause| {
-        let Some(negated) = negated_constraints(clause) else {
+        let Some(alternatives) = negation_alternatives(clause) else {
             return false;
         };
-        let mut system = hyp_constraints.clone();
-        system.extend(negated);
-        matches!(check_satisfiability(system), SatOutcome::Contradiction)
+        alternatives.into_iter().all(|negated| {
+            let mut system = hyp_constraints.clone();
+            system.extend(negated);
+            matches!(check_satisfiability(system), SatOutcome::Contradiction)
+        })
     });
     if all_entailed {
         return DischargeResult::Proven { layer: Layer::L4 };
@@ -564,7 +567,10 @@ fn entail_expr(hypotheses: &[Expr], goal: &Expr) -> DischargeResult {
     let mut goal_is_linear = true;
     for clause in &goal_clauses {
         match constraints_from_clause(clause) {
-            Some(constraints) => system.extend(constraints),
+            // Goal equalities get the same two-inequality treatment as
+            // hypothesis ones. Without it Fourier-Motzkin drops them and
+            // `x >= 5 ∧ x == 3` is never seen as the contradiction it is.
+            Some(constraints) => system.extend(with_equality_bounds(constraints)),
             None => {
                 goal_is_linear = false;
                 break;
@@ -600,28 +606,57 @@ fn system_constraints(clauses: &[&Expr]) -> Vec<Constraint> {
         let Some(constraints) = constraints_from_clause(clause) else {
             continue;
         };
-        for constraint in constraints {
-            if let Constraint::Eq(term) = &constraint {
-                out.push(Constraint::Le(term.clone()));
-                out.push(Constraint::Le(term.negate()));
-            }
-            out.push(constraint);
-        }
+        out.extend(with_equality_bounds(constraints));
     }
     out
 }
 
-/// `¬clause` as linear constraints. Over the integers `¬(t ≤ 0)` is
-/// `t ≥ 1`, so a clause that converts to a single inequality negates to a
-/// single inequality — no disjunction, no new machinery. An equality (or
-/// anything else) has no such form, so `None`: the caller treats that
-/// clause as not entailed rather than guessing.
-fn negated_constraints(clause: &Expr) -> Option<Vec<Constraint>> {
+/// Each `Eq(t)` accompanied by the two inequalities it implies (`t ≤ 0`
+/// and `-t ≤ 0`), so Fourier-Motzkin — which only consumes `Le` — can use
+/// it. The equality itself is kept for the divisibility check.
+fn with_equality_bounds(constraints: Vec<Constraint>) -> Vec<Constraint> {
+    let mut out = Vec::with_capacity(constraints.len());
+    for constraint in constraints {
+        if let Constraint::Eq(term) = &constraint {
+            out.push(Constraint::Le(term.clone()));
+            out.push(Constraint::Le(term.negate()));
+        }
+        out.push(constraint);
+    }
+    out
+}
+
+/// The constraint systems that must **each** be unsatisfiable for `clause`
+/// to be entailed. Returns `None` when the clause is outside the linear
+/// fragment, which the caller treats as not entailed rather than guessing.
+///
+/// Over the integers `¬(t ≤ 0)` is `t ≥ 1`, so an inequality yields one
+/// system and needs no disjunction.
+///
+/// An equality has no single-inequality negation — `¬(t = 0)` is
+/// `t ≤ -1 ∨ t ≥ 1` — but proving one never requires negating it as a
+/// whole. `t = 0` holds exactly when `t ≤ 0` and `t ≥ 0` both do, so it
+/// splits into the two inequality questions this backend already answers:
+/// `Γ ∧ t ≥ 1` unsat *and* `Γ ∧ t ≤ -1` unsat. Same trick as the
+/// conjunctive-goal decomposition, one level down.
+fn negation_alternatives(clause: &Expr) -> Option<Vec<Vec<Constraint>>> {
     match constraints_from_clause(clause)?.as_slice() {
+        // ¬(t ≤ 0) is t ≥ 1, i.e. `-t + 1 ≤ 0`.
         [Constraint::Le(term)] => {
             let mut negated = term.negate();
             negated.constant += 1;
-            Some(vec![Constraint::Le(negated)])
+            Some(vec![vec![Constraint::Le(negated)]])
+        }
+        // t = 0 ⟺ t ≤ 0 ∧ t ≥ 0; negate each half separately.
+        [Constraint::Eq(term)] => {
+            let mut above = term.negate();
+            above.constant += 1; // t ≥ 1
+            let mut below = term.clone();
+            below.constant += 1; // t ≤ -1
+            Some(vec![
+                vec![Constraint::Le(above)],
+                vec![Constraint::Le(below)],
+            ])
         }
         _ => None,
     }
@@ -1087,6 +1122,22 @@ fn classify_clause(expr: &Expr) -> Clause {
 }
 
 fn classify_comparison(bin: &syn::ExprBinary) -> Clause {
+    // `L1` reflexivity, before any var/lit analysis: comparing a term with
+    // itself is decided by its operator alone, whatever the term is. This
+    // is the only rule that reaches a *non-linear* identity
+    // (`a * b == a * b`), which the `L4` split below cannot represent.
+    if exprs_equivalent(&bin.left, &bin.right) {
+        match bin.op {
+            syn::BinOp::Eq(_) | syn::BinOp::Le(_) | syn::BinOp::Ge(_) => {
+                return Clause::Constant(true)
+            }
+            syn::BinOp::Ne(_) | syn::BinOp::Lt(_) | syn::BinOp::Gt(_) => {
+                return Clause::Constant(false)
+            }
+            _ => {}
+        }
+    }
+
     let left_var = ident_name(&bin.left);
     let left_lit = int_value(&bin.left);
     let right_var = ident_name(&bin.right);
@@ -1109,6 +1160,43 @@ fn classify_comparison(bin: &syn::ExprBinary) -> Clause {
             None => Clause::Unknown,
         },
         _ => Clause::Unknown,
+    }
+}
+
+/// Structural equality on two expressions, transparent to parenthesization
+/// on either side independently. Ported from `mvl-lang/mvl`'s
+/// `preds_equivalent` (`src/mvl/checker/solver/layer1.rs`), whose `Grouped`
+/// arm matches one-sided grouping the same way.
+///
+/// That asymmetry is load-bearing here: call-site substitution parenthesizes
+/// every argument it splices in, so a return-site obligation arrives as
+/// `(a + b) == a + b` — grouped on the left only. A plain `==` on
+/// `syn::Expr` would see the `Paren` node and say no.
+///
+/// **This is structural, not semantic, and deliberately does not check
+/// purity** — see the impurity note in `discharge_predicate`'s own docs.
+fn exprs_equivalent(a: &Expr, b: &Expr) -> bool {
+    let (a, b) = (ungroup(a), ungroup(b));
+    match (a, b) {
+        (Expr::Binary(x), Expr::Binary(y)) => {
+            x.op == y.op
+                && exprs_equivalent(&x.left, &y.left)
+                && exprs_equivalent(&x.right, &y.right)
+        }
+        (Expr::Unary(x), Expr::Unary(y)) => x.op == y.op && exprs_equivalent(&x.expr, &y.expr),
+        // `syn`'s `PartialEq` (the `extra-traits` feature) compares token
+        // structure and ignores spans, which is exactly the comparison
+        // wanted for the leaves.
+        _ => a == b,
+    }
+}
+
+/// `expr` with any layers of parenthesization or invisible grouping peeled off.
+fn ungroup(expr: &Expr) -> &Expr {
+    match expr {
+        Expr::Paren(paren) => ungroup(&paren.expr),
+        Expr::Group(group) => ungroup(&group.expr),
+        other => other,
     }
 }
 

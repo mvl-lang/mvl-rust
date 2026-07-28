@@ -113,6 +113,16 @@ no cross-file resolution:
 - **Bounded expansion is capped on the product of quantifier widths**, not each
   width independently — nesting two legal 1000-wide ranges would otherwise expand
   to a million instances, each running a full entailment query.
+- **L1 reflexivity is structural and does not check purity** (#43). `t == t` is
+  `Proven` and `t < t` is `Violated` for any term `t`, decided by comparing the
+  two sides as trees. This is ported from real MVL's `preds_equivalent`, but with
+  a deviation worth naming: MVL's `RefExpr` grammar cannot express a function
+  call, so the question never arises there, whereas our predicates are arbitrary
+  `syn::Expr`. `f() == f()` is therefore `Proven`, which is **wrong if `f` is
+  impure**. Accepted deliberately to match upstream rather than diverge; pinned by
+  `entailment.rs::reflexivity_is_structural_and_does_not_check_purity` so it stays
+  a known deviation. The principled fix is a purity signal from `rust-effect`,
+  which already models `#[mvl::effect(...)]` — not a change to the solver.
 
 Each is asserted by a test so it stays a deliberate boundary rather than becoming
 an unnoticed hole.
