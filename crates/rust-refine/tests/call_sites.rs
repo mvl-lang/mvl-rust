@@ -888,3 +888,96 @@ fn an_informational_outcome_does_not_fail_the_build() {
             .collect::<Vec<_>>()
     );
 }
+
+// ── Γ's soundness invariant (#47) ─────────────────────────────────────────
+//
+// ADR-0006 §5: a fact is admitted to Γ only if it has been established, or is
+// an obligation some other program point is required to discharge. A
+// postcondition whose own return site did not close is neither — `rust-refine`
+// inserts no runtime check, so nothing anywhere enforces it.
+
+#[test]
+fn an_unenforced_postcondition_does_not_enter_gamma() {
+    // Spec 007 Requirement 2. `b & 15` is at most 15, so `result > 100` is
+    // false for every input — and `&` is outside the linear fragment, so the
+    // return site cannot be discharged either way. Before #47 the caller
+    // picked it up regardless and reported `(y) > 50` as "proven at L2" from
+    // a premise false for every `i64`.
+    let result = only_call_site(
+        "#[mvl::ensures(result > 100)]\n\
+         fn suspicious(b: i64) -> i64 { b & 15 }\n\
+         #[mvl::requires(v > 50)]\n\
+         fn needs_big(v: i64) {}\n\
+         fn caller(b: i64) { let y = suspicious(b); needs_big(y); }",
+    );
+    assert_eq!(
+        result,
+        DischargeResult::Runtime,
+        "an undischarged postcondition must not prove a downstream call"
+    );
+}
+
+#[test]
+fn an_established_postcondition_still_enters_gamma() {
+    // The gate must cost nothing where the callee does deliver: `(1) > 0`
+    // closes at L1, so `produce`'s postcondition is established and remains a
+    // usable premise. Without this the fix would silently disable propagation
+    // altogether, which passes the test above for the wrong reason.
+    let result = only_call_site(
+        "#[mvl::ensures(result > 0)]\n\
+         fn produce() -> i64 { 1 }\n\
+         #[mvl::requires(v > 0)]\n\
+         fn need_pos(v: i64) {}\n\
+         fn caller() { let y = produce(); need_pos(y); }",
+    );
+    assert!(
+        matches!(result, DischargeResult::Proven { .. }),
+        "an established postcondition must still propagate, got {result:?}"
+    );
+}
+
+#[test]
+fn a_violated_postcondition_does_not_enter_gamma_either() {
+    // The other half of "not established": a return site that is definitely
+    // `Violated` is no more usable as a premise than one that is merely
+    // undischarged. The callee is an error in its own right; that must not
+    // also license a proof in the caller.
+    let result = only_call_site(
+        "#[mvl::ensures(result > 0)]\n\
+         fn always_negative() -> i64 { -1 }\n\
+         #[mvl::requires(v > 0)]\n\
+         fn need_pos(v: i64) {}\n\
+         fn caller() { let y = always_negative(); need_pos(y); }",
+    );
+    assert_eq!(result, DischargeResult::Runtime);
+}
+
+#[test]
+fn a_runtime_outcome_does_not_claim_a_check_was_inserted() {
+    // Spec 007 Requirement 1. The tool emits no runtime check, so a diagnostic
+    // saying it does is a claim nothing backs — and it is what made an
+    // unenforced fact read as usable in the first place (#47).
+    let diagnostics = check_source(
+        "#[mvl::requires(0 <= b && b <= 255)]\n\
+         #[mvl::ensures(0 <= result && result <= 15)]\n\
+         fn mask_low_nibble(b: i64) -> i64 { b & 15 }",
+    )
+    .expect("fixture parses");
+    let runtime: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.message.contains("is not established"))
+        .collect();
+    assert!(!runtime.is_empty(), "expected an undischarged return site");
+    for d in runtime {
+        assert!(
+            !d.message.contains("inserting a runtime check"),
+            "must not claim a check was inserted: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("unverified"),
+            "must say the obligation is unverified: {}",
+            d.message
+        );
+    }
+}

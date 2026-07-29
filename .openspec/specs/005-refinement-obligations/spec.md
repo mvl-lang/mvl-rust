@@ -24,7 +24,7 @@ Obligations arise at three program points, asking two different questions:
 
 - **Coherence is not a weaker entailment.** A declaration site has no arguments to reason about, so coherence is the only question available there — and a self-contradictory `requires` is a real defect worth its own error.
 - **Hypotheses may be dropped; goal clauses may not.** Fewer facts make both `Γ ∧ ¬goal` and `Γ ∧ goal` easier to satisfy, so dropping a hypothesis costs precision in *both* directions and correctness in neither.
-- **Γ must not contain what nothing established.** Stated as an invariant in ADR-0006 §5; the violations found so far are #50 and #47.
+- **Γ must not contain what nothing established.** Stated as an invariant in ADR-0006 §5 and audited per fact source in Requirement 4. Source 3 was violated until #47; #50 tracks three remaining construction paths.
 
 ---
 
@@ -121,9 +121,25 @@ The hypothesis context MUST contain:
 
 1. the enclosing function's own `requires` clauses;
 2. branch narrowing — inside `if c { … }` the condition `c` holds, in the `else` arm its negation does, and a `while` body carries its condition;
-3. postcondition propagation — after `let y = g(x);`, `g`'s `ensures` with `result := y` and `g`'s parameters bound to the actual arguments.
+3. postcondition propagation — after `let y = g(x);`, `g`'s `ensures` with `result := y` and `g`'s parameters bound to the actual arguments, **and only when every one of `g`'s return sites discharged to `Proven`** (#47).
 
 Γ MUST be block-scoped, so a fact never outlives the block that established it.
+
+Source 3's condition is what makes propagation an assumption rather than a guess. A postcondition reaching `Runtime` or `Violated` MUST NOT be propagated: `rust-refine` inserts no runtime check (spec 007), so nothing anywhere enforces it.
+
+Closure MUST be computed conservatively. The implementation uses a pre-pass that itself propagates nothing, which under-credits rather than over-credits — a return site that would only close using a propagated fact is not counted, so that function's postcondition does not propagate in turn. Imprecise, never unsound (ADR-0001 §5), and it avoids a circularity: closure would otherwise depend on the map being built.
+
+#### Audit of Γ's three fact sources against the invariant
+
+ADR-0006 §5 states it: *a fact is admitted to Γ only if it has been established, or is an obligation some other program point is required to discharge.* Verdict per source:
+
+| Source | Verdict | Why |
+|---|---|---|
+| 1. The function's own `requires` | **holds** | A precondition is an obligation every *call site* must discharge, so assuming it inside the body is the modular-verification bargain, not an unbacked claim. |
+| 2. Branch narrowing | **holds** | `c` inside `if c { … }` is established by the program's own control flow. Nothing needs to discharge it. |
+| 3. Postcondition propagation | **holds since #47**; violated before | The callee's return-site obligation establishes it, and that is now checked before the fact is admitted. |
+
+Recorded including the sources that turned out fine. #47's diagnosis was that the invariant had never been written down, so it got rediscovered one violation at a time — a verdict per source is what stops that.
 
 A quantified `requires` is a usable *goal* but MUST NOT enter Γ as a hypothesis.
 
@@ -186,7 +202,7 @@ A hypothesis outside the decidable fragment — an opaque call, a non-linear ter
 - **`match`-arm patterns do not narrow Γ.** An arm *is* a return point (Requirement 3) but contributes no hypothesis. Imprecise, never unsound.
 - **`?` is not a return point.** Its early `Err(…)` is not `result`-shaped under a type-free view. An unmodelled tail expression is substituted whole and falls to a runtime check rather than being skipped — #48.
 - **Arithmetic is over unbounded ℤ with no overflow modelling.** `x >= i64::MAX ⊢ x + i64::MAX > 0` is `Proven` though the Rust expression overflows.
-- **Γ construction currently admits facts nothing established** — pattern bindings that do not invalidate, loop-carried mutation, and arity-mismatch parameter capture, all producing a false `Proven` on compiling code (#50). A postcondition reaching only `Runtime` is still propagated (#47). Requirement 5 is the rule these violate.
+- **Three Γ-construction paths still admit facts nothing established** (#50): pattern bindings that do not invalidate (`for`, closure params, `match`, `if let`), loop-carried mutation, and arity-mismatch parameter capture in propagation. Each produces a false `Proven` on compiling code. The `Runtime`-propagation path was a fourth and is fixed (#47); Requirement 4's audit table is what should make a fifth predicted rather than discovered.
 - **Obligation ids collide**, so assurance leaves are not addressable (#51).
 
 ---

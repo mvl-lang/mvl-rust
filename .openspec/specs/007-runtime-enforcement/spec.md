@@ -2,7 +2,7 @@
 
 **Domain:** Enforcement / soundness of Γ
 **Version:** 0.1.0
-**Status:** Not implemented — 0 of 7 scenarios evidenced
+**Status:** Partially implemented — Requirements 1–2 landed in #47; 3–6 await #53
 **Date:** 2026-07-29
 **Decided by:** ADR-0006 §4–§5
 
@@ -38,7 +38,7 @@ A diagnostic for an obligation whose outcome is a runtime check MUST NOT assert 
 
 This requirement is independent of every other in this spec and MUST be satisfiable without any injection.
 
-**Implementation:** `crates/rust-refine/src/checks.rs` — not yet implemented (#47)
+**Implementation:** `crates/rust-refine/src/checks.rs`
 
 #### Scenario: A runtime outcome is described honestly
 
@@ -46,6 +46,8 @@ This requirement is independent of every other in this spec and MUST be satisfia
 - WHEN the diagnostic is rendered
 - THEN it MUST NOT claim a runtime assertion was inserted
 - AND it MUST name the hypotheses available at that point
+
+**Tests:** `crates/rust-refine/tests/call_sites.rs::a_runtime_outcome_does_not_claim_a_check_was_inserted`
 
 ### Requirement 2: An unenforced postcondition must not enter the hypothesis context [MUST]
 
@@ -55,7 +57,7 @@ This is the invariant stated in ADR-0006 §5:
 
 > A fact is admitted to Γ only if it has been established, or is an obligation some other program point is required to discharge.
 
-**Implementation:** `crates/rust-refine/src/checks.rs` — not yet implemented (#47)
+**Implementation:** `crates/rust-refine/src/checks.rs`
 
 #### Scenario: A runtime-only postcondition proves nothing downstream
 
@@ -64,6 +66,8 @@ This is the invariant stated in ADR-0006 §5:
 - WHEN the call-site obligation is discharged
 - THEN it MUST NOT be reported as `Proven`
 - AND `result > 100` MUST NOT appear in the caller's Γ
+
+**Tests:** `crates/rust-refine/tests/call_sites.rs::an_unenforced_postcondition_does_not_enter_gamma`, `::an_established_postcondition_still_enters_gamma`, `::a_violated_postcondition_does_not_enter_gamma_either`
 
 ### Requirement 3: Contract attributes enforce their predicates at runtime [MUST]
 
