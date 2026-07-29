@@ -1118,3 +1118,64 @@ fn a_loop_that_assigns_nothing_keeps_its_hypotheses() {
         "assigning `other` must not retire `x`'s hypothesis, got {result:?}"
     );
 }
+
+#[test]
+fn an_unmodelled_tail_construct_is_substituted_whole_and_stays_unclosed() {
+    // #48. The docs used to claim an unmodelled construct yields *no*
+    // obligation. It yields one over the whole expression instead, and that
+    // difference is load-bearing since #47: a function with zero return-site
+    // obligations is treated as closed (`all()` over an empty set), so skipping
+    // would mark this closed and propagate `result > 0` from a body that
+    // returns -5.
+    let sites = return_sites(
+        "#[mvl::ensures(result > 0)]\n\
+         fn f() -> i64 { loop { break -5; } }",
+    );
+    assert_eq!(
+        sites.len(),
+        1,
+        "the loop is substituted whole, got {sites:?}"
+    );
+    assert_eq!(
+        sites[0].1,
+        DischargeResult::Runtime,
+        "the solver cannot decide it, which is what keeps the fn unclosed"
+    );
+}
+
+#[test]
+fn an_unmodelled_tail_construct_blocks_propagation() {
+    // The consequence of the above, end to end: because `f`'s return site never
+    // closes, its postcondition must not reach the caller's Γ.
+    let result = only_call_site(
+        "#[mvl::ensures(result > 0)]\n\
+         fn f() -> i64 { loop { break -5; } }\n\
+         #[mvl::requires(v > 0)]\n\
+         fn need_pos(v: i64) {}\n\
+         fn caller() { let y = f(); need_pos(y); }",
+    );
+    assert_eq!(result, DischargeResult::Runtime);
+}
+
+#[test]
+fn a_diverging_body_propagates_because_the_continuation_is_unreachable() {
+    // Pins the one safe reading of `return_site_closure`'s empty `all()` (#48).
+    // `diverges` has no return point, so zero return-site obligations, so it
+    // counts as closed and its postcondition propagates. Sound *only* because
+    // the function never returns — the caller's `need_pos(y)` is unreachable,
+    // and proving things about unreachable code is vacuous.
+    //
+    // This test exists so that if the empty case ever stops being safe, it
+    // fails here rather than silently licensing a false proof elsewhere.
+    let result = only_call_site(
+        "#[mvl::ensures(result > 0)]\n\
+         fn diverges() -> i64 { panic!(\"never returns\") }\n\
+         #[mvl::requires(v > 0)]\n\
+         fn need_pos(v: i64) {}\n\
+         fn caller() { let y = diverges(); need_pos(y); }",
+    );
+    assert!(
+        matches!(result, DischargeResult::Proven { .. }),
+        "documented as vacuously sound; got {result:?}"
+    );
+}
