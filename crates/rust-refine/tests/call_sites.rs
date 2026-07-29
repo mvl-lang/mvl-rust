@@ -860,3 +860,31 @@ fn a_violated_return_site_is_an_error_and_fails_the_build() {
         diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn an_informational_outcome_does_not_fail_the_build() {
+    // Spec 008 Requirement 1: only `Level::Error` fails the build. A file whose
+    // obligations are all proven or all deferred to a runtime check must not
+    // produce an error, which is what gate mode keys on. `mask_low_nibble`'s
+    // shape is the interesting half: `&` is outside the linear fragment, so its
+    // return site is undischarged — and that must still be a note, not an error.
+    let diagnostics = check_source(
+        "#[mvl::requires(0 <= b && b <= 255)]\n\
+         #[mvl::ensures(0 <= result && result <= 15)]\n\
+         fn mask_low_nibble(b: i64) -> i64 { b & 15 }",
+    )
+    .expect("fixture parses");
+    assert!(
+        !diagnostics.is_empty(),
+        "expected informational diagnostics to be reported at all"
+    );
+    assert!(
+        !diagnostics.iter().any(|d| d.level == Level::Error),
+        "an undischarged obligation must be informational, not build-failing; got {:?}",
+        diagnostics
+            .iter()
+            .filter(|d| d.level == Level::Error)
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}

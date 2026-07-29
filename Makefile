@@ -1,5 +1,6 @@
 .PHONY: help build test check fmt fmt-check clippy examples examples-verbose clean \
-	test-core test-limit test-total test-refine test-effect test-ifc test-cargo-mvl
+	test-core test-limit test-total test-refine test-effect test-ifc test-cargo-mvl \
+	coverage assurance assurance-gate compliance compile
 
 help:
 	@echo "Targets:"
@@ -18,6 +19,11 @@ help:
 	@echo "  examples           build+run hello-world, rust-limit-demo, rust-total-demo, rust-refine-demo, rust-effect-demo, rust-ifc-demo, check all (summary only)"
 	@echo "  examples-verbose   same, but print the violating example's full diagnostics"
 	@echo "  check              fmt-check + clippy + test + examples (mirrors CI)"
+	@echo "  compile            fail fast: does the workspace compile at all?"
+	@echo "  coverage           cargo llvm-cov line/function coverage (cached in target/llvm-cov.json)"
+	@echo "  assurance          ISPE scenario-coverage dashboard (VERBOSE=true for per-scenario)"
+	@echo "  assurance-gate     CI gate: compile + unresolved links + scenario 75% + line 80%"
+	@echo "  compliance         check + coverage + assurance-gate (full pipeline)"
 	@echo "  clean              cargo clean (workspace + example crates)"
 
 build:
@@ -186,6 +192,34 @@ examples-verbose: build
 	! ./target/debug/cargo-mvl mvl check examples/rust-limit-demo/violating/src/main.rs
 
 check: fmt-check clippy test examples
+
+# === Assurance (ISPE) ===
+#
+# Intent (tickets) -> Specification (.openspec/specs) -> Program (crates/) -> Evidence (tests).
+# The unit is the SCENARIO: a requirement is an umbrella claim, a scenario is a
+# falsifiable one, and GIVEN/WHEN/THEN maps onto arrange/act/assert. Measuring at
+# requirement level let one test stand in for five scenarios.
+# Adapted from mvl-lang/mvl's tools/assurance.py.
+
+compile: ## Gate 1 -- if it does not compile, nothing downstream means anything
+	@cargo check --workspace --all-targets --quiet && echo "compiles"
+
+coverage: ## Line + function coverage via cargo-llvm-cov, cached for the dashboard
+	@command -v cargo-llvm-cov >/dev/null 2>&1 || { echo "cargo-llvm-cov not installed: cargo install cargo-llvm-cov"; exit 1; }
+	@cargo llvm-cov --workspace --json --ignore-run-fail > target/llvm-cov.json 2>/dev/null
+	@python3 -c "import json; d=json.load(open('target/llvm-cov.json')); t=d['data'][0]['totals']; l=t['lines']; f=t['functions']; print(f\"Lines:     {l['covered']}/{l['count']} ({l['percent']:.1f}%)\"); print(f\"Functions: {f['covered']}/{f['count']} ({f['percent']:.1f}%)\")"
+
+assurance: ## ISPE scenario-coverage dashboard (VERBOSE=true for per-scenario detail)
+	@python3 tools/assurance.py $(if $(VERBOSE),--verbose)
+
+# Both thresholds are ratchets at the current level, not targets: raise them as
+# evidence accrues, never lower them. Two failures are unconditional and ignore
+# the ratios entirely -- the workspace not compiling, and any Tests: link that
+# does not resolve.
+assurance-gate: compile coverage ## CI gate: compile + unresolved links + scenario 75% + line 80%
+	@python3 tools/assurance.py --min 0.75 --min-coverage 0.80
+
+compliance: check assurance-gate ## Full pipeline: check + compile + coverage + assurance gate
 
 clean:
 	cargo clean
