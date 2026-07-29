@@ -138,4 +138,4 @@ Malformed source MUST surface as a parse error.
 | **Specification** | this document |
 | **Decision** | ADR-0004; ADR-0002 (Requirements 2 and 4 of the subset protect this tool's mechanism directly) |
 | **Program** | `crates/rust-ifc/src/checks.rs` |
-| **Evidence** | `crates/rust-ifc/src/checks.rs::tests` (10 tests), `crates/rust-ifc/tests/assurance_mode.rs` (3 tests), `crates/mvl/tests/passthrough.rs` (label round-trip), `examples/rust-ifc-demo/{compliant,violating}/` |
+| **Evidence** | `crates/rust-ifc/src/checks.rs::tests` (10 tests), `crates/rust-ifc/tests/verification_mode.rs` (3 tests), `crates/mvl/tests/passthrough.rs` (label round-trip), `examples/rust-ifc-demo/{compliant,violating}/` |

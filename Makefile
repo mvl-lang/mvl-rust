@@ -21,7 +21,7 @@ help:
 	@echo "  check              fmt-check + clippy + test + examples (mirrors CI)"
 	@echo "  compile            fail fast: does the workspace compile at all?"
 	@echo "  coverage           cargo llvm-cov line/function coverage (cached in target/llvm-cov.json)"
-	@echo "  assurance          ISPE scenario-coverage dashboard (VERBOSE=true for per-scenario)"
+	@echo "  assurance          assurance dashboard: verification + traceability + evidence"
 	@echo "  assurance-gate     CI gate: compile + unresolved links + scenario 75% + line 80%"
 	@echo "  compliance         check + coverage + assurance-gate (full pipeline)"
 	@echo "  clean              cargo clean (workspace + example crates)"
@@ -195,11 +195,19 @@ check: fmt-check clippy test examples
 
 # === Assurance (ISPE) ===
 #
-# Intent (tickets) -> Specification (.openspec/specs) -> Program (crates/) -> Evidence (tests).
-# The unit is the SCENARIO: a requirement is an umbrella claim, a scenario is a
-# falsifiable one, and GIVEN/WHEN/THEN maps onto arrange/act/assert. Measuring at
-# requirement level let one test stand in for five scenarios.
-# Adapted from mvl-lang/mvl's tools/assurance.py.
+# ASSURANCE is the argument that this software is fit for purpose. Three levels
+# support it (ADR-0007), each with its own question, verb and artefact:
+#
+#   VERIFICATION   does the program satisfy its spec?    -> verdicts   (compile, examples, test)
+#   TRACEABILITY   do the four ISPE layers connect?      -> ratios     (assurance.py)
+#   EVIDENCE       what artefacts back the claims?       -> records    (coverage, --emit-verification-json)
+#
+# COMPLIANCE is downstream, not a fourth level: one case maps onto N standards.
+#
+# Traceability's unit is the SCENARIO, not the requirement: a requirement is an
+# umbrella claim, a scenario is a falsifiable one, and GIVEN/WHEN/THEN maps onto
+# arrange/act/assert. Measuring at requirement level let one test stand in for
+# five scenarios. Adapted from mvl-lang/mvl's tools/assurance.py.
 
 compile: ## Gate 1 -- if it does not compile, nothing downstream means anything
 	@cargo check --workspace --all-targets --quiet && echo "compiles"
@@ -209,15 +217,15 @@ coverage: ## Line + function coverage via cargo-llvm-cov, cached for the dashboa
 	@cargo llvm-cov --workspace --json --ignore-run-fail > target/llvm-cov.json 2>/dev/null
 	@python3 -c "import json; d=json.load(open('target/llvm-cov.json')); t=d['data'][0]['totals']; l=t['lines']; f=t['functions']; print(f\"Lines:     {l['covered']}/{l['count']} ({l['percent']:.1f}%)\"); print(f\"Functions: {f['covered']}/{f['count']} ({f['percent']:.1f}%)\")"
 
-assurance: ## ISPE scenario-coverage dashboard (VERBOSE=true for per-scenario detail)
+assurance: ## Assurance dashboard across the three levels (VERBOSE=true for per-scenario)
 	@python3 tools/assurance.py $(if $(VERBOSE),--verbose)
 
 # Both thresholds are ratchets at the current level, not targets: raise them as
 # evidence accrues, never lower them. Two failures are unconditional and ignore
 # the ratios entirely -- the workspace not compiling, and any Tests: link that
 # does not resolve.
-assurance-gate: compile coverage ## CI gate: compile + unresolved links + scenario 75% + line 80%
-	@python3 tools/assurance.py --min 0.75 --min-coverage 0.80
+assurance-gate: coverage ## CI gate: compile + unresolved links + scenario 75% + line 80%
+	@python3 tools/assurance.py --with-compile --min 0.75 --min-coverage 0.80
 
 compliance: check assurance-gate ## Full pipeline: check + compile + coverage + assurance gate
 

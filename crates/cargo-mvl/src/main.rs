@@ -184,7 +184,7 @@ fn run_single(tool: &str, files: &[PathBuf]) -> ExitCode {
 
 /// Assurance mode never fails the build: a file that can't be read or
 /// parsed is skipped (with a warning) rather than aborting the whole
-/// report, mirroring every tool's own `--emit-assurance-json` contract.
+/// report, mirroring every tool's own `--emit-verification-json` contract.
 /// `ProveSection` has no `diagnostics` field to record the skip in (only
 /// `obligations`), so the skip is only visible on stderr, not in the
 /// emitted JSON.

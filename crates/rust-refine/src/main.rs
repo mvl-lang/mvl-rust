@@ -19,16 +19,16 @@ fn main() -> ExitCode {
         args.remove(0);
     }
 
-    let emit_assurance_json = args.iter().any(|arg| arg == "--emit-assurance-json");
-    args.retain(|arg| arg != "--emit-assurance-json");
+    let emit_verification_json = args.iter().any(|arg| arg == "--emit-verification-json");
+    args.retain(|arg| arg != "--emit-verification-json");
 
     if args.is_empty() {
-        eprintln!("usage: cargo mvl-refine [--emit-assurance-json] <FILE>...");
+        eprintln!("usage: cargo mvl-refine [--emit-verification-json] <FILE>...");
         return ExitCode::from(2);
     }
 
-    if emit_assurance_json {
-        run_assurance_mode(&args)
+    if emit_verification_json {
+        run_verification_mode(&args)
     } else {
         run_gate_mode(&args)
     }
@@ -80,7 +80,7 @@ fn run_gate_mode(args: &[String]) -> ExitCode {
 /// the build: even a read/parse error surfaces as an empty obligation
 /// list in the emitted report rather than aborting (mirrors spec
 /// Requirement 14's contract for `rust-limit`/`rust-total`).
-fn run_assurance_mode(args: &[String]) -> ExitCode {
+fn run_verification_mode(args: &[String]) -> ExitCode {
     let mut results = Vec::new();
 
     for arg in args {

@@ -1,10 +1,10 @@
-# 008 — Diagnostics and Assurance Reporting
+# 008 — Reporting Across the Assurance Levels
 
 **Domain:** Output / evidence emission
 **Version:** 0.1.0
 **Status:** Implemented, with known mislabelling
 **Date:** 2026-07-29
-**Decided by:** ADR-0006 §5 (provenance); spec 001 (shared schema)
+**Decided by:** ADR-0007 (the vocabulary); ADR-0006 §5 (provenance); spec 001 (shared schema)
 
 ## Overview
 
@@ -15,6 +15,19 @@ Every tool in the workspace produces two outputs: human-facing diagnostics on st
 That sounds obvious and is currently violated in three places — a satisfiability check reported identically to an entailment proof, undischarged obligations serialised into a record named for proven ones, and diagnostic text asserting an action the code does not take. Each is filed; each is a requirement below.
 
 This spec is the fourth part of the refinement fan-out (005 obligations, 006 solver, 007 enforcement, 008 reporting) but applies to all five tools.
+
+**It spans all three assurance levels** (ADR-0007), which is why it is named for reporting rather than for one of them:
+
+| Requirement | Level |
+|---|---|
+| 1 — diagnostics carry level, span, snippet | **verification** (verdicts, human-facing) |
+| 2 — every tool emits the shared schema | **evidence** (records) |
+| 3 — obligation kinds distinguishable | **evidence** (a record must not overclaim) |
+| 4 — undischarged not recorded as proven | **evidence** |
+| 5 — obligations individually addressable | **evidence** (a case leaf must resolve to one obligation) |
+| 6 — `cargo mvl` aggregates in fixed order | **the case** (claim → argument → evidence) |
+
+Traceability is measured by `tools/assurance.py` and specified in spec 001; it has no requirement here.
 
 ### Philosophy
 
@@ -70,7 +83,7 @@ The schema MUST be stable across releases, with changes caught by snapshot evide
 - WHEN a tool runs in assurance mode
 - THEN valid JSON conforming to the shared schema MUST be emitted on stdout
 
-**Tests:** `crates/rust-limit/tests/assurance_mode.rs::emits_valid_assurance_json_for_compliant_source`
+**Tests:** `crates/rust-limit/tests/verification_mode.rs::emits_valid_verification_json_for_compliant_source`
 
 #### Scenario: An unreadable file is reported, not fatal
 
@@ -79,7 +92,7 @@ The schema MUST be stable across releases, with changes caught by snapshot evide
 - THEN the failure MUST appear as a diagnostic inside the report
 - AND the tool MUST NOT abort before emitting it
 
-**Tests:** `crates/rust-limit/tests/assurance_mode.rs::assurance_mode_captures_a_read_error_as_a_diagnostic_instead_of_aborting`
+**Tests:** `crates/rust-limit/tests/verification_mode.rs::verification_mode_captures_a_read_error_as_a_diagnostic_instead_of_aborting`
 
 ### Requirement 3: Obligation kinds must be distinguishable in the report [MUST]
 
@@ -156,5 +169,5 @@ The meta-command MUST run the five tools in the order `limit → total → refin
 | **Specification** | this document; spec 005–007 (what is being reported) |
 | **Decision** | ADR-0006 §5 (provenance must distinguish enforced from proven); ADR-0001 §3 (the five-tool dispatcher) |
 | **Program** | `crates/mvl-rust-core/src/assurance/`, `crates/mvl-rust-core/src/diagnostics.rs`, `crates/cargo-mvl/src/` |
-| **Evidence** | `crates/mvl-rust-core/tests/schema_stability.rs` (3 tests), `crates/mvl-rust-core/tests/diagnostics_ui.rs` (2 tests), five per-tool `tests/assurance_mode.rs` (19 tests), `crates/cargo-mvl/tests/check.rs` (11 tests) |
+| **Evidence** | `crates/mvl-rust-core/tests/schema_stability.rs` (3 tests), `crates/mvl-rust-core/tests/diagnostics_ui.rs` (2 tests), five per-tool `tests/verification_mode.rs` (19 tests), `crates/cargo-mvl/tests/check.rs` (11 tests) |
 | **Meta-evidence** | `tools/assurance.py` — the ISPE dashboard measuring completeness (S→P), coverage (E→P) and assurance (E→S) over this spec set |

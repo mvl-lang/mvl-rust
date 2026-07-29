@@ -3,7 +3,7 @@
 //! `rust-refine` already discharges every `requires`/`ensures` obligation
 //! per file (#8) -- this runs that same logic per file and bakes each
 //! obligation's provenance with the file path, the same convention
-//! `rust-refine`'s own `--emit-assurance-json` uses.
+//! `rust-refine`'s own `--emit-verification-json` uses.
 
 use mvl_rust_core::solver::{DischargeResult, Obligation};
 use rust_refine::checks::{self, CheckError};
