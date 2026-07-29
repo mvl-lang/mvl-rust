@@ -208,7 +208,7 @@
       ]
     },
     "Layer": {
-      "description": "The layer that discharged an obligation: trivial syntactic check,\n interval arithmetic, bounded path enumeration, Cooper's quantifier\n elimination, full SMT, or a runtime assertion when no static layer\n could close it. Serializes to the string values used by the\n assurance-JSON schema (spec Requirement 13) -- `JsonSchema` derived\n here since [`crate::assurance::schema::ProvenObligationRecord`]\n embeds this type directly.",
+      "description": "The layer that discharged an obligation: trivial syntactic check,\n interval arithmetic, bounded-quantifier expansion, Fourier–Motzkin\n elimination, full SMT, or a runtime outcome when no static layer could\n close it. The variant names are wire-compatible with upstream's stats keys\n and so keep the `L4`/`cooper` spelling; see the module doc for why the\n technique names differ (#55). Serializes to the string values used by the\n assurance-JSON schema (spec Requirement 13) -- `JsonSchema` derived\n here since [`crate::assurance::schema::ProvenObligationRecord`]\n embeds this type directly.",
       "type": "string",
       "enum": [
         "L1",
