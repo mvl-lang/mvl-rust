@@ -1210,7 +1210,15 @@ mod tests {
         .unwrap();
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].level, Level::Note);
-        assert!(diagnostics[0].message.contains("runtime check"));
+        // Assert on "unverified", not on the substring "runtime check": the
+        // reworded diagnostic (#47) says "no runtime check is inserted", so a
+        // `contains("runtime check")` check would keep passing while asserting
+        // the opposite of what it reads as.
+        assert!(
+            diagnostics[0].message.contains("unverified"),
+            "expected an unverified-obligation note, got: {}",
+            diagnostics[0].message
+        );
     }
 
     #[test]
