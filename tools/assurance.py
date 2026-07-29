@@ -31,6 +31,51 @@ SPEC_DIR = REPO_ROOT / ".openspec" / "specs"
 CRATES_DIR = REPO_ROOT / "crates"
 
 
+def _resolve_tests(tests_raw):
+    """Resolve a **Tests:** line to concrete files and test functions.
+
+    A link is only evidence if it points at something that exists. Returns
+    (missing, resolved_count): `missing` lists unresolvable files and test
+    function names, `resolved_count` is how many named `fn`s were found.
+
+    Without this the coverage metric measures whether someone typed the field,
+    not whether the evidence is real -- verified by putting a link to a
+    nonexistent crate in a spec and still scoring 100%.
+    """
+    if not tests_raw or "(planned" in tests_raw:
+        return [], 0
+    refs = re.findall(r"`([^`]+)`", tests_raw)
+    missing, resolved, current_file = [], 0, None
+    for ref in refs:
+        ref = ref.strip()
+        if "::" in ref and not ref.endswith(".rs") and "/" not in ref.split("::")[0]:
+            path, fns = current_file, ref.split("::")   # bare `::name` continues the previous file
+        elif "::" in ref:
+            parts = ref.split("::")
+            path, fns = parts[0], parts[1:]
+            current_file = path
+        else:
+            path, fns, current_file = ref, [], ref
+        if path is None:
+            continue
+        target = (REPO_ROOT / path).resolve()
+        if not (target.is_relative_to(REPO_ROOT.resolve()) and target.exists()):
+            missing.append(path)
+            continue
+        body = target.read_text(errors="replace")
+        for fn in fns:
+            fn = fn.strip()
+            if not fn or fn == "tests":
+                continue
+            if re.search(r"\bfn\s+" + re.escape(fn) + r"\s*\(", body):
+                resolved += 1
+            else:
+                missing.append(f"{path}::{fn}")
+    # A bare `::name` continuation inherits the previous file, so one missing
+    # file otherwise reports once per continuation. Dedupe, order-preserving.
+    return list(dict.fromkeys(missing)), resolved
+
+
 def parse_specs():
     """Parse all spec files and extract requirements."""
     requirements = []
@@ -52,20 +97,27 @@ def parse_specs():
             num, title, level = m.group(1), m.group(2), m.group(3)
 
             # Check for Implementation link
-            impl_match = re.search(r"\*\*Implementation:\*\*\s*`(.+?)`(\s*\(planned[^)]*\))?", block)
-            impl_path = impl_match.group(1) if impl_match else None
-            planned = bool(impl_match and impl_match.group(2))
-            impl_file = impl_path.split("::")[0].strip() if impl_path else None
-            if impl_file and not planned:
-                _resolved = (REPO_ROOT / impl_file).resolve()
-                _repo_root = REPO_ROOT.resolve()
-                impl_exists = _resolved.is_relative_to(_repo_root) and _resolved.exists()
+            impl_line = re.search(r"\*\*Implementation:\*\*\s*(.+)", block)
+            impl_raw = impl_line.group(1) if impl_line else None
+            planned = bool(impl_raw and "(planned" in impl_raw)
+            impl_paths = re.findall(r"`([^`]+)`", impl_raw) if impl_raw else []
+            impl_path = impl_paths[0] if impl_paths else None
+            impl_missing = []
+            if impl_paths and not planned:
+                for cand in impl_paths:
+                    f = cand.split("::")[0].strip()
+                    _resolved = (REPO_ROOT / f).resolve()
+                    if not (_resolved.is_relative_to(REPO_ROOT.resolve()) and _resolved.exists()):
+                        impl_missing.append(f)
+                impl_exists = not impl_missing
             else:
                 impl_exists = False
 
             # Check for Tests link
             tests_match = re.search(r"\*\*Tests:\*\*\s*(.+)", block)
             tests_path = tests_match.group(1).strip() if tests_match else None
+            tests_missing, tests_resolved_n = _resolve_tests(tests_path)
+            tests_resolve = tests_path is not None and not tests_missing
 
             # Check for Corpus link
             corpus_files = re.findall(r"\*\*Corpus:\*\*\s*`(.+?)`", block)
@@ -85,6 +137,10 @@ def parse_specs():
                     "planned": planned,
                     "tests_path": tests_path,
                     "tests_linked": tests_path is not None,
+                    "tests_resolve": tests_resolve,
+                    "tests_missing": tests_missing,
+                    "tests_resolved_n": tests_resolved_n,
+                    "impl_missing": impl_missing,
                     "corpus_files": corpus_files,
                     "corpus_present": corpus_present,
                     "scenarios": scenarios,
@@ -158,6 +214,10 @@ def report(requirements, verbose=False):
     impl_linked = sum(1 for r in active if r["impl_path"])
     impl_exists = sum(1 for r in active if r["impl_exists"])
     tests_linked = sum(1 for r in active if r["tests_linked"])
+    tests_resolve = sum(1 for r in active if r["tests_resolve"])
+    resolved_fns = sum(r["tests_resolved_n"] for r in active)
+    broken = [(r, r["tests_missing"] + r["impl_missing"]) for r in active
+              if r["tests_missing"] or r["impl_missing"]]
     corpus_present = sum(
         1 for r in active if r["corpus_files"] and r["corpus_present"]
     )
@@ -165,11 +225,13 @@ def report(requirements, verbose=False):
     total_scenarios = sum(r["scenarios"] for r in active)
 
     completeness = impl_exists / total if total else 0
-    coverage = tests_linked / total if total else 0
+    # Coverage counts RESOLVED evidence, not merely linked -- a link to a file
+    # that does not exist is not evidence of anything.
+    coverage = tests_resolve / total if total else 0
 
-    # Assurance = of the implemented requirements, how many have evidence (tests)?
+    # Assurance = of the implemented requirements, how many have resolved evidence?
     assured = sum(
-        1 for r in active if r["impl_exists"] and r["tests_linked"]
+        1 for r in active if r["impl_exists"] and r["tests_resolve"]
     )
     assurance = assured / impl_exists if impl_exists else 1.0  # no impl = nothing to assure = 100%
 
@@ -186,7 +248,10 @@ def report(requirements, verbose=False):
     print(f"  - Linked:           {impl_linked}/{total}")
     print(f"  - File exists:      {impl_exists}/{total}")
     print()
-    print(f"Coverage (E->P):      {tests_linked}/{total} evidence linked  ({coverage:.0%})")
+    print(f"Coverage (E->P):      {tests_resolve}/{total} evidence resolved  ({coverage:.0%})")
+    print(f"  - Linked:           {tests_linked}/{total}")
+    print(f"  - Test fns found:   {resolved_fns}")
+    print(f"  - Scenarios:        {total_scenarios} (not individually tied to a test — see caveat)")
     if test_coverage is not None:
         print(f"  - Line coverage:    {test_coverage}")
     print()
@@ -195,6 +260,14 @@ def report(requirements, verbose=False):
     if corpus_total:
         print(f"Corpus:               {corpus_present}/{corpus_total} present")
     print("=" * 60)
+
+    if broken:
+        print()
+        print(f"BROKEN LINKS ({sum(len(m) for _, m in broken)}):")
+        for r, missing in broken:
+            for miss in missing:
+                print(f"  {r['spec']}/Req {r['num']}: {miss}")
+        print("=" * 60)
 
     if verbose:
         print()
@@ -233,6 +306,12 @@ def main():
 
     requirements = parse_specs()
     completeness, coverage, assurance = report(requirements, verbose=args.verbose)
+
+    active = [r for r in requirements if not r["planned"]]
+    broken_n = sum(len(r["tests_missing"]) + len(r["impl_missing"]) for r in active)
+    if broken_n:
+        print(f"\nFAIL: {broken_n} broken Implementation/Tests link(s) — see above")
+        sys.exit(1)
 
     if args.min > 0:
         if assurance < args.min:
