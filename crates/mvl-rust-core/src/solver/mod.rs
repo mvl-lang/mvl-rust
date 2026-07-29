@@ -2,9 +2,24 @@
 //!
 //! `rust-refine` (Phase 3) needs an obligation dispatcher, layered like the
 //! MVL compiler's own: `L1` trivial syntactic checks, `L2` interval
-//! arithmetic, `L3` bounded path enumeration, `L4` Cooper's quantifier
+//! arithmetic, `L3` bounded-quantifier expansion, `L4` Fourier–Motzkin
 //! elimination, `L5` full SMT, with an uncloseable obligation falling
 //! through to a runtime check.
+//!
+//! Two of those names differ from the reference's, deliberately (#55):
+//!
+//! - **`L3` is bounded-quantifier expansion, not path enumeration.** The
+//!   reference's L3 enumerates execution paths through pure function bodies;
+//!   this one substitutes each value of a literal range and re-dispatches.
+//!   Different mechanisms sharing a label. Path enumeration is deferred on the
+//!   reference's own hit rate — L3 discharges 1 of 174 obligations there
+//!   (ADR-0006 §3).
+//! - **`L4` is Fourier–Motzkin, not Cooper's quantifier elimination.** Cooper
+//!   is implemented nowhere, in either codebase: [`native`]'s `Constraint` has
+//!   no divisibility atom, so Cooper's central atom is unrepresentable. The
+//!   `L4` label and the `L4:cooper` stats key are retained for wire
+//!   compatibility with upstream tooling; only the prose is corrected
+//!   (ADR-0006 §1, upstream `mvl-lang/mvl`#2022).
 //!
 //! Per ADR-0005 (`.openspec/adr/0005-refinement-obligations.md`), this
 //! dispatcher is implemented **natively** in `mvl-rust-core` — not by
@@ -26,9 +41,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// The layer that discharged an obligation: trivial syntactic check,
-/// interval arithmetic, bounded path enumeration, Cooper's quantifier
-/// elimination, full SMT, or a runtime assertion when no static layer
-/// could close it. Serializes to the string values used by the
+/// interval arithmetic, bounded-quantifier expansion, Fourier–Motzkin
+/// elimination, full SMT, or a runtime outcome when no static layer could
+/// close it. The variant names are wire-compatible with upstream's stats keys
+/// and so keep the `L4`/`cooper` spelling; see the module doc for why the
+/// technique names differ (#55). Serializes to the string values used by the
 /// assurance-JSON schema (spec Requirement 13) -- `JsonSchema` derived
 /// here since [`crate::assurance::schema::ProvenObligationRecord`]
 /// embeds this type directly.
