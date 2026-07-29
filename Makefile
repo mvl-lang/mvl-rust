@@ -228,6 +228,7 @@ compile: ## Gate 1 -- if it does not compile, nothing downstream means anything
 
 coverage: ## Line + function coverage via cargo-llvm-cov, cached for the dashboard
 	@command -v cargo-llvm-cov >/dev/null 2>&1 || { echo "cargo-llvm-cov not installed: cargo install cargo-llvm-cov"; exit 1; }
+	@mkdir -p target   # a fresh checkout has no target/, so the redirect below would fail
 	@cargo llvm-cov --workspace --json --ignore-run-fail > target/llvm-cov.json 2>/dev/null
 	@python3 -c "import json; d=json.load(open('target/llvm-cov.json')); t=d['data'][0]['totals']; l=t['lines']; f=t['functions']; print(f\"Lines:     {l['covered']}/{l['count']} ({l['percent']:.1f}%)\"); print(f\"Functions: {f['covered']}/{f['count']} ({f['percent']:.1f}%)\")"
 
