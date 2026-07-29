@@ -38,8 +38,6 @@ Rationale: `unsafe` is precisely the escape hatch from what the type system can 
 
 **Implementation:** `crates/rust-limit/src/lints/unsafe_construct.rs`, `crates/rust-limit/src/lints/transmute.rs`, `crates/rust-limit/src/lints/raw_addr.rs`
 
-**Tests:** `crates/rust-limit/tests/qualified_subset.rs::unsafe_fn_rejected`, `::unsafe_impl_rejected`, `::unsafe_trait_rejected`, `::transmute_call_rejected`, `::raw_address_of_rejected`, `::forbidden_construct_rejected`
-
 #### Scenario: An unsafe block is rejected
 
 - GIVEN a source file containing an `unsafe { }` block
@@ -47,12 +45,16 @@ Rationale: `unsafe` is precisely the escape hatch from what the type system can 
 - THEN a `Level::Error` diagnostic MUST be reported at the block's span
 - AND the process MUST exit non-zero
 
+**Tests:** `crates/rust-limit/tests/qualified_subset.rs::forbidden_construct_rejected`, `::unsafe_fn_rejected`
+
 #### Scenario: `transmute` is matched on its last path segment
 
 - GIVEN a call whose callee path ends in `transmute`, however it was imported or re-exported
 - WHEN the transmute lint runs
 - THEN the call MUST be rejected
 - AND an unrelated function coincidentally named `transmute` MAY also be rejected — a false positive accepted deliberately, since a false rejection is the safe direction for a gate
+
+**Tests:** `crates/rust-limit/tests/qualified_subset.rs::transmute_call_rejected`
 
 ### Requirement 2: Constructs that hide the callee are rejected [MUST]
 
@@ -62,14 +64,14 @@ Rationale: refinement obligations and effect rows attach to *concrete* signature
 
 **Implementation:** `crates/rust-limit/src/lints/dyn_trait.rs`
 
-**Tests:** `crates/rust-limit/tests/qualified_subset.rs::dyn_trait_rejected`, `::box_dyn_any_gets_a_friendlier_message`
-
 #### Scenario: A nested trait object is rejected with a specific message
 
 - GIVEN a signature containing `Box<dyn Any>`
 - WHEN the `dyn` lint runs
 - THEN the trait object MUST be rejected
 - AND the diagnostic SHOULD name the nesting rather than pointing only at the outer type
+
+**Tests:** `crates/rust-limit/tests/qualified_subset.rs::box_dyn_any_gets_a_friendlier_message`
 
 ### Requirement 3: Named lifetimes are restricted to elision [MUST]
 
@@ -79,13 +81,13 @@ Rationale: a named lifetime parameter usually encodes a cross-reference invarian
 
 **Implementation:** `crates/rust-limit/src/lints/lifetimes.rs`
 
-**Tests:** `crates/rust-limit/tests/qualified_subset.rs::explicit_lifetime_rejected`, `::static_and_placeholder_lifetimes_are_allowed`
-
 #### Scenario: `'static` and `'_` are permitted
 
 - GIVEN a signature using only `'static` and `'_`
 - WHEN the lifetime lint runs
 - THEN no diagnostic MUST be reported
+
+**Tests:** `crates/rust-limit/tests/qualified_subset.rs::static_and_placeholder_lifetimes_are_allowed`
 
 ### Requirement 4: Macro invocations are restricted to an allowlist [MUST]
 
@@ -97,14 +99,14 @@ The allowlist MUST be small and is expected to grow as real use surfaces macros 
 
 **Implementation:** `crates/rust-limit/src/lints/macros.rs`
 
-**Tests:** `crates/rust-limit/tests/qualified_subset.rs::macro_outside_allowlist_rejected`, `::allowlisted_macros_are_accepted`, `::macro_rules_definition_itself_is_not_flagged`
-
 #### Scenario: Defining a macro is permitted, invoking an unreviewed one is not
 
 - GIVEN a file that defines a `macro_rules!` macro and invokes a macro outside the allowlist
 - WHEN the macro lint runs
 - THEN the definition MUST NOT be flagged
 - AND the unreviewed invocation MUST be rejected
+
+**Tests:** `crates/rust-limit/tests/qualified_subset.rs::macro_rules_definition_itself_is_not_flagged`, `::macro_outside_allowlist_rejected`
 
 ### Requirement 5: The gate is a pure syntactic pass with no annotation surface [MUST]
 
@@ -114,8 +116,6 @@ A malformed source file MUST surface as a parse error rather than a panic or a s
 
 **Implementation:** `crates/rust-limit/src/lints/mod.rs`, `crates/rust-limit/src/main.rs`
 
-**Tests:** `crates/rust-limit/tests/qualified_subset.rs::malformed_source_returns_parse_error`, `::whitelisted_construct_accepted`, `crates/rust-limit/tests/assurance_mode.rs`
-
 #### Scenario: A compliant file produces no diagnostics
 
 - GIVEN a source file using only subset-compliant constructs
@@ -123,12 +123,16 @@ A malformed source file MUST surface as a parse error rather than a panic or a s
 - THEN no diagnostics MUST be reported
 - AND the process MUST exit zero
 
+**Tests:** `crates/rust-limit/tests/qualified_subset.rs::whitelisted_construct_accepted`
+
 #### Scenario: Unparseable input is reported, not swallowed
 
 - GIVEN a file that is not valid Rust
 - WHEN the tool runs
 - THEN a parse error MUST be returned
 - AND the tool MUST NOT report the file as compliant
+
+**Tests:** `crates/rust-limit/tests/qualified_subset.rs::malformed_source_returns_parse_error`
 
 ---
 

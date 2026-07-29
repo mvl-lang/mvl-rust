@@ -42,19 +42,21 @@ The tool MUST NOT scan functions that carry no `#[mvl::total]` annotation.
 
 **Implementation:** `crates/rust-total/src/checks/panic_freedom.rs`
 
-**Tests:** `crates/rust-total/tests/totality.rs::unwrap_is_rejected`, `::expect_is_rejected`, `::panic_macro_as_a_statement_is_rejected`, `::todo_and_unimplemented_are_rejected`, `::raw_indexing_is_rejected`, `::division_and_modulo_are_rejected`, `::wildcard_arm_panic_is_rejected`, `::non_total_functions_are_not_scanned_at_all`
-
 #### Scenario: An unannotated function is not scanned
 
 - GIVEN a function containing `.unwrap()` and no `#[mvl::total]` attribute
 - WHEN `cargo mvl-total` runs
 - THEN no diagnostic MUST be reported — totality is opt-in
 
+**Tests:** `crates/rust-total/tests/totality.rs::non_total_functions_are_not_scanned_at_all`
+
 #### Scenario: A compliant total function produces no diagnostics
 
 - GIVEN a `#[mvl::total]` function whose body contains none of the rejected constructs
 - WHEN the panic-freedom check runs
 - THEN no diagnostics MUST be reported
+
+**Tests:** `crates/rust-total/tests/totality.rs::compliant_total_function_has_no_diagnostics`
 
 ### Requirement 2: General arithmetic overflow is deliberately not checked [MUST NOT]
 
@@ -64,13 +66,13 @@ Rationale: without type information, flagging every arithmetic operator would fl
 
 **Implementation:** `crates/rust-total/src/checks/panic_freedom.rs`
 
-**Tests:** `crates/rust-total/tests/totality.rs::compliant_total_function_has_no_diagnostics`
-
 #### Scenario: Arithmetic in a total function is accepted
 
 - GIVEN a `#[mvl::total]` function whose body performs `a + b * c`
 - WHEN the panic-freedom check runs
 - THEN no diagnostic MUST be reported, even though the expression may overflow at runtime
+
+**Tests:** `crates/rust-total/tests/totality.rs::binary_arithmetic_in_a_total_function_is_accepted`
 
 ### Requirement 3: A directly recursive total function requires a `decreases` measure [MUST]
 
@@ -80,8 +82,6 @@ The tool MUST check the attribute's **presence only**. It MUST NOT be read as pr
 
 **Implementation:** `crates/rust-total/src/checks/termination.rs`
 
-**Tests:** `crates/rust-total/tests/totality.rs::missing_decreases_on_recursive_total_function_is_rejected`, `::terminating_recursion_with_decreases_is_accepted`, `::non_recursive_total_function_needs_no_decreases`
-
 #### Scenario: Missing measure on a recursive total function is rejected
 
 - GIVEN a `#[mvl::total]` function that calls itself and carries no `#[mvl::decreases]`
@@ -89,12 +89,16 @@ The tool MUST check the attribute's **presence only**. It MUST NOT be read as pr
 - THEN a `Level::Error` diagnostic MUST be reported
 - AND the diagnostic SHOULD suggest adding a measure that strictly decreases
 
+**Tests:** `crates/rust-total/tests/totality.rs::missing_decreases_on_recursive_total_function_is_rejected`
+
 #### Scenario: Presence of a measure satisfies the check
 
 - GIVEN a `#[mvl::total]` recursive function carrying `#[mvl::decreases(n)]`
 - WHEN the termination check runs
 - THEN no diagnostic MUST be reported
 - AND the tool MUST NOT be read as having proven termination
+
+**Tests:** `crates/rust-total/tests/totality.rs::terminating_recursion_with_decreases_is_accepted`, `::non_recursive_total_function_needs_no_decreases`
 
 ### Requirement 4: A caller must declare every effect its callees declare [MUST]
 
@@ -104,19 +108,21 @@ Self-recursive calls MUST always be accepted.
 
 **Implementation:** `crates/rust-effect/src/checks.rs`
 
-**Tests:** `crates/rust-effect/src/checks.rs::tests::pure_calling_effectful_is_an_error`, `::effectful_calling_effectful_with_missing_declaration_is_an_error`, `::effectful_calling_effectful_with_full_declaration_is_fine`, `::pure_calling_pure_is_fine`, `::explicit_empty_effect_attr_is_pure`, `::self_recursive_call_is_always_fine`
-
 #### Scenario: A pure function calling an effectful one is rejected
 
 - GIVEN `fn caller()` with no effect attribute calling `#[mvl::effect(Log)] fn callee()`
 - WHEN the effect check runs
 - THEN a `Level::Error` diagnostic MUST be reported at the call site
 
+**Tests:** `crates/rust-effect/src/checks.rs::pure_calling_effectful_is_an_error`
+
 #### Scenario: An explicitly empty effect set is purity
 
 - GIVEN a function annotated `#[mvl::effect()]` that calls an effectful function
 - WHEN the effect check runs
 - THEN the call MUST be rejected identically to the unannotated case
+
+**Tests:** `crates/rust-effect/src/checks.rs::explicit_empty_effect_attr_is_pure`
 
 ### Requirement 5: Effect matching is flat and same-file [MUST]
 
@@ -126,14 +132,14 @@ Call resolution MUST be same-file free functions only. A call to anything else M
 
 **Implementation:** `crates/rust-effect/src/checks.rs`
 
-**Tests:** `crates/rust-effect/src/checks.rs::tests::call_to_unresolvable_function_is_silently_skipped`, `::malformed_source_returns_parse_error`
-
 #### Scenario: An unresolvable callee is skipped in both directions
 
 - GIVEN a pure function calling a method or a function defined in another file
 - WHEN the effect check runs
 - THEN no diagnostic MUST be reported
 - AND the caller MUST NOT be credited with having declared any effect either
+
+**Tests:** `crates/rust-effect/src/checks.rs::call_to_unresolvable_function_is_silently_skipped`
 
 ---
 

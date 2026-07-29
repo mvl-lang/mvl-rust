@@ -44,19 +44,21 @@ Structural identity MUST see through grouping at every operand depth, and MUST r
 
 **Implementation:** `crates/mvl-rust-core/src/solver/native.rs`
 
-**Tests:** `crates/mvl-rust-core/tests/entailment.rs::a_reflexive_goal_is_proven_at_l1`, `::an_irreflexive_goal_is_violated_at_l1`, `::reflexivity_sees_through_one_sided_parenthesization`, `::reflexivity_needs_per_operand_grouping_transparency`, `::reflexivity_recurses_through_unary_negation`, `::a_non_linear_identity_is_reachable_only_by_l1`
-
 #### Scenario: Substitution's one-sided grouping still closes
 
 - GIVEN a return-site goal `(a + b) == a + b`, the shape substitution produces
 - WHEN the obligation is discharged
 - THEN the outcome MUST be `Proven` at L1
 
+**Tests:** `crates/mvl-rust-core/tests/entailment.rs::reflexivity_sees_through_one_sided_parenthesization`
+
 #### Scenario: A non-linear identity is reachable only by L1
 
 - GIVEN a goal `(a * b) == a * b`
 - WHEN the obligation is discharged
 - THEN the outcome MUST be `Proven` at L1, since the linear fragment cannot represent the term
+
+**Tests:** `crates/mvl-rust-core/tests/entailment.rs::a_non_linear_identity_is_reachable_only_by_l1`
 
 ### Requirement 2: L1 reflexivity is gated on call-free terms [MUST]
 
@@ -66,13 +68,13 @@ Rationale: reflexivity concludes "same tree ⇒ same value", which is invalid fo
 
 **Implementation:** `crates/mvl-rust-core/src/solver/native.rs`
 
-**Tests:** `crates/mvl-rust-core/tests/entailment.rs::reflexivity_does_not_fire_on_a_term_containing_a_call`
-
 #### Scenario: A buried call suppresses reflexivity
 
 - GIVEN a goal `a + f() == a + f()`
 - WHEN the obligation is discharged
 - THEN the outcome MUST be `Runtime`, not `Proven`
+
+**Tests:** `crates/mvl-rust-core/tests/entailment.rs::reflexivity_does_not_fire_on_a_term_containing_a_call`
 
 ### Requirement 3: L2 decides interval containment per variable [MUST]
 
@@ -82,13 +84,13 @@ An empty intersection MUST yield `Violated`. `!=` MUST NOT produce a bound, sinc
 
 **Implementation:** `crates/mvl-rust-core/src/solver/native.rs`
 
-**Tests:** `crates/mvl-rust-core/tests/entailment.rs::a_hypothesis_bound_inside_the_goal_bound_is_entailed_at_l2`, `::a_hypothesis_bound_wider_than_the_goal_bound_is_not_entailed`, `::a_goal_contradicting_the_hypotheses_is_violated`, `::contradictory_hypotheses_entail_anything`, `::cross_variable_hypotheses_are_reached_by_l4_not_l2`
-
 #### Scenario: A wider hypothesis does not entail a narrower goal
 
 - GIVEN a hypothesis `x > 0` and a goal `x > 5`
 - WHEN the obligation is discharged
 - THEN the outcome MUST NOT be `Proven`
+
+**Tests:** `crates/mvl-rust-core/tests/entailment.rs::a_hypothesis_bound_wider_than_the_goal_bound_is_not_entailed`
 
 ### Requirement 4: L4 is Fourier–Motzkin elimination, not Cooper's algorithm [MUST]
 
@@ -100,13 +102,13 @@ Complexity guards MUST bail rather than run unbounded: more than 5 free variable
 
 **Implementation:** `crates/mvl-rust-core/src/solver/native.rs`
 
-**Tests:** `crates/mvl-rust-core/tests/entailment.rs::cross_variable_hypotheses_are_reached_by_l4_not_l2`, `::an_equality_hypothesis_reaches_fourier_motzkin`, `::a_rearranged_equality_is_reachable_only_by_l4`, `::a_cross_variable_equality_goal_needs_the_l4_split`
-
 #### Scenario: A rearranged equality closes only at L4
 
 - GIVEN a goal `(a + b) == b + a`
 - WHEN the obligation is discharged
 - THEN the outcome MUST be `Proven` at L4, since no tree comparison matches the rearrangement
+
+**Tests:** `crates/mvl-rust-core/tests/entailment.rs::a_rearranged_equality_is_reachable_only_by_l4`
 
 #### Scenario: A non-linear term is declined, not guessed
 
@@ -115,6 +117,8 @@ Complexity guards MUST bail rather than run unbounded: more than 5 free variable
 - THEN the layer MUST decline
 - AND the obligation MUST fall through rather than being reported either way
 
+**Tests:** `crates/rust-refine/tests/call_sites.rs::nonlinear_argument_falls_through_to_runtime`
+
 ### Requirement 5: A satisfiable Fourier–Motzkin verdict must not yield `Proven` [MUST]
 
 Fourier–Motzkin decides satisfiability over the **rationals**. `FM-UNSAT ⟹ ℤ-UNSAT`, so concluding `Proven` from an unsatisfiable verdict is sound. The converse is not: a system may be rationally satisfiable with no integer solution.
@@ -122,8 +126,6 @@ Fourier–Motzkin decides satisfiability over the **rationals**. `FM-UNSAT ⟹ �
 The solver MUST NOT conclude `Proven` from a satisfiable verdict, and MUST NOT allow a complexity bail-out to be read as satisfiable.
 
 **Implementation:** `crates/mvl-rust-core/src/solver/native.rs` (partially — see Known Limitations)
-
-**Tests:** `crates/mvl-rust-core/tests/entailment.rs::a_satisfiable_gamma_that_rules_the_goal_out_is_still_violated`, `::an_equality_goal_merely_unproven_by_gamma_stays_runtime`
 
 #### Scenario: A rationally-satisfiable, integer-unsatisfiable predicate is not proven
 
@@ -137,13 +139,13 @@ Since `t = 0` holds exactly when `t ≤ 0` and `t ≥ 0` both do, an equality go
 
 **Implementation:** `crates/mvl-rust-core/src/solver/native.rs`
 
-**Tests:** `crates/mvl-rust-core/tests/entailment.rs::an_equality_goal_is_entailed_only_when_the_context_pins_it`, `::an_equality_goal_entailed_by_gamma_is_proven`, `::an_equality_goal_ruled_out_by_gamma_is_violated`, `::a_linear_only_contradiction_in_gamma_still_entails_an_equality_goal`
-
 #### Scenario: An equality goal needs the context to pin both sides
 
 - GIVEN hypotheses `y >= x` and `y <= x` and a goal `y == x`
 - WHEN the obligation is discharged
 - THEN the outcome MUST be `Proven`
+
+**Tests:** `crates/mvl-rust-core/tests/entailment.rs::an_equality_goal_is_entailed_only_when_the_context_pins_it`
 
 ### Requirement 7: L3 expands bounded quantifiers and re-dispatches [MUST]
 
@@ -153,21 +155,19 @@ The expansion MUST be capped on the **product** of quantifier widths, not each w
 
 **Implementation:** `crates/mvl-rust-core/src/solver/native.rs`
 
-**Tests:** `crates/mvl-rust-core/tests/entailment.rs::a_quantified_goal_expands_at_l3_against_the_same_context`, `::an_existential_goal_needs_one_witness`, `::nested_quantifiers_are_capped_on_their_product`, `::nested_quantifiers_within_the_cap_still_expand`, `::substitution_reaches_inside_a_quantifier_body`, `::reflexivity_is_reached_through_bounded_quantifier_expansion`
-
 #### Scenario: Nested quantifiers are capped on their product
 
 - GIVEN two nested quantifiers whose widths are individually within the cap but whose product exceeds it
 - WHEN the obligation is discharged
 - THEN the expansion MUST be declined rather than run
 
+**Tests:** `crates/mvl-rust-core/tests/entailment.rs::nested_quantifiers_are_capped_on_their_product`, `::nested_quantifiers_within_the_cap_still_expand`
+
 ### Requirement 8: L5 delegates to Z3, feature-gated [MUST]
 
 The solver MUST delegate to an SMT solver when the native layers are exhausted. The layer MUST be feature-gated with no build dependency when disabled, MUST return a runtime outcome immediately when the feature is off, and MUST treat `unknown` or a timeout as a runtime outcome rather than a proof.
 
-**Implementation:** `crates/mvl-rust-core/src/solver/` (planned — #37)
-
-**Tests:** `crates/mvl-rust-core/tests/solver.rs` (planned — #37)
+**Implementation:** `crates/mvl-rust-core/src/solver/` — not yet implemented (#37)
 
 #### Scenario: The feature being disabled is not a failure
 

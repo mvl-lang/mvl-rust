@@ -38,13 +38,13 @@ The receiver MUST be a bare identifier that is one of the enclosing function's o
 
 **Implementation:** `crates/rust-ifc/src/checks.rs`
 
-**Tests:** `crates/rust-ifc/src/checks.rs::tests::declassify_without_relabel_is_an_error`, `::declassify_with_mismatched_relabel_is_an_error`, `::matching_relabel_declassify_is_fine`, `::direct_labeled_form_is_recognized`
-
 #### Scenario: Stripping a label without permission is rejected
 
 - GIVEN `fn leak<T>(value: Tainted<T>) -> T { value.into_inner() }` with no `#[mvl::relabel]`
 - WHEN `cargo mvl-ifc` runs
 - THEN a `Level::Error` diagnostic MUST be reported naming the stripped label
+
+**Tests:** `crates/rust-ifc/src/checks.rs::declassify_without_relabel_is_an_error`
 
 #### Scenario: A mismatched declaration does not authorise the crossing
 
@@ -52,19 +52,21 @@ The receiver MUST be a bare identifier that is one of the enclosing function's o
 - WHEN the check runs
 - THEN the declassification MUST be rejected — the declaration MUST match the transition exactly
 
+**Tests:** `crates/rust-ifc/src/checks.rs::declassify_with_mismatched_relabel_is_an_error`
+
 ### Requirement 2: Classification must be declared by the enclosing function [MUST]
 
 The tool MUST reject a `::new()` call that classifies into a recognised labeled type unless the enclosing function's `#[mvl::relabel(… to = "<label>")]` declares that transition. The call's own path MUST directly name the label — `Tainted::new(..)`, `Secret::new(..)`, or `Labeled::<L, _>::new(..)` with an explicit turbofish.
 
 **Implementation:** `crates/rust-ifc/src/checks.rs`
 
-**Tests:** `crates/rust-ifc/src/checks.rs::tests::classify_without_relabel_is_an_error`, `::matching_relabel_classify_is_fine`
-
 #### Scenario: Adding a label without permission is rejected
 
 - GIVEN a function calling `Tainted::new(v)` with no matching `#[mvl::relabel]`
 - WHEN the check runs
 - THEN a `Level::Error` diagnostic MUST be reported
+
+**Tests:** `crates/rust-ifc/src/checks.rs::classify_without_relabel_is_an_error`
 
 ### Requirement 3: Recognition is a closed name list [MUST]
 
@@ -74,13 +76,13 @@ Rationale: that generalisation would immediately flag `RefCell`, `Mutex`, `BufWr
 
 **Implementation:** `crates/rust-ifc/src/checks.rs`
 
-**Tests:** `crates/rust-ifc/src/checks.rs::tests::unrelated_into_inner_on_refcell_is_not_flagged`
-
 #### Scenario: An unrelated `into_inner` is not flagged
 
 - GIVEN a function calling `.into_inner()` on a `RefCell`
 - WHEN the check runs
 - THEN no diagnostic MUST be reported
+
+**Tests:** `crates/rust-ifc/src/checks.rs::unrelated_into_inner_on_refcell_is_not_flagged`
 
 ### Requirement 4: Label names match the spelling at the recognition site [MUST]
 
@@ -90,14 +92,14 @@ A string-matched name rather than a resolved type is a consequence of having no 
 
 **Implementation:** `crates/rust-ifc/src/checks.rs`
 
-**Tests:** `crates/mvl/tests/passthrough.rs::custom_phi_label_round_trips_through_ingest_and_release`, `crates/mvl-rust-core/tests/attrs.rs::parses_relabel_attr_with_from_to_and_audit`, `::parses_relabel_attr_without_audit`
-
 #### Scenario: A custom marker label round-trips
 
 - GIVEN a user-defined label type used as `Labeled<PhiLabel, T>` with `#[mvl::relabel]` naming `"PhiLabel"`
 - WHEN the value is classified in one function and declassified in another
 - THEN both crossings MUST be accepted
 - AND the annotated program MUST compile and run unchanged
+
+**Tests:** `crates/mvl/tests/passthrough.rs::custom_phi_label_round_trips_through_ingest_and_release`
 
 ### Requirement 5: Multi-hop chains are independent hops [MUST]
 
@@ -107,14 +109,14 @@ Malformed source MUST surface as a parse error.
 
 **Implementation:** `crates/rust-ifc/src/checks.rs`
 
-**Tests:** `crates/rust-ifc/src/checks.rs::tests::multi_hop_chain_is_fine_as_two_independent_hops`, `::malformed_source_returns_parse_error`, `crates/rust-ifc/tests/assurance_mode.rs`
-
 #### Scenario: Two declared hops compose without a call graph
 
 - GIVEN one function declaring `from = "Tainted", to = "Reviewed"` and another declaring `from = "Reviewed", to = "_"`
 - WHEN the check runs over both
 - THEN each hop MUST be accepted on its own local declaration
 - AND no cross-function reasoning MUST be required
+
+**Tests:** `crates/rust-ifc/src/checks.rs::multi_hop_chain_is_fine_as_two_independent_hops`
 
 ---
 

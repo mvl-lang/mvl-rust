@@ -140,8 +140,6 @@ Verification information MUST be carried by attribute macros in the `mvl::` name
 
 **Implementation:** `crates/mvl-rust-core/src/attrs.rs`
 
-**Tests:** `crates/mvl-rust-core/tests/attrs.rs::recognizes_fully_qualified_mvl_paths`, `::unrecognized_attribute_returns_none`, `::malformed_refine_predicate_returns_parse_error`
-
 #### Scenario: A third-party attribute is skipped, not rejected
 
 - GIVEN a function carrying `#[derive(Debug)]` alongside `#[mvl::requires(x > 0)]`
@@ -149,11 +147,15 @@ Verification information MUST be carried by attribute macros in the `mvl::` name
 - THEN the unowned attribute MUST be skipped
 - AND the `mvl::` attribute MUST still be recognised
 
+**Tests:** `crates/mvl-rust-core/tests/attrs.rs::unrecognized_attribute_returns_none`
+
 #### Scenario: A malformed predicate is a parse error, not silence
 
 - GIVEN an `mvl::` attribute whose argument tokens do not match its grammar
 - WHEN parsing runs
 - THEN an error MUST be returned rather than the attribute being ignored
+
+**Tests:** `crates/mvl-rust-core/tests/attrs.rs::malformed_refine_predicate_returns_parse_error`
 
 ### Requirement 2: Verification is out-of-band from compilation [MUST]
 
@@ -165,13 +167,13 @@ The facade crate MUST be a convenience rather than a requirement for compilation
 
 **Implementation:** `crates/mvl-macros/src/lib.rs`
 
-**Tests:** `crates/mvl/tests/passthrough.rs::attributes_are_pass_through_and_dont_alter_behavior`, `::decreases_example_is_a_real_recursive_function`
-
 #### Scenario: Annotations do not alter behaviour
 
 - GIVEN a function annotated with `#[mvl::requires]` and `#[mvl::ensures]`
 - WHEN the program runs
 - THEN its observable behaviour MUST be identical to the unannotated function
+
+**Tests:** `crates/mvl/tests/passthrough.rs::attributes_are_pass_through_and_dont_alter_behavior`
 
 ### Requirement 3: One dispatcher, five tools, no shared analysis state [MUST]
 
@@ -181,13 +183,13 @@ Shared infrastructure MUST be limited to the attribute grammar, the diagnostic t
 
 **Implementation:** `crates/cargo-mvl/src/check.rs`, `crates/cargo-mvl/src/main.rs`
 
-**Tests:** `crates/cargo-mvl/tests/check.rs`, `crates/cargo-mvl/tests/subcommands.rs`
-
 #### Scenario: Each tool is independently invocable
 
 - GIVEN an installed workspace
 - WHEN `cargo mvl-limit <FILE>` is invoked directly
 - THEN only that tool MUST run, and its exit code MUST reflect only its own findings
+
+**Tests:** `crates/cargo-mvl/tests/check.rs::check_single_runs_only_the_named_tool`, `::check_single_returns_none_for_an_unknown_tool`
 
 ### Requirement 4: No dependency on `mvl-lang/mvl` [MUST]
 
@@ -197,14 +199,14 @@ Rationale: cross-validation is the mechanism by which a divergence is caught, an
 
 **Implementation:** `crates/mvl-rust-core/src/solver/native.rs`
 
-**Tests:** `crates/rust-refine/tests/call_sites.rs`, `crates/mvl-rust-core/tests/solver.rs`
-
 #### Scenario: A ported upstream fixture closes without the upstream solver
 
 - GIVEN a fixture ported from the reference implementation's SMT-layer corpus
 - WHEN the obligation is discharged by this workspace's native solver
 - THEN it MUST close without invoking any external solver
 - AND the divergence in discharge layer MUST be asserted rather than hidden
+
+**Tests:** `crates/rust-refine/tests/call_sites.rs::chained_hypotheses_close_at_l4_without_an_smt_solver`
 
 ### Requirement 5: Greenfield only — no grandfathering, no exceptions [MUST]
 
@@ -216,21 +218,19 @@ Precision MAY be traded for soundness; the reverse MUST NOT occur. A construct t
 
 **Implementation:** `crates/rust-limit/src/lints/mod.rs`
 
-**Tests:** `crates/rust-limit/tests/qualified_subset.rs::forbidden_construct_rejected`, `crates/rust-effect/src/checks.rs::tests::call_to_unresolvable_function_is_silently_skipped`
-
 #### Scenario: An unmodellable construct yields no claim
 
 - GIVEN a call the tools cannot resolve
 - WHEN analysis runs
 - THEN no obligation MUST be produced and no diagnostic MUST be emitted in either direction
 
+**Tests:** `crates/rust-refine/tests/call_sites.rs::a_call_to_an_unresolvable_function_produces_no_obligation`
+
 ### Requirement 6: Each crate publishes independently [MUST]
 
 Every crate MUST be publishable to crates.io on its own, with the workspace version inherited from the root manifest. CI MUST build and test across stable and the declared MSRV.
 
 **Implementation:** `Cargo.toml`, `.github/workflows/ci.yml`
-
-**Tests:** `.github/workflows/ci.yml`
 
 #### Scenario: CI covers stable and MSRV
 
@@ -242,9 +242,7 @@ Every crate MUST be publishable to crates.io on its own, with the workspace vers
 
 Each attribute's semantics MUST match the corresponding MVL construct at the tracked spec version. Drift MUST be detectable by an automated check rather than by review.
 
-**Implementation:** `Cargo.toml` (planned — version-alignment check not yet wired)
-
-**Tests:** `crates/mvl-rust-core/tests/attrs.rs` (planned — no cross-repo check yet)
+**Implementation:** `Cargo.toml` — not yet implemented
 
 #### Scenario: Divergence from the tracked spec version is detected
 
@@ -257,8 +255,6 @@ Each attribute's semantics MUST match the corresponding MVL construct at the tra
 Each tool MUST ship a paired example: one crate that passes cleanly and one that is rejected. Both MUST be exercised in CI, and the violating example MUST be asserted to fail rather than merely run.
 
 **Implementation:** `examples/`, `Makefile`
-
-**Tests:** `Makefile::examples`, `.github/workflows/ci.yml`
 
 #### Scenario: The violating example is asserted to fail
 
@@ -273,21 +269,19 @@ Each tool MUST ship a paired example: one crate that passes cleanly and one that
 
 **Implementation:** `crates/cargo-mvl/src/prove.rs`, `crates/cargo-mvl/src/test.rs`
 
-**Tests:** `crates/cargo-mvl/tests/subcommands.rs`, `crates/rust-refine/tests/assurance_mode.rs`
-
 #### Scenario: `cargo mvl prove` emits per-obligation layers
 
 - GIVEN a crate using `#[mvl::requires]` and `#[mvl::ensures]`
 - WHEN `cargo mvl prove` runs
 - THEN the output MUST record, per obligation, the layer that discharged it or that it remains undischarged
 
+**Tests:** `crates/cargo-mvl/tests/subcommands.rs::prove_emits_a_prove_section_with_no_check_or_test`
+
 ### Requirement 10: Ferrocene compatibility [SHOULD]
 
 The workspace SHOULD build and test green under the Ferrocene toolchain, so that certified-domain adoption can ride Ferrocene's existing qualification rather than requiring a new one.
 
-**Implementation:** `.github/workflows/ci.yml` (planned — Ferrocene job not yet added, #12)
-
-**Tests:** `.github/workflows/ci.yml` (planned — #12)
+**Implementation:** `.github/workflows/ci.yml` — not yet implemented
 
 #### Scenario: The suite runs green under Ferrocene
 

@@ -44,13 +44,13 @@ This obligation MUST be distinguishable, in reporting, from an entailment proof 
 
 **Implementation:** `crates/rust-refine/src/checks.rs`
 
-**Tests:** `crates/mvl-rust-core/tests/entailment.rs::reflexivity_also_decides_the_declaration_site`, `crates/rust-refine/tests/call_sites.rs`
-
 #### Scenario: A self-contradictory precondition is rejected
 
 - GIVEN `#[mvl::requires(x >= 10 && x < 5)]`
 - WHEN the declaration-site obligation is discharged
 - THEN the outcome MUST be `Violated` and reported as `Level::Error`
+
+**Tests:** `crates/mvl-rust-core/src/solver/native.rs::contradictory_interval_is_violated`
 
 ### Requirement 2: Call sites are discharged against the caller's hypothesis context [MUST]
 
@@ -60,13 +60,13 @@ Call resolution MUST be same-file free functions only. A call to anything else M
 
 **Implementation:** `crates/rust-refine/src/checks.rs`
 
-**Tests:** `crates/rust-refine/tests/call_sites.rs`, `crates/mvl-rust-core/tests/entailment.rs::parameters_are_replaced_by_the_actual_arguments`
-
 #### Scenario: An argument satisfying the callee's precondition proves
 
 - GIVEN `#[mvl::requires(v > 0)] fn need_pos(v: i64)` called as `need_pos(5)`
 - WHEN the call-site obligation is discharged
 - THEN the outcome MUST be `Proven`
+
+**Tests:** `crates/rust-refine/tests/call_sites.rs::a_caller_precondition_entails_the_callees`
 
 #### Scenario: An unresolvable callee yields no obligation
 
@@ -74,6 +74,8 @@ Call resolution MUST be same-file free functions only. A call to anything else M
 - WHEN the scan runs
 - THEN no call-site obligation MUST be produced
 - AND no diagnostic MUST be emitted in either direction
+
+**Tests:** `crates/rust-refine/tests/call_sites.rs::a_call_to_an_unresolvable_function_produces_no_obligation`, `::a_call_inside_a_macro_invocation_is_invisible`
 
 ### Requirement 3: Return sites must establish the function's own postcondition [MUST]
 
@@ -87,13 +89,13 @@ A diverging body (`panic!`, `todo!`, `unimplemented!`, `unreachable!`) produces 
 
 **Implementation:** `crates/rust-refine/src/checks.rs`
 
-**Tests:** `crates/rust-refine/tests/call_sites.rs::a_body_contradicting_its_own_ensures_is_violated`, `::an_explicit_return_is_a_return_point`, `::each_tail_match_arm_is_its_own_return_point`, `::a_diverging_body_has_no_return_point_to_check`, `::a_closure_body_is_not_the_enclosing_functions_return_point`, `::an_explicit_return_inside_a_closure_is_not_the_enclosing_functions_return`, `::an_explicit_return_inside_an_async_block_is_not_the_functions_return`, `::a_nested_fn_inside_a_closure_still_owns_its_own_returns`
-
 #### Scenario: A body contradicting its own postcondition is rejected
 
 - GIVEN `#[mvl::ensures(result > 0)] fn f(a: i64) -> i64 { -1 }`
 - WHEN the return-site obligation is discharged
 - THEN the outcome MUST be `Violated` and reported as `Level::Error`
+
+**Tests:** `crates/rust-refine/tests/call_sites.rs::a_body_contradicting_its_own_ensures_is_violated`
 
 #### Scenario: A closure's return belongs to the closure
 
@@ -102,12 +104,16 @@ A diverging body (`panic!`, `todo!`, `unimplemented!`, `unreachable!`) produces 
 - THEN exactly one return-site obligation MUST be produced, for the tail `7`
 - AND the closure's `-1` MUST NOT be reported as a violating return of `f`
 
+**Tests:** `crates/rust-refine/tests/call_sites.rs::an_explicit_return_inside_a_closure_is_not_the_enclosing_functions_return`, `::a_closure_body_is_not_the_enclosing_functions_return_point`
+
 #### Scenario: Each tail `match` arm is its own return point
 
 - GIVEN `#[mvl::ensures(result > 0)] fn f(a: i64) -> i64 { match a { 0 => -3, _ => 2 } }`
 - WHEN the scan runs
 - THEN two obligations MUST be produced, one per arm
 - AND the `-3` arm MUST be `Violated`
+
+**Tests:** `crates/rust-refine/tests/call_sites.rs::each_tail_match_arm_is_its_own_return_point`
 
 ### Requirement 4: Γ accumulates parameter refinements, branch narrowing, and propagated postconditions [MUST]
 
@@ -123,8 +129,6 @@ A quantified `requires` is a usable *goal* but MUST NOT enter Γ as a hypothesis
 
 **Implementation:** `crates/rust-refine/src/checks.rs`
 
-**Tests:** `crates/rust-refine/tests/call_sites.rs::a_return_inside_a_narrowed_branch_uses_that_branchs_gamma`, `::the_postcondition_is_discharged_against_the_callers_own_requires`, `::a_while_body_is_not_a_return_point_but_a_return_inside_it_is`, `crates/mvl-rust-core/tests/entailment.rs::a_hypothesis_bound_inside_the_goal_bound_is_entailed_at_l2`
-
 #### Scenario: A return inside a narrowed branch uses that branch's context
 
 - GIVEN `#[mvl::ensures(result > 0)] fn f(a: i64) -> i64 { if a > 10 { a } else { 1 } }`
@@ -132,11 +136,15 @@ A quantified `requires` is a usable *goal* but MUST NOT enter Γ as a hypothesis
 - THEN both MUST be `Proven`
 - AND the `a` arm MUST be proven from the branch condition `a > 10`, not from a literal
 
+**Tests:** `crates/rust-refine/tests/call_sites.rs::a_return_inside_a_narrowed_branch_uses_that_branchs_gamma`
+
 #### Scenario: Contradictory hypotheses entail anything
 
 - GIVEN a Γ that is itself unsatisfiable, i.e. an unreachable program point
 - WHEN any goal is discharged against it
 - THEN the outcome MUST be `Proven`
+
+**Tests:** `crates/mvl-rust-core/tests/entailment.rs::contradictory_hypotheses_entail_anything`
 
 ### Requirement 5: Γ must be invalidated when a name's value changes [MUST]
 
@@ -146,8 +154,6 @@ This MUST be blunt rather than dataflow-precise: the tool cannot see whether a c
 
 **Implementation:** `crates/rust-refine/src/checks.rs`
 
-**Tests:** `crates/rust-refine/tests/call_sites.rs::a_local_binding_shadowing_a_free_fn_is_not_resolved_against_it`, `crates/mvl-rust-core/tests/entailment.rs::a_quantifiers_bound_variable_shadows_a_binding_of_the_same_name`
-
 #### Scenario: Rebinding retires the hypothesis
 
 - GIVEN `#[mvl::requires(x > 10)] fn f(x: i64) { let x = -1; need_pos(x); }`
@@ -155,19 +161,21 @@ This MUST be blunt rather than dataflow-precise: the tool cannot see whether a c
 - THEN the hypothesis `x > 10` MUST NOT be available
 - AND the outcome MUST NOT be `Proven`
 
+**Tests:** `crates/rust-refine/tests/call_sites.rs::a_shadowing_let_invalidates_the_hypotheses_about_that_name`
+
 ### Requirement 6: Undecidable hypotheses are dropped, goal clauses are not [MUST]
 
 A hypothesis outside the decidable fragment — an opaque call, a non-linear term, a bitwise operation — MUST be skipped rather than failing the query. Every *goal* clause MUST be decided for an outcome of `Proven`.
 
 **Implementation:** `crates/mvl-rust-core/src/solver/native.rs`
 
-**Tests:** `crates/mvl-rust-core/tests/entailment.rs::an_undecidable_hypothesis_is_dropped_rather_than_fatal`, `::every_clause_of_a_conjunctive_goal_must_be_entailed`
-
 #### Scenario: Every clause of a conjunctive goal must close
 
 - GIVEN a goal `a > 0 && b > 0` where Γ entails only `a > 0`
 - WHEN the obligation is discharged
 - THEN the outcome MUST NOT be `Proven`
+
+**Tests:** `crates/mvl-rust-core/tests/entailment.rs::every_clause_of_a_conjunctive_goal_must_be_entailed`
 
 ---
 

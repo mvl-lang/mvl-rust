@@ -1,24 +1,37 @@
 #!/usr/bin/env python3
-"""mvl-rust Assurance Checker — validates ISPE traceability.
+"""mvl-rust Assurance Checker — scenario-level ISPE traceability.
 
-Adapted from `mvl-lang/mvl`'s `tools/assurance.py`. Same ISPE model (Intent,
-Specification, Program, Evidence) and same three links; the only structural
-difference is that this is a Cargo workspace, so implementation paths point
-into `crates/*/src/` and evidence into `crates/*/tests/` rather than a single
-`src/` + `tests/` pair.
+ISPE (Intent, Specification, Program, Evidence). Intent is tickets,
+Specification is `.openspec/specs/`, Program is `crates/`, Evidence is tests.
 
-Scans .openspec/specs/ for requirements and checks:
-1. Completeness (S→P): every requirement has an **Implementation:** link
-2. Coverage (T→P): every requirement has a **Tests:** link
-3. Corpus: every requirement with a **Corpus:** link has the file present
-4. Scenarios: counts scenarios per requirement
+**The unit of measurement is the scenario, not the requirement.** A requirement
+is an umbrella claim; a scenario is a falsifiable one, and GIVEN/WHEN/THEN maps
+onto arrange/act/assert closely enough that a scenario can have a 1:1 test.
+Measuring at requirement level let one test stand in for five scenarios, which
+inflated coverage to 100% while nothing tied any individual scenario to
+anything at all.
 
-Reports a dashboard and exits non-zero if below thresholds.
+A scenario is **covered** when it carries its own `**Tests:**` link and every
+file and test function named there actually exists. Nothing else counts: a
+requirement-level test link is ignored, and so is a link that does not resolve.
+
+There is deliberately no "planned" exclusion. A requirement written into a spec
+is defined, and its scenarios are obligations. Letting a marker remove them from
+the denominator meant declaring intent improved the score.
+
+Reported:
+  - scenarios covered / total  (the headline)
+  - per-spec covered fraction
+  - specs fully covered
+
+Line coverage and raw test counts are deliberately absent — they measure the
+program against itself and say nothing about S, E, or the links between them.
+Use `make coverage` for those.
 
 Usage:
-    python3 tools/assurance.py              # dashboard
-    python3 tools/assurance.py --verbose     # show each requirement
-    python3 tools/assurance.py --min 0.75    # CI gate: exit 1 if below 75%
+    python3 tools/assurance.py            # dashboard
+    python3 tools/assurance.py --verbose  # per-scenario detail
+    python3 tools/assurance.py --min 0.75 # CI gate on scenario coverage
 """
 
 import argparse
@@ -28,317 +41,180 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
 SPEC_DIR = REPO_ROOT / ".openspec" / "specs"
-CRATES_DIR = REPO_ROOT / "crates"
+
+REQ_HEADER = re.compile(r"^### Requirement (\d+): (.+?) \[([A-Z][A-Z ]*)\]", re.M)
+SCEN_SPLIT = re.compile(r"(?=^#### Scenario:)", re.M)
+SCEN_TITLE = re.compile(r"^#### Scenario:\s*(.+)", re.M)
+TESTS_LINE = re.compile(r"\*\*Tests:\*\*\s*(.+)")
+IMPL_LINE = re.compile(r"\*\*Implementation:\*\*\s*(.+)")
 
 
-def _resolve_tests(tests_raw):
+def resolve_tests(raw):
     """Resolve a **Tests:** line to concrete files and test functions.
 
-    A link is only evidence if it points at something that exists. Returns
-    (missing, resolved_count): `missing` lists unresolvable files and test
-    function names, `resolved_count` is how many named `fn`s were found.
-
-    Without this the coverage metric measures whether someone typed the field,
-    not whether the evidence is real -- verified by putting a link to a
-    nonexistent crate in a spec and still scoring 100%.
+    Returns (resolved, missing). A link is evidence only if it points at
+    something that exists, so both the file and each named `fn` are checked.
+    A bare `::name` continues the previously named file. A file named with no
+    test function is not scenario-level evidence and is reported as missing.
     """
-    if not tests_raw or "(planned" in tests_raw:
-        return [], 0
-    refs = re.findall(r"`([^`]+)`", tests_raw)
-    missing, resolved, current_file = [], 0, None
-    for ref in refs:
+    if not raw:
+        return [], []
+    resolved, missing, current = [], [], None
+    for ref in re.findall(r"`([^`]+)`", raw):
         ref = ref.strip()
-        if "::" in ref and not ref.endswith(".rs") and "/" not in ref.split("::")[0]:
-            path, fns = current_file, ref.split("::")   # bare `::name` continues the previous file
+        head = ref.split("::")[0]
+        if "::" in ref and "/" not in head and not head.endswith(".rs"):
+            path, fns = current, ref.split("::")
         elif "::" in ref:
             parts = ref.split("::")
             path, fns = parts[0], parts[1:]
-            current_file = path
+            current = path
         else:
-            path, fns, current_file = ref, [], ref
+            path, fns, current = ref, [], ref
         if path is None:
+            missing.append(ref)
             continue
         target = (REPO_ROOT / path).resolve()
         if not (target.is_relative_to(REPO_ROOT.resolve()) and target.exists()):
             missing.append(path)
             continue
+        if not fns:
+            missing.append(f"{path} (no test fn named)")
+            continue
         body = target.read_text(errors="replace")
-        for fn in fns:
-            fn = fn.strip()
+        for fn in (f.strip() for f in fns):
             if not fn or fn == "tests":
                 continue
             if re.search(r"\bfn\s+" + re.escape(fn) + r"\s*\(", body):
-                resolved += 1
+                resolved.append(f"{path}::{fn}")
             else:
                 missing.append(f"{path}::{fn}")
-    # A bare `::name` continuation inherits the previous file, so one missing
-    # file otherwise reports once per continuation. Dedupe, order-preserving.
-    return list(dict.fromkeys(missing)), resolved
+    return resolved, list(dict.fromkeys(missing))
 
 
 def parse_specs():
-    """Parse all spec files and extract requirements."""
-    requirements = []
+    """Return (specs, scenarios). One scenario dict per `#### Scenario:`."""
+    specs, scenarios = [], []
     for spec_dir in sorted(SPEC_DIR.iterdir()):
-        spec_file = spec_dir / "spec.md" if spec_dir.is_dir() else None
-        if not spec_file or not spec_file.exists():
+        spec_file = spec_dir / "spec.md"
+        if not spec_file.exists():
             continue
-
         text = spec_file.read_text()
-        spec_name = spec_dir.name
-
-        # Find all requirements
-        req_blocks = re.split(r"(?=^### Requirement \d+)", text, flags=re.MULTILINE)
-        for block in req_blocks:
-            # Level may be multi-word ("MUST NOT"): `\w+` silently dropped those
-            # requirements from the dashboard entirely, denominator included.
-            m = re.match(r"### Requirement (\d+): (.+?) \[([A-Z][A-Z ]*)\]", block)
+        n_reqs = 0
+        for block in re.split(r"(?=^### Requirement \d+)", text, flags=re.M):
+            m = REQ_HEADER.match(block)
             if not m:
                 continue
-
-            num, title, level = m.group(1), m.group(2), m.group(3)
-
-            # Check for Implementation link
-            impl_line = re.search(r"\*\*Implementation:\*\*\s*(.+)", block)
-            impl_raw = impl_line.group(1) if impl_line else None
-            planned = bool(impl_raw and "(planned" in impl_raw)
-            impl_paths = re.findall(r"`([^`]+)`", impl_raw) if impl_raw else []
-            impl_path = impl_paths[0] if impl_paths else None
-            impl_missing = []
-            if impl_paths and not planned:
-                for cand in impl_paths:
-                    parts = cand.split("::")
-                    f = parts[0].strip()
-                    _resolved = (REPO_ROOT / f).resolve()
-                    if not (_resolved.is_relative_to(REPO_ROOT.resolve()) and _resolved.exists()):
-                        impl_missing.append(f)
-                        continue
-                    # A named symbol must actually appear. Looser than the test
-                    # check (an impl symbol may be a fn, type, trait or module),
-                    # so this catches renames and typos without over-flagging.
-                    if _resolved.is_file():
-                        body = _resolved.read_text(errors="replace")
-                        for sym in (x.strip() for x in parts[1:]):
-                            if sym and not re.search(r"\b" + re.escape(sym) + r"\b", body):
-                                impl_missing.append(f"{f}::{sym}")
-                impl_exists = not impl_missing
-            else:
-                impl_exists = False
-
-            # Check for Tests link
-            tests_match = re.search(r"\*\*Tests:\*\*\s*(.+)", block)
-            tests_path = tests_match.group(1).strip() if tests_match else None
-            tests_missing, tests_resolved_n = _resolve_tests(tests_path)
-            tests_resolve = tests_path is not None and not tests_missing
-
-            # Check for Corpus link
-            corpus_files = re.findall(r"\*\*Corpus:\*\*\s*`(.+?)`", block)
-            corpus_present = all((REPO_ROOT / f).exists() for f in corpus_files)
-
-            # Count scenarios
-            scenarios = len(re.findall(r"#### Scenario:", block))
-
-            requirements.append(
-                {
-                    "spec": spec_name,
-                    "num": int(num),
+            n_reqs += 1
+            req_num, req_title = int(m.group(1)), m.group(2)
+            impl = IMPL_LINE.search(block)
+            impl_paths = re.findall(r"`([^`]+)`", impl.group(1)) if impl else []
+            for sb in SCEN_SPLIT.split(block)[1:]:
+                t = SCEN_TITLE.match(sb)
+                title = t.group(1).strip() if t else "(untitled)"
+                tline = TESTS_LINE.search(sb)
+                resolved, missing = resolve_tests(tline.group(1) if tline else None)
+                scenarios.append({
+                    "spec": spec_dir.name,
+                    "req": req_num,
+                    "req_title": req_title,
                     "title": title,
-                    "level": level,
-                    "impl_path": impl_path,
-                    "impl_exists": impl_exists,
-                    "planned": planned,
-                    "tests_path": tests_path,
-                    "tests_linked": tests_path is not None,
-                    "tests_resolve": tests_resolve,
-                    "tests_missing": tests_missing,
-                    "tests_resolved_n": tests_resolved_n,
-                    "impl_missing": impl_missing,
-                    "corpus_files": corpus_files,
-                    "corpus_present": corpus_present,
-                    "scenarios": scenarios,
-                }
-            )
-
-    return requirements
+                    "linked": tline is not None,
+                    "resolved": resolved,
+                    "missing": missing,
+                    "covered": bool(resolved) and not missing,
+                    "impl_paths": impl_paths,
+                })
+        specs.append({"name": spec_dir.name, "reqs": n_reqs})
+    return specs, scenarios
 
 
-def _get_test_coverage():
-    """Try to get line coverage from cargo-tarpaulin or cargo-llvm-cov output.
-
-    Returns a string like '87.3%' or None if no coverage tool is available.
-    Doesn't run coverage itself — reads cached results if present.
-    """
-    import subprocess
-
-    # Try llvm-cov cache (macOS + Linux)
-    llvm_cov_out = REPO_ROOT / "target" / "llvm-cov.json"
-    if llvm_cov_out.exists():
-        try:
-            import json
-            data = json.loads(llvm_cov_out.read_text())
-            lines = data["data"][0]["totals"]["lines"]
-            return f"{lines['percent']:.1f}% ({lines['covered']}/{lines['count']} lines)"
-        except (json.JSONDecodeError, KeyError, IndexError):
-            pass
-
-    # Try tarpaulin cache (Linux only)
-    tarpaulin_out = REPO_ROOT / "target" / "tarpaulin" / "coverage.json"
-    if tarpaulin_out.exists():
-        try:
-            import json
-            data = json.loads(tarpaulin_out.read_text())
-            if "coverage" in data:
-                return f"{data['coverage']:.1f}%"
-        except (json.JSONDecodeError, KeyError):
-            pass
-
-    # Try running cargo test to at least count tests
-    try:
-        result = subprocess.run(
-            ["cargo", "test", "--workspace", "--", "--list"],
-            capture_output=True, text=True, timeout=120,
-            cwd=REPO_ROOT,
-        )
-        if result.returncode == 0:
-            test_count = sum(1 for line in result.stdout.splitlines() if ": test" in line)
-            if test_count > 0:
-                return f"{test_count} tests (run `make coverage` for line coverage)"
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
-
-    return None
-
-
-def report(requirements, verbose=False):
-    """Print assurance dashboard.
-
-    Planned requirements (marked `(planned)` after the Implementation backtick)
-    are excluded from totals — they describe aspirational architecture, not
-    current behaviour, and double-counting them as missing distorts the metric.
-    """
-    planned_count = sum(1 for r in requirements if r["planned"])
-    active = [r for r in requirements if not r["planned"]]
-    total = len(active)
+def report(specs, scenarios, verbose=False):
+    total = len(scenarios)
     if total == 0:
-        print("No requirements found in .openspec/specs/")
-        return 0.0, 0.0, 1.0
+        print("No scenarios found in .openspec/specs/")
+        return 0.0
 
-    impl_linked = sum(1 for r in active if r["impl_path"])
-    impl_exists = sum(1 for r in active if r["impl_exists"])
-    tests_linked = sum(1 for r in active if r["tests_linked"])
-    tests_resolve = sum(1 for r in active if r["tests_resolve"])
-    resolved_fns = sum(r["tests_resolved_n"] for r in active)
-    file_only = [r for r in active if r["tests_resolve"] and r["tests_resolved_n"] == 0]
-    broken = [(r, r["tests_missing"] + r["impl_missing"]) for r in active
-              if r["tests_missing"] or r["impl_missing"]]
-    corpus_present = sum(
-        1 for r in active if r["corpus_files"] and r["corpus_present"]
-    )
-    corpus_total = sum(1 for r in active if r["corpus_files"])
-    total_scenarios = sum(r["scenarios"] for r in active)
+    covered = [s for s in scenarios if s["covered"]]
+    broken = [s for s in scenarios if s["missing"]]
+    unlinked = [s for s in scenarios if not s["linked"]]
+    coverage = len(covered) / total
 
-    completeness = impl_exists / total if total else 0
-    # Coverage counts RESOLVED evidence, not merely linked -- a link to a file
-    # that does not exist is not evidence of anything.
-    coverage = tests_resolve / total if total else 0
+    per_spec = {}
+    for s in scenarios:
+        d = per_spec.setdefault(s["spec"], [0, 0])
+        d[1] += 1
+        if s["covered"]:
+            d[0] += 1
+    fully = [n for n, (c, t) in per_spec.items() if t and c == t]
+    n_reqs = sum(sp["reqs"] for sp in specs)
 
-    # Assurance = of the implemented requirements, how many have resolved evidence?
-    assured = sum(
-        1 for r in active if r["impl_exists"] and r["tests_resolve"]
-    )
-    assurance = assured / impl_exists if impl_exists else 1.0  # no impl = nothing to assure = 100%
-
-    # Test coverage: run cargo test with coverage if available
-    test_coverage = _get_test_coverage()
-
-    print("=" * 60)
-    print("mvl-rust Assurance Dashboard (ISPE)")
-    print("=" * 60)
-    print(f"Requirements:     {total}" + (f" ({planned_count} planned excluded)" if planned_count else ""))
-    print(f"Scenarios:        {total_scenarios}")
+    print("=" * 68)
+    print("mvl-rust Assurance Dashboard (ISPE — scenario level)")
+    print("=" * 68)
+    print(f"Specs:                 {len(specs)}")
+    print(f"Requirements:          {n_reqs}")
+    print(f"Scenarios:             {total}")
     print()
-    print(f"Completeness (S->P):  {impl_exists}/{total} spec -> implementation  ({completeness:.0%})")
-    print(f"  - Linked:           {impl_linked}/{total}")
-    print(f"  - File exists:      {impl_exists}/{total}")
+    print(f"Scenarios covered:     {len(covered)}/{total}  ({coverage:.0%})")
+    print(f"  - no test link:      {len(unlinked)}")
+    print(f"  - link unresolved:   {len(broken)}")
     print()
-    print(f"Coverage (E->P):      {tests_resolve}/{total} evidence resolved  ({coverage:.0%})")
-    print(f"  - Linked:           {tests_linked}/{total}")
-    print(f"  - Test fns found:   {resolved_fns}")
-    print(f"  - File-only links:  {len(file_only)}/{total} name no test fn (weaker evidence)")
-    print(f"  - Scenarios:        {total_scenarios} (counted, NOT individually tied to a test)")
-    if test_coverage is not None:
-        print(f"  - Line coverage:    {test_coverage} — workspace-wide, not scoped to these requirements")
+    print(f"Specs fully covered:   {len(fully)}/{len(specs)}")
     print()
-    print(f"Assurance:            {assured}/{impl_exists} of implemented have evidence  ({assurance:.0%})")
-    print("  - NB: this is the conjunction of the two links above, not the")
-    print("        independent E->S measurement ISPE defines. It cannot fall")
-    print("        below them, so treat it as a consistency check, not a third axis.")
-    print()
-    if corpus_total:
-        print(f"Corpus:               {corpus_present}/{corpus_total} present")
-    print("=" * 60)
+    print("Per spec:")
+    for name in sorted(per_spec):
+        c, t = per_spec[name]
+        filled = round(20 * c / t) if t else 0
+        bar = "#" * filled + "." * (20 - filled)
+        mark = " *" if t and c == t else ""
+        print(f"  {name:<30} {c:>3}/{t:<3} {bar} {c / t:>4.0%}{mark}")
+    print("=" * 68)
 
     if broken:
         print()
-        print(f"BROKEN LINKS ({sum(len(m) for _, m in broken)}):")
-        for r, missing in broken:
-            for miss in missing:
-                print(f"  {r['spec']}/Req {r['num']}: {miss}")
-        print("=" * 60)
+        print(f"UNRESOLVED LINKS ({sum(len(s['missing']) for s in broken)}):")
+        for s in broken:
+            for miss in s["missing"]:
+                print(f"  {s['spec']}/Req {s['req']} — {s['title'][:40]}: {miss}")
+        print("=" * 68)
 
     if verbose:
         print()
-        print("  Legend: [impl][tests][corpus]")
-        print("    impl:   ✓=exists  ○=linked/missing  P=planned  ✗=not linked")
-        print("    tests:  T=linked  -=none")
-        print("    corpus: C=present c=linked/missing  -=none")
+        print("  Legend: [x]=covered  [ ]=no test link  [!]=link unresolved")
+        last = None
+        for s in scenarios:
+            if s["spec"] != last:
+                print(f"\n  {s['spec']}")
+                last = s["spec"]
+            mark = "x" if s["covered"] else "!" if s["missing"] else " "
+            print(f"    [{mark}] Req {s['req']}: {s['title'][:56]}")
+            for r in s["resolved"]:
+                print(f"          -> {r}")
         print()
-        for r in requirements:
-            if r["planned"]:
-                status = "P"
-            else:
-                status = "✓" if r["impl_exists"] else "○" if r["impl_path"] else "✗"
-            test_status = "T" if r["tests_linked"] else "-"
-            corpus_status = (
-                "C"
-                if r["corpus_files"] and r["corpus_present"]
-                else "c"
-                if r["corpus_files"]
-                else "-"
-            )
-            print(
-                f"  [{status}][{test_status}][{corpus_status}] "
-                f"{r['spec']}/Req {r['num']}: {r['title']} "
-                f"({r['scenarios']} scenarios)"
-            )
 
-    return completeness, coverage, assurance
+    return coverage
 
 
 def main():
-    parser = argparse.ArgumentParser(description="mvl-rust Assurance Checker")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Show each requirement")
-    parser.add_argument("--min", type=float, default=0.0, help="Minimum assurance score (0.0-1.0) for CI gate")
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser(description="mvl-rust Assurance Checker")
+    ap.add_argument("-v", "--verbose", action="store_true", help="Per-scenario detail")
+    ap.add_argument("--min", type=float, default=0.0, help="CI gate on scenario coverage")
+    args = ap.parse_args()
 
-    requirements = parse_specs()
-    completeness, coverage, assurance = report(requirements, verbose=args.verbose)
+    specs, scenarios = parse_specs()
+    coverage = report(specs, scenarios, verbose=args.verbose)
 
-    active = [r for r in requirements if not r["planned"]]
-    broken_n = sum(len(r["tests_missing"]) + len(r["impl_missing"]) for r in active)
-    if broken_n:
-        print(f"\nFAIL: {broken_n} broken Implementation/Tests link(s) — see above")
+    if any(s["missing"] for s in scenarios):
+        n = sum(len(s["missing"]) for s in scenarios)
+        print(f"\nFAIL: {n} unresolved Tests: link(s) — see above")
         sys.exit(1)
 
     if args.min > 0:
-        if assurance < args.min:
-            print(f"\nFAIL: assurance {assurance:.0%} below threshold {args.min:.0%}")
-            print(f"  completeness: {completeness:.0%}")
-            print(f"  coverage:     {coverage:.0%}")
-            print(f"  assurance:    {assurance:.0%}")
+        if coverage < args.min:
+            print(f"\nFAIL: scenario coverage {coverage:.0%} below threshold {args.min:.0%}")
             sys.exit(1)
-        else:
-            print(f"\nPASS: assurance {assurance:.0%} above threshold {args.min:.0%}")
+        print(f"\nPASS: scenario coverage {coverage:.0%} above threshold {args.min:.0%}")
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 
 **Domain:** Enforcement / soundness of Γ
 **Version:** 0.1.0
-**Status:** Not implemented — every requirement below is `(planned)`
+**Status:** Not implemented — 0 of 7 scenarios evidenced
 **Date:** 2026-07-29
 **Decided by:** ADR-0006 §4–§5
 
@@ -38,9 +38,7 @@ A diagnostic for an obligation whose outcome is a runtime check MUST NOT assert 
 
 This requirement is independent of every other in this spec and MUST be satisfiable without any injection.
 
-**Implementation:** `crates/rust-refine/src/checks.rs` (planned — #47)
-
-**Tests:** `crates/rust-refine/tests/call_sites.rs` (planned — #47)
+**Implementation:** `crates/rust-refine/src/checks.rs` — not yet implemented (#47)
 
 #### Scenario: A runtime outcome is described honestly
 
@@ -57,9 +55,7 @@ This is the invariant stated in ADR-0006 §5:
 
 > A fact is admitted to Γ only if it has been established, or is an obligation some other program point is required to discharge.
 
-**Implementation:** `crates/rust-refine/src/checks.rs` (planned — #47)
-
-**Tests:** `crates/rust-refine/tests/call_sites.rs` (planned — #47)
+**Implementation:** `crates/rust-refine/src/checks.rs` — not yet implemented (#47)
 
 #### Scenario: A runtime-only postcondition proves nothing downstream
 
@@ -77,9 +73,7 @@ The check MUST use an unconditional assertion, not a debug-only one, and MUST NO
 
 Wrapping the whole body — rather than only the trailing expression — MUST cover explicit `return` paths.
 
-**Implementation:** `crates/mvl-macros/src/lib.rs` (planned — #53)
-
-**Tests:** `crates/mvl/tests/passthrough.rs` (planned — #53)
+**Implementation:** `crates/mvl-macros/src/lib.rs` — not yet implemented (#53)
 
 #### Scenario: An explicit return is checked
 
@@ -100,9 +94,7 @@ A predicate that cannot be evaluated in the callee's post-state — a bounded qu
 
 Such a predicate MUST also be excluded from Γ, since Requirement 2's permission depends on enforcement existing.
 
-**Implementation:** `crates/mvl-macros/src/lib.rs` (planned — #53)
-
-**Tests:** `crates/mvl-rust-core/tests/attrs.rs` (planned — #53)
+**Implementation:** `crates/mvl-macros/src/lib.rs` — not yet implemented (#53)
 
 #### Scenario: A quantified postcondition is neither checked nor assumed
 
@@ -119,9 +111,7 @@ Rationale: an injected assertion makes a `#[mvl::total]` function panicking, and
 
 A function that opts out MUST be excluded from Requirement 2's propagation permission — it fails the condition that every function whose postcondition can enter Γ is enforced.
 
-**Implementation:** `crates/mvl-macros/src/lib.rs` (planned — #53)
-
-**Tests:** `crates/rust-total/tests/totality.rs` (planned — #53)
+**Implementation:** `crates/mvl-macros/src/lib.rs` — not yet implemented (#53)
 
 #### Scenario: A total function with a residual obligation does not silently become panicking
 
@@ -134,9 +124,7 @@ A function that opts out MUST be excluded from Requirement 2's propagation permi
 
 Where an obligation is discharged against a premise that is runtime-enforced rather than statically established, the reported provenance MUST distinguish it from an obligation proven outright.
 
-**Implementation:** `crates/mvl-rust-core/src/assurance/schema.rs` (planned — #53)
-
-**Tests:** `crates/mvl-rust-core/tests/schema_stability.rs` (planned — #53)
+**Implementation:** `crates/mvl-rust-core/src/assurance/schema.rs` — not yet implemented (#53)
 
 #### Scenario: An enforced premise taints the outcome it supports
 
@@ -148,7 +136,7 @@ Where an obligation is discharged against a premise that is runtime-enforced rat
 
 ## Known Limitations
 
-- **Nothing here is implemented.** Every requirement is `(planned)` and excluded from the assurance totals by design — they describe intended architecture, not current behaviour.
+- **Nothing here is implemented.** All 7 scenarios are unevidenced and count fully against scenario coverage. They are not excluded: a requirement written into a spec is an obligation, and letting a marker remove it from the denominator would mean declaring intent improved the score.
 - **Requirement 3 changes the runtime behaviour of existing annotated code.** It contradicts the facade crate's documented "unaffected by whether this crate is even a dependency", breaks the passthrough test by design, and amends ADR-0001 §2.
 - **Enforcement becomes dependent on the `mvl` crate being a dependency.** Dropping it produces an unresolved-attribute compile error — fail-loud, therefore acceptable.
 - **An abort replaces a silent wrong answer.** For the target domains that is the right trade, but it is a stated decision. There is no profile in which a check Γ depends on may be elided.

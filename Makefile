@@ -20,8 +20,8 @@ help:
 	@echo "  examples-verbose   same, but print the violating example's full diagnostics"
 	@echo "  check              fmt-check + clippy + test + examples (mirrors CI)"
 	@echo "  coverage           cargo llvm-cov line/function coverage (cached in target/llvm-cov.json)"
-	@echo "  assurance          ISPE assurance dashboard over .openspec/specs (VERBOSE=true for per-requirement)"
-	@echo "  assurance-gate     CI gate: fail if assurance below 75%"
+	@echo "  assurance          ISPE scenario-coverage dashboard (VERBOSE=true for per-scenario)"
+	@echo "  assurance-gate     CI gate: fail on an unresolved link, or scenario coverage below 75%"
 	@echo "  compliance         check + coverage + assurance-gate (full pipeline)"
 	@echo "  clean              cargo clean (workspace + example crates)"
 
@@ -195,18 +195,22 @@ check: fmt-check clippy test examples
 # === Assurance (ISPE) ===
 #
 # Intent (tickets) -> Specification (.openspec/specs) -> Program (crates/) -> Evidence (tests).
-# `assurance.py` measures the three links: completeness (S->P), coverage (E->P),
-# assurance (E->S). Adapted from mvl-lang/mvl's tools/assurance.py.
+# The unit is the SCENARIO: a requirement is an umbrella claim, a scenario is a
+# falsifiable one, and GIVEN/WHEN/THEN maps onto arrange/act/assert. Measuring at
+# requirement level let one test stand in for five scenarios.
+# Adapted from mvl-lang/mvl's tools/assurance.py.
 
 coverage: ## Line + function coverage via cargo-llvm-cov, cached for the dashboard
 	@command -v cargo-llvm-cov >/dev/null 2>&1 || { echo "cargo-llvm-cov not installed: cargo install cargo-llvm-cov"; exit 1; }
 	@cargo llvm-cov --workspace --json --ignore-run-fail > target/llvm-cov.json 2>/dev/null
 	@python3 -c "import json; d=json.load(open('target/llvm-cov.json')); t=d['data'][0]['totals']; l=t['lines']; f=t['functions']; print(f\"Lines:     {l['covered']}/{l['count']} ({l['percent']:.1f}%)\"); print(f\"Functions: {f['covered']}/{f['count']} ({f['percent']:.1f}%)\")"
 
-assurance: ## ISPE assurance dashboard (VERBOSE=true for per-requirement detail)
+assurance: ## ISPE scenario-coverage dashboard (VERBOSE=true for per-scenario detail)
 	@python3 tools/assurance.py $(if $(VERBOSE),--verbose)
 
-assurance-gate: ## CI gate: fail if assurance below 75%
+# 75% is a ratchet at the current level, not a target. Raise it as scenarios
+# gain evidence; never lower it. An unresolved link fails regardless of ratio.
+assurance-gate: ## CI gate: fail on an unresolved link, or scenario coverage below 75%
 	@python3 tools/assurance.py --min 0.75
 
 compliance: check coverage assurance-gate ## Full pipeline: check + coverage + assurance gate

@@ -193,3 +193,24 @@ fn malformed_source_returns_parse_error() {
     let result = check_source("fn f( {{{");
     assert!(result.is_err());
 }
+
+#[test]
+fn binary_arithmetic_in_a_total_function_is_accepted() {
+    // Spec 003 Requirement 2: `+`/`-`/`*` are deliberately NOT flagged for
+    // overflow. Without type information, flagging them would flag nearly all
+    // numeric code, so the rule is omitted on false-positive grounds rather
+    // than because the risk is absent. The existing compliant fixture only
+    // exercises unary negation, so it does not evidence this.
+    let source = r#"
+        #[mvl::total]
+        fn combine(a: i32, b: i32, c: i32) -> i32 {
+            a + b * c - a
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert!(
+        diagnostics.is_empty(),
+        "binary arithmetic must not be flagged, got {:?}",
+        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}

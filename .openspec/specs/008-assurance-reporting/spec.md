@@ -40,19 +40,21 @@ Only `Level::Error` MUST fail the build. Informational outcomes MUST be reported
 
 **Implementation:** `crates/mvl-rust-core/src/diagnostics.rs`
 
-**Tests:** `crates/mvl-rust-core/tests/diagnostics_ui.rs`
-
 #### Scenario: An informational outcome does not fail the build
 
 - GIVEN a file whose only findings are informational notes
 - WHEN a tool runs over it in gate mode
 - THEN the process MUST exit zero
 
+**Tests:** `crates/rust-refine/tests/call_sites.rs::an_informational_outcome_does_not_fail_the_build`
+
 #### Scenario: A violation fails the build
 
 - GIVEN a file containing at least one `Level::Error` finding
 - WHEN a tool runs over it in gate mode
 - THEN the process MUST exit non-zero
+
+**Tests:** `crates/rust-refine/tests/call_sites.rs::a_violated_return_site_is_an_error_and_fails_the_build`
 
 ### Requirement 2: Every tool emits the shared assurance schema [MUST]
 
@@ -62,13 +64,13 @@ The schema MUST be stable across releases, with changes caught by snapshot evide
 
 **Implementation:** `crates/mvl-rust-core/src/assurance/schema.rs`, `crates/mvl-rust-core/src/assurance/report.rs`
 
-**Tests:** `crates/mvl-rust-core/tests/schema_stability.rs`, `crates/rust-limit/tests/assurance_mode.rs`, `crates/rust-total/tests/assurance_mode.rs`, `crates/rust-refine/tests/assurance_mode.rs`, `crates/rust-effect/tests/assurance_mode.rs`, `crates/rust-ifc/tests/assurance_mode.rs`
-
 #### Scenario: A compliant file yields a valid record
 
 - GIVEN a source file with no findings
 - WHEN a tool runs in assurance mode
 - THEN valid JSON conforming to the shared schema MUST be emitted on stdout
+
+**Tests:** `crates/rust-limit/tests/assurance_mode.rs::emits_valid_assurance_json_for_compliant_source`
 
 #### Scenario: An unreadable file is reported, not fatal
 
@@ -77,15 +79,15 @@ The schema MUST be stable across releases, with changes caught by snapshot evide
 - THEN the failure MUST appear as a diagnostic inside the report
 - AND the tool MUST NOT abort before emitting it
 
+**Tests:** `crates/rust-limit/tests/assurance_mode.rs::assurance_mode_captures_a_read_error_as_a_diagnostic_instead_of_aborting`
+
 ### Requirement 3: Obligation kinds must be distinguishable in the report [MUST]
 
 An obligation record MUST carry enough information to distinguish a declaration-site coherence check from a call-site or return-site entailment proof.
 
 Rationale: coherence asks "is this predicate satisfiable" (spec 005 Requirement 1), which is a materially weaker claim than "Γ entails this goal". Reporting them with the same shape and the same layer field inflates the apparent evidence count — on the shipped compliant demo, seven of sixteen reported obligations are coherence checks.
 
-**Implementation:** `crates/mvl-rust-core/src/assurance/schema.rs` (planned — #56)
-
-**Tests:** `crates/mvl-rust-core/tests/schema_stability.rs` (planned — #56)
+**Implementation:** `crates/mvl-rust-core/src/assurance/schema.rs` — not yet implemented (#56)
 
 #### Scenario: A coherence check is not counted as a proof
 
@@ -97,9 +99,7 @@ Rationale: coherence asks "is this predicate satisfiable" (spec 005 Requirement 
 
 An obligation whose outcome is a runtime check MUST NOT be serialised into a collection named or typed for proven obligations.
 
-**Implementation:** `crates/mvl-rust-core/src/assurance/schema.rs` (planned — #56)
-
-**Tests:** `crates/mvl-rust-core/tests/schema_stability.rs` (planned — #56)
+**Implementation:** `crates/mvl-rust-core/src/assurance/schema.rs` — not yet implemented (#56)
 
 #### Scenario: A residual is visibly residual
 
@@ -113,9 +113,7 @@ Every obligation MUST carry an identifier unique within its enclosing function, 
 
 Rationale: two calls to the same callee, two clauses on one function, and two return points currently collide. That makes report leaves non-addressable, which is the one property an evidence trail needs, and it blocks any keyed discharge cache.
 
-**Implementation:** `crates/rust-refine/src/checks.rs` (planned — #51)
-
-**Tests:** `crates/rust-refine/tests/assurance_mode.rs` (planned — #51)
+**Implementation:** `crates/rust-refine/src/checks.rs` — not yet implemented (#51)
 
 #### Scenario: Two calls to one callee are separately addressable
 
@@ -129,14 +127,14 @@ The meta-command MUST run the five tools in the order `limit → total → refin
 
 **Implementation:** `crates/cargo-mvl/src/check.rs`, `crates/cargo-mvl/src/main.rs`
 
-**Tests:** `crates/cargo-mvl/tests/check.rs`, `crates/cargo-mvl/tests/subcommands.rs`
-
 #### Scenario: The subset gate runs before the annotation tools
 
 - GIVEN a file violating the qualified subset and also carrying refinement annotations
 - WHEN `cargo mvl check` runs
 - THEN the subset violation MUST be reported
 - AND the build MUST fail regardless of the refinement outcomes
+
+**Tests:** `crates/cargo-mvl/tests/check.rs::tool_order_is_limit_total_refine_effect_ifc`, `::check_source_runs_all_five_tools_in_order`
 
 ---
 
