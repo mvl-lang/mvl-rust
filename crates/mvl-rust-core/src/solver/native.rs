@@ -950,7 +950,11 @@ enum SatOutcome {
     /// constant contradiction, or a trivially-false input constraint).
     /// Always safe to act on -- no complexity guard ever produces this.
     Contradiction,
-    /// Elimination ran to completion with no contradiction found.
+    /// Elimination ran to completion with no contradiction found — i.e.
+    /// satisfiable over the RATIONALS. This does **not** imply satisfiable
+    /// over the integers, so it is never grounds for `Proven` (#49). The
+    /// name is kept because it is what Fourier-Motzkin decides; the caveat
+    /// belongs here rather than in the name.
     Satisfiable,
     /// A complexity guard fired before a definite answer was reached;
     /// could be either of the above.
@@ -1088,7 +1092,20 @@ fn discharge_l4(clauses: &[&Expr]) -> Option<DischargeResult> {
                     .join(" && ")
             ),
         }),
-        SatOutcome::Satisfiable => Some(DischargeResult::Proven { layer: Layer::L4 }),
+        // NOT `Proven`. Fourier-Motzkin decides satisfiability over the
+        // RATIONALS, and only its UNSAT verdict transfers to the integers
+        // (ℤ ⊂ ℚ, so no rational solutions means no integer ones). The
+        // converse fails: `2*x >= 1 && 2*x <= 1` is satisfiable at x = ½
+        // with no integer solution, and `2*x == 2*y + 1` is a parity
+        // contradiction FM cannot see. Both reported `Proven { L4 }`
+        // before #49.
+        //
+        // Real MVL acts only on UNSAT here, so this was a divergence the
+        // port introduced, not a limitation inherited. Closing the gap
+        // properly needs Cooper's divisibility atom (`2 | x'` is exactly
+        // what the `Constraint` representation cannot hold) — deferred by
+        // ADR-0006 §1 on the reference's own hit rates.
+        SatOutcome::Satisfiable => None,
         SatOutcome::Unknown => None,
     }
 }
@@ -1555,10 +1572,15 @@ mod tests {
     }
 
     #[test]
-    fn satisfiable_cross_variable_relation_proves_at_l4() {
+    fn a_rationally_satisfiable_relation_is_not_proven_coherent() {
+        // Integer-satisfiable in fact (a=1, b=1, c=0), but Fourier-Motzkin
+        // only established ℚ-satisfiability — the integer solution is a
+        // coincidence it did not derive. Acting on that verdict is what #49
+        // fixed, so `Runtime` here is the honest outcome even though the
+        // predicate is coherent.
         assert_eq!(
             discharge("a > c && b > 0 && a + b >= c"),
-            DischargeResult::Proven { layer: Layer::L4 }
+            DischargeResult::Runtime
         );
     }
 
@@ -1572,11 +1594,51 @@ mod tests {
     }
 
     #[test]
-    fn single_variable_equality_with_a_divisor_proves_at_l4() {
+    fn a_rationally_satisfiable_integer_unsatisfiable_predicate_is_not_proven() {
+        // #49. Fourier-Motzkin decides ℚ-satisfiability; only its UNSAT
+        // verdict transfers to ℤ. `2*x >= 1 && 2*x <= 1` is satisfiable at
+        // x = ½ and has no integer solution — eliminating x yields
+        // (-1)·2 + 1·2 = 0, and 0 is not > 0, so no contradiction is derived
+        // and FM reports satisfiable. Reported `Proven { L4 }` before the fix.
         assert_eq!(
-            discharge("2 * x == 6"),
-            DischargeResult::Proven { layer: Layer::L4 }
+            discharge("2 * x >= 1 && 2 * x <= 1"),
+            DischargeResult::Runtime
         );
+    }
+
+    #[test]
+    fn a_parity_contradiction_is_not_proven() {
+        // #49, the sharper case: `2*x == 2*y + 1` is integer-unsatisfiable
+        // for every x and y. It escapes the divisibility check because that
+        // only fires on a single-variable equality, and FM cannot represent
+        // the divisibility atom (`2 | x'`) that would settle it — which is
+        // exactly what Cooper's algorithm adds and ADR-0006 §1 defers.
+        assert_eq!(discharge("2 * x == 2 * y + 1"), DischargeResult::Runtime);
+    }
+
+    #[test]
+    fn an_honestly_satisfiable_predicate_still_proves_at_l2() {
+        // The fix must not cost the cases L2 already decides exactly:
+        // interval containment over literal bounds is sound over ℤ.
+        assert_eq!(
+            discharge("x > 0 && x < 10"),
+            DischargeResult::Proven { layer: Layer::L2 }
+        );
+    }
+
+    #[test]
+    fn single_variable_equality_with_a_divisor_is_no_longer_proven() {
+        // `2*x == 6` IS integer-satisfiable (x = 3), and the divisibility
+        // check establishes that exactly: `a | c` means `x = -c/a` is an
+        // integer. So the old `Proven { L4 }` was sound for this shape.
+        //
+        // #49's fix drops it anyway, because `check_satisfiability` collapses
+        // "satisfiable, proven exactly over ℤ by divisibility" and
+        // "satisfiable over ℚ only" into one `Satisfiable` verdict, and the
+        // second is unsound to act on. Recovering this case needs the two
+        // distinguished — tracked separately rather than smuggled into a
+        // soundness fix. A precision regression, deliberately taken.
+        assert_eq!(discharge("2 * x == 6"), DischargeResult::Runtime);
     }
 
     #[test]

@@ -125,13 +125,15 @@ Fourier–Motzkin decides satisfiability over the **rationals**. `FM-UNSAT ⟹ �
 
 The solver MUST NOT conclude `Proven` from a satisfiable verdict, and MUST NOT allow a complexity bail-out to be read as satisfiable.
 
-**Implementation:** `crates/mvl-rust-core/src/solver/native.rs` (partially — see Known Limitations)
+**Implementation:** `crates/mvl-rust-core/src/solver/native.rs`
 
 #### Scenario: A rationally-satisfiable, integer-unsatisfiable predicate is not proven
 
 - GIVEN a predicate `2 * x >= 1 && 2 * x <= 1`, satisfiable at `x = ½` and unsatisfiable over ℤ
 - WHEN the coherence obligation is discharged
 - THEN the outcome MUST NOT be `Proven`
+
+**Tests:** `crates/mvl-rust-core/src/solver/native.rs::a_rationally_satisfiable_integer_unsatisfiable_predicate_is_not_proven`, `::a_parity_contradiction_is_not_proven`
 
 ### Requirement 6: An equality goal is split into two refutations [MUST]
 
@@ -186,7 +188,7 @@ The solver MUST delegate to an SMT solver when the native layers are exhausted. 
 ## Known Limitations
 
 - **L5 does not exist.** No dependency, no feature flag, no encoding; the `L5` layer value is never constructed. #37. Two blockers beyond that ticket: the `SolverBackend` trait's obligation type carries a re-parsed string predicate with no Γ field, so L5 must sit behind the entailment function rather than the trait; and predicates are arbitrary expressions, so the encoder needs its own type and overflow story.
-- **Requirement 5 is violated today.** The coherence path maps a satisfiable Fourier–Motzkin verdict to `Proven`, so `2 * x >= 1 && 2 * x <= 1` and `2 * x == 2 * y + 1` both report `Proven` despite being integer-unsatisfiable. #49. This violates the reference spec's own "zero incorrect `Proven`" criterion.
+- **Requirement 5 is satisfied since #49**, at a cost in precision. `Satisfiable` from Fourier–Motzkin no longer yields `Proven`, so an integer-unsatisfiable predicate falls to a runtime check rather than being reported proven. The cost: `2 * x == 6` *is* exactly decidable over ℤ by the divisibility check (`2 | 6` ⟹ `x = 3`), but `check_satisfiability` collapses that exact verdict and a merely-rational one into a single `Satisfiable`, so it fell out with the unsound case. Distinguishing them would recover it.
 - **L4 cannot handle a conjunctive goal in the reference implementation**, because `¬(A ∧ B)` is a disjunction. Requirement 6's per-clause split is this implementation's answer; the reference has no equivalent.
 - **L3 here is not L3 there.** The reference's L3 is symbolic path enumeration over pure function bodies. This implementation has no path enumeration at all. Deferred on the 0.6% hit rate; the prose must stop claiming otherwise (#55).
 - **Real Cooper's algorithm is deferred.** It would close the ℚ/ℤ gap and the parity cases natively, but it is a rewrite rather than an extension, and the reference discharges four of 174 obligations at this layer.
