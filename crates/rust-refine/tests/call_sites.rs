@@ -981,3 +981,140 @@ fn a_runtime_outcome_does_not_claim_a_check_was_inserted() {
         );
     }
 }
+
+// ── Γ construction: shadowing, capture, loop-carried mutation (#50) ───────
+//
+// Three classes of unestablished fact, all producing a false `Proven` on
+// compiling code, all found by the audit that produced #47's invariant. They
+// share a root cause: Γ retained a fact about a name whose value had changed.
+
+#[test]
+fn a_for_pattern_shadows_the_hypothesis_about_that_name() {
+    let result = only_call_site(
+        "#[mvl::requires(x > 10)]\n\
+         fn f(x: i64) { for x in -5..0 { need_pos(x); } }\n\
+         #[mvl::requires(v > 0)]\n\
+         fn need_pos(v: i64) {}",
+    );
+    assert_eq!(result, DischargeResult::Runtime);
+}
+
+#[test]
+fn a_closure_parameter_shadows_the_hypothesis_about_that_name() {
+    let result = only_call_site(
+        "#[mvl::requires(x > 10)]\n\
+         fn f(x: i64) { let g = |x: i64| need_pos(x); }\n\
+         #[mvl::requires(v > 0)]\n\
+         fn need_pos(v: i64) {}",
+    );
+    assert_eq!(result, DischargeResult::Runtime);
+}
+
+#[test]
+fn a_match_arm_binding_shadows_the_hypothesis_about_that_name() {
+    let result = only_call_site(
+        "#[mvl::requires(x > 10)]\n\
+         fn f(x: i64, o: Option<i64>) { match o { Some(x) => { need_pos(x); }, None => {} } }\n\
+         #[mvl::requires(v > 0)]\n\
+         fn need_pos(v: i64) {}",
+    );
+    assert_eq!(result, DischargeResult::Runtime);
+}
+
+#[test]
+fn an_if_let_binding_shadows_the_hypothesis_about_that_name() {
+    let result = only_call_site(
+        "#[mvl::requires(x > 10)]\n\
+         fn f(x: i64, o: Option<i64>) { if let Some(x) = o { need_pos(x); } }\n\
+         #[mvl::requires(v > 0)]\n\
+         fn need_pos(v: i64) {}",
+    );
+    assert_eq!(result, DischargeResult::Runtime);
+}
+
+#[test]
+fn shadowing_is_scoped_and_the_hypothesis_returns_afterwards() {
+    // The guard against fixing the four above with a blanket reset. `x > 10`
+    // must be gone *inside* the loop and present *after* it -- a permanent
+    // invalidation would pass every test above while quietly disabling
+    // call-site checking for any function that shadows a parameter name.
+    let sites = call_sites(
+        "#[mvl::requires(x > 10)]\n\
+         fn f(x: i64) { for x in -5..0 { need_pos(x); } need_pos(x); }\n\
+         #[mvl::requires(v > 0)]\n\
+         fn need_pos(v: i64) {}",
+    );
+    assert_eq!(sites.len(), 2, "got: {sites:?}");
+    assert_eq!(
+        sites[0].1,
+        DischargeResult::Runtime,
+        "inside the loop `x` is the loop binding"
+    );
+    assert!(
+        matches!(sites[1].1, DischargeResult::Proven { .. }),
+        "after the loop `x` is the parameter again, so `x > 10` proves `x > 0`; got {:?}",
+        sites[1].1
+    );
+}
+
+#[test]
+fn an_arity_mismatch_propagates_nothing() {
+    // `FnFacts::params` skips the tuple-pattern parameter, so params.len() (1)
+    // != args.len() (2). Binding only `result` left the callee's `n` free to
+    // capture the *caller's* `n > 100` -- and #47's gate does not stop it,
+    // because this callee's return site genuinely closes: `(n + 1) > n` at L4.
+    // `y` is actually -4.
+    let result = only_call_site(
+        "#[mvl::ensures(result > n)]\n\
+         fn produce((a, b): (i64, i64), n: i64) -> i64 { n + 1 }\n\
+         #[mvl::requires(v > 0)]\n\
+         fn need_pos(v: i64) -> i64 { v }\n\
+         #[mvl::requires(n > 100)]\n\
+         fn caller(n: i64) -> i64 { let y = produce((1, 2), -5); need_pos(y) }",
+    );
+    assert_eq!(
+        result,
+        DischargeResult::Runtime,
+        "the callee's parameter name must not capture the caller's variable"
+    );
+}
+
+#[test]
+fn a_loop_body_retires_what_it_assigns_before_the_walk() {
+    // The walk is a single in-order pass, so a mutation *after* the call never
+    // retired the hypothesis the call used. False on every iteration but the
+    // first.
+    let result = only_call_site(
+        "#[mvl::requires(x > 10)]\n\
+         fn f(mut x: i64) { loop { need_pos(x); x = -1; } }\n\
+         #[mvl::requires(v > 0)]\n\
+         fn need_pos(v: i64) {}",
+    );
+    assert_eq!(result, DischargeResult::Runtime);
+}
+
+#[test]
+fn a_while_body_retires_what_it_assigns_too() {
+    let result = only_call_site(
+        "#[mvl::requires(x > 10)]\n\
+         fn f(mut x: i64) { while x != 0 { need_pos(x); x = -1; } }\n\
+         #[mvl::requires(v > 0)]\n\
+         fn need_pos(v: i64) {}",
+    );
+    assert_eq!(result, DischargeResult::Runtime);
+}
+
+#[test]
+fn a_loop_that_assigns_nothing_keeps_its_hypotheses() {
+    // The retirement is per-name, not a blanket reset on entering any loop.
+    let result = only_call_site(
+        "#[mvl::requires(x > 10)]\n\
+         fn f(x: i64, mut other: i64) { loop { need_pos(x); other = -1; } }\n\
+         #[mvl::requires(v > 0)]\n\
+         fn need_pos(v: i64) {}",
+    );
+    assert!(
+        matches!(result, DischargeResult::Proven { .. }),
+        "assigning `other` must not retire `x`'s hypothesis, got {result:?}"
+    );
+}

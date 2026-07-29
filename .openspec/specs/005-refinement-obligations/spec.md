@@ -143,6 +143,10 @@ Recorded including the sources that turned out fine. #47's diagnosis was that th
 
 A quantified `requires` is a usable *goal* but MUST NOT enter Γ as a hypothesis.
 
+A name rebound by **any** construct MUST lose Γ's facts about it for the scope of the rebinding — `let`, assignment, compound assignment, a `&mut` borrow, and also a `for` pattern, a closure parameter, a `match` arm pattern, and an `if let`/`while let` binding. Shadowing MUST be scoped: the fact returns when the binding goes out of scope, since a blanket invalidation would disable call-site checking for any function that shadows a parameter name.
+
+A loop body MUST retire, on entry, every name it assigns anywhere within itself. The walk is a single in-order pass, so a mutation after a call would otherwise leave the call proven from a fact false on every iteration but the first.
+
 **Implementation:** `crates/rust-refine/src/checks.rs`
 
 #### Scenario: A return inside a narrowed branch uses that branch's context
@@ -202,7 +206,8 @@ A hypothesis outside the decidable fragment — an opaque call, a non-linear ter
 - **`match`-arm patterns do not narrow Γ.** An arm *is* a return point (Requirement 3) but contributes no hypothesis. Imprecise, never unsound.
 - **`?` is not a return point.** Its early `Err(…)` is not `result`-shaped under a type-free view. An unmodelled tail expression is substituted whole and falls to a runtime check rather than being skipped — #48.
 - **Arithmetic is over unbounded ℤ with no overflow modelling.** `x >= i64::MAX ⊢ x + i64::MAX > 0` is `Proven` though the Rust expression overflows.
-- **Three Γ-construction paths still admit facts nothing established** (#50): pattern bindings that do not invalidate (`for`, closure params, `match`, `if let`), loop-carried mutation, and arity-mismatch parameter capture in propagation. Each produces a false `Proven` on compiling code. The `Runtime`-propagation path was a fourth and is fixed (#47); Requirement 4's audit table is what should make a fifth predicted rather than discovered.
+- **The four known Γ-construction violations are fixed** — `Runtime` propagation (#47) and, in #50, pattern-binding shadowing (`for`, closure params, `match` arms, `if let`/`while let`), loop-carried mutation, and arity-mismatch parameter capture. Requirement 4's audit table is what should make a fifth predicted rather than discovered.
+- **Shadowing and loop retirement cost precision, deliberately.** A name shadowed in a scope loses its facts for that scope and regains them after; a name assigned anywhere in a loop body loses them for the whole body, even if the assignment follows its last use. Both under-credit rather than over-credit (ADR-0001 §5). A real fixpoint would recover the second; nothing needs it yet.
 - **Obligation ids collide**, so assurance leaves are not addressable (#51).
 
 ---

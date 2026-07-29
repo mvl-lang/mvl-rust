@@ -325,6 +325,34 @@ impl CallSiteScan<'_> {
         }
     }
 
+    /// Runs `f` with `bound` shadowed: Γ's facts about those names are retired
+    /// for the duration, then restored (#50).
+    ///
+    /// Restoring matters. `for x in -5..0 { … }` rebinds `x` only inside the
+    /// loop, so a blanket invalidation would also lose a fact that is still
+    /// true afterwards — sound, but it would quietly disable call-site
+    /// checking for any function that ever shadows a parameter name.
+    ///
+    /// Γ is cloned rather than truncated because [`Self::invalidate`] rewrites
+    /// clauses in place (positions must stay stable for the index-based block
+    /// scoping), so there is nothing to pop.
+    fn with_shadowed<F>(&mut self, bound: &[String], f: F)
+    where
+        F: FnOnce(&mut Self),
+    {
+        if bound.is_empty() {
+            f(self);
+            return;
+        }
+        let saved_gamma = self.gamma.clone();
+        let saved_locals = self.locals.len();
+        self.invalidate_all(bound);
+        self.locals.extend(bound.iter().cloned());
+        f(self);
+        self.gamma = saved_gamma;
+        self.locals.truncate(saved_locals);
+    }
+
     /// Visits `expr` with the tail flag forced to `tail`, restoring it
     /// afterwards. Every override that recurses by hand instead of going
     /// through `visit::visit_expr_*` has to route through this, or the flag
@@ -464,10 +492,22 @@ impl CallSiteScan<'_> {
             _ => return,
         }
 
-        let mut bindings: HashMap<String, Expr> = HashMap::new();
-        if facts.params.len() == call.args.len() {
-            bindings.extend(facts.params.iter().cloned().zip(call.args.iter().cloned()));
+        // On an arity mismatch, propagate NOTHING (#50). `FnFacts::params`
+        // skips receivers and pattern parameters, so a legal compiling function
+        // reaches this branch -- and binding only `result` left the callee's
+        // parameter names free to capture same-named variables in the
+        // *caller's* scope. `ensures(result > n)` over a callee whose `n` was
+        // unbound picked up the caller's own `n > 100`, proving a call whose
+        // argument was negative.
+        //
+        // `obligations_for_call` already bails on the same condition; this path
+        // is the one that did not.
+        if facts.params.len() != call.args.len() {
+            return;
         }
+
+        let mut bindings: HashMap<String, Expr> = HashMap::new();
+        bindings.extend(facts.params.iter().cloned().zip(call.args.iter().cloned()));
         bindings.insert("result".to_string(), ident_expr(&binding));
 
         for ensures in &facts.ensures {
@@ -538,9 +578,14 @@ impl<'ast> Visit<'ast> for CallSiteScan<'_> {
     /// `returns_here` for the `return`. Clearing only the first reported a
     /// closure's `return -1` as a violating return point of the enclosing
     /// function -- a build-failing error on correct code.
+    ///
+    /// Its parameters also shadow Γ for the body's duration (#50): a closure
+    /// `|x: i64| …` rebinds `x`, so a fact about the enclosing `x` says nothing
+    /// about the one in scope inside.
     fn visit_expr_closure(&mut self, node: &'ast syn::ExprClosure) {
         let saved = std::mem::replace(&mut self.returns_here, false);
-        self.visit_with_tail(&node.body, false);
+        let bound: Vec<String> = node.inputs.iter().flat_map(pattern_idents).collect();
+        self.with_shadowed(&bound, |this| this.visit_with_tail(&node.body, false));
         self.returns_here = saved;
     }
 
@@ -563,22 +608,42 @@ impl<'ast> Visit<'ast> for CallSiteScan<'_> {
     }
 
     /// Each arm of a `match` in tail position is a return point. Arm patterns
-    /// do not narrow Γ (see the module doc's scope note), so each arm is
+    /// do not *narrow* Γ (see the module doc's scope note), so each arm is
     /// discharged against the enclosing Γ -- imprecise, never unsound, since
     /// a missing hypothesis can only fail to prove a goal.
+    ///
+    /// They do, however, **shadow** it (#50). `match o { Some(x) => … }` binds
+    /// a new `x`, and a fact about the outer `x` is not a fact about it. The
+    /// guard is shadowed too, since it can see the arm's bindings.
     fn visit_expr_match(&mut self, node: &'ast syn::ExprMatch) {
         let arms_are_tail = self.in_tail;
         self.visit_with_tail(&node.expr, false);
         for arm in &node.arms {
-            if let Some((_, guard)) = &arm.guard {
-                self.visit_with_tail(guard, false);
-            }
-            if arms_are_tail {
-                self.visit_tail_expr(&arm.body);
-            } else {
-                self.visit_with_tail(&arm.body, false);
-            }
+            let bound = pattern_idents(&arm.pat);
+            self.with_shadowed(&bound, |this| {
+                if let Some((_, guard)) = &arm.guard {
+                    this.visit_with_tail(guard, false);
+                }
+                if arms_are_tail {
+                    this.visit_tail_expr(&arm.body);
+                } else {
+                    this.visit_with_tail(&arm.body, false);
+                }
+            });
         }
+    }
+
+    /// `if let Some(x) = o { … }` and `while let` bind through a pattern in
+    /// condition position. `syn` models that as an `Expr::Let`, which the
+    /// default walk descends without noticing the binding -- so the enclosing
+    /// `x`'s facts survived into a scope where `x` is a different value (#50).
+    ///
+    /// The bindings are scoped to the enclosing `if`/`while` body rather than
+    /// to this node, so the shadowing is applied by
+    /// [`Self::visit_expr_if`]/[`Self::visit_expr_while`]; this override only
+    /// makes sure the scrutinee itself is still visited.
+    fn visit_expr_let(&mut self, node: &'ast syn::ExprLet) {
+        self.visit_with_tail(&node.expr, false);
     }
 
     /// The initializer is evaluated before the binding takes effect, so it
@@ -629,13 +694,20 @@ impl<'ast> Visit<'ast> for CallSiteScan<'_> {
     /// Both arms inherit tail position from the `if` itself, so a return
     /// point inside one is discharged against that branch's narrowed Γ. The
     /// condition never does -- its value is not returned.
+    ///
+    /// An `if let` condition binds through a pattern, and those bindings are in
+    /// scope for the `then` arm only — so they shadow Γ there and not in the
+    /// `else` arm (#50).
     fn visit_expr_if(&mut self, node: &'ast ExprIf) {
         let arms_are_tail = self.in_tail;
         self.visit_with_tail(&node.cond, false);
+        let pattern_bound = condition_pattern_idents(&node.cond);
 
         let depth = self.gamma.len();
         self.gamma.push((*node.cond).clone());
-        self.visit_block_with_tail(&node.then_branch, arms_are_tail);
+        self.with_shadowed(&pattern_bound, |this| {
+            this.visit_block_with_tail(&node.then_branch, arms_are_tail)
+        });
         self.gamma.truncate(depth);
 
         if let Some((_, else_branch)) = &node.else_branch {
@@ -650,12 +722,44 @@ impl<'ast> Visit<'ast> for CallSiteScan<'_> {
     /// evaluates to `()`, so nothing in it becomes the return value except
     /// through an explicit `return`, which `visit_expr_return` catches on its
     /// own and with this same narrowed Γ.
+    ///
+    /// The body's own assignments are retired on entry (#50), because the walk
+    /// is a single in-order pass: without that, `while c { need_pos(x); x = -1; }`
+    /// proves `x > 0` from a fact false on every iteration but the first. A
+    /// `while let` pattern shadows for the body's duration, as in `if let`.
     fn visit_expr_while(&mut self, node: &'ast ExprWhile) {
         self.visit_with_tail(&node.cond, false);
         let depth = self.gamma.len();
         self.gamma.push((*node.cond).clone());
-        self.visit_block_with_tail(&node.body, false);
+        let mut shadowed = condition_pattern_idents(&node.cond);
+        shadowed.extend(assigned_in_block(&node.body));
+        self.with_shadowed(&shadowed, |this| {
+            this.visit_block_with_tail(&node.body, false)
+        });
         self.gamma.truncate(depth);
+    }
+
+    /// A `loop` body carries no condition to narrow with, but the same
+    /// single-pass problem as `while`: retire anything the body assigns before
+    /// walking it (#50).
+    fn visit_expr_loop(&mut self, node: &'ast syn::ExprLoop) {
+        let shadowed = assigned_in_block(&node.body);
+        self.with_shadowed(&shadowed, |this| {
+            this.visit_block_with_tail(&node.body, false)
+        });
+    }
+
+    /// `for pat in iter { … }` rebinds through `pat` on every iteration, and
+    /// the body may assign as well (#50). Both shadow Γ for the body only; the
+    /// iterator expression still sees the outer Γ, since it is evaluated before
+    /// the binding takes effect.
+    fn visit_expr_for_loop(&mut self, node: &'ast syn::ExprForLoop) {
+        self.visit_with_tail(&node.expr, false);
+        let mut shadowed = pattern_idents(&node.pat);
+        shadowed.extend(assigned_in_block(&node.body));
+        self.with_shadowed(&shadowed, |this| {
+            this.visit_block_with_tail(&node.body, false)
+        });
     }
 
     /// A nested `fn` item has its own parameters, so it gets its own Γ
@@ -757,6 +861,63 @@ fn pattern_idents(pat: &Pat) -> Vec<String> {
     }
     let mut collect = Collect { names: Vec::new() };
     collect.visit_pat(pat);
+    collect.names
+}
+
+/// Names bound by an `if let`/`while let` pattern in condition position (#50).
+///
+/// `syn` models `if let Some(x) = o` as an `Expr::Let` in the condition, and a
+/// `&&`-chain of them (let-chains) as nested `Binary`. Both shapes bind for the
+/// body's duration, so both are collected.
+fn condition_pattern_idents(cond: &Expr) -> Vec<String> {
+    match strip_groups(cond) {
+        Expr::Let(let_expr) => pattern_idents(&let_expr.pat),
+        Expr::Binary(bin) if matches!(bin.op, syn::BinOp::And(_)) => {
+            let mut names = condition_pattern_idents(&bin.left);
+            names.extend(condition_pattern_idents(&bin.right));
+            names
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Every name assigned anywhere inside `block` — `x = …`, `x += …`, or a
+/// `&mut x` borrow (#50).
+///
+/// A loop body is walked once, in order, so a mutation *after* a call never
+/// retires the hypothesis that call used: `loop { need_pos(x); x = -1; }`
+/// proved `x > 0` from a fact false on every iteration but the first.
+///
+/// Retiring these on entry to the body is the sound-and-cheap alternative to a
+/// real fixpoint. It costs precision on a name assigned only *after* its last
+/// use in the body, and it never admits a stale fact — the required direction
+/// (ADR-0001 §5).
+fn assigned_in_block(block: &Block) -> Vec<String> {
+    struct Collect {
+        names: Vec<String>,
+    }
+    impl<'ast> Visit<'ast> for Collect {
+        fn visit_expr_assign(&mut self, node: &'ast syn::ExprAssign) {
+            self.names.extend(assigned_idents(&node.left));
+            visit::visit_expr_assign(self, node);
+        }
+        fn visit_expr_binary(&mut self, node: &'ast syn::ExprBinary) {
+            if is_assign_op(&node.op) {
+                self.names.extend(assigned_idents(&node.left));
+            }
+            visit::visit_expr_binary(self, node);
+        }
+        fn visit_expr_reference(&mut self, node: &'ast syn::ExprReference) {
+            if node.mutability.is_some() {
+                self.names.extend(assigned_idents(&node.expr));
+            }
+            visit::visit_expr_reference(self, node);
+        }
+    }
+    let mut collect = Collect { names: Vec::new() };
+    collect.visit_block(block);
+    collect.names.sort();
+    collect.names.dedup();
     collect.names
 }
 
