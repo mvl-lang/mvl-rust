@@ -142,7 +142,7 @@ The meta-command MUST run the five tools in the order `limit → total → refin
 
 - **Requirements 3, 4 and 5 are violated today** — #56 and #51. The proven collection currently contains three different things: entailment proofs, satisfiability checks, and undischarged obligations.
 - **Diagnostic text claims an action the tool does not take.** Three sites report `"inserting a runtime check"` while inserting nothing; spec 007 Requirement 1 covers the fix.
-- **Line coverage is not part of the assurance record.** `make coverage` reports it separately, and `tools/assurance.py` reads the cached result if present. Coverage is evidence about the *program*, not about a requirement, so it informs the dashboard rather than the per-obligation record.
+- **Line coverage is not an ISPE link and is not part of the assurance record.** It measures the program against itself. It is reported in the dashboard because its *interaction* with scenario coverage determines what work to do next — low/low means the tests do not exist and must be written; low scenario with high line means they exist but are not linked, which is traceability work rather than engineering work. A single ratio cannot distinguish those two, and they call for different people on different days.
 - **Nothing enforces that the subset gate ran.** Requirement 6 fixes the order inside `cargo mvl check`, but a tool invoked directly analyses unrestricted Rust with no warning that spec 002's precondition is unmet.
 - **`cargo mvl` takes explicit file paths, not a crate graph.** It reads no manifest and resolves no dependencies, so a whole-crate assurance claim has to be assembled by the caller.
 

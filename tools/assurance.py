@@ -24,14 +24,28 @@ Reported:
   - per-spec covered fraction
   - specs fully covered
 
-Line coverage and raw test counts are deliberately absent — they measure the
-program against itself and say nothing about S, E, or the links between them.
-Use `make coverage` for those.
+Line coverage is **not** an ISPE link — it measures the program against itself.
+It is reported anyway because its interaction with scenario coverage says what
+work to do next, which a single ratio cannot:
+
+    scenario LOW  + line LOW   -> the tests do not exist. WRITE TESTS.
+                                  Linking cannot help; there is nothing to link.
+    scenario LOW  + line HIGH  -> the tests exist but are not tied to scenarios.
+                                  LINK TESTS. This is traceability work, not
+                                  engineering work.
+    scenario HIGH + line LOW   -> scenarios are linked but much of the program is
+                                  unexercised. Either the linked tests are
+                                  shallow, or there is code no scenario covers.
+    scenario HIGH + line HIGH  -> healthy.
+
+Two further gates, both hard failures independent of any ratio:
+  - the workspace must compile (`make compile`, run before this script)
+  - any `**Tests:**` link that does not resolve
 
 Usage:
     python3 tools/assurance.py            # dashboard
     python3 tools/assurance.py --verbose  # per-scenario detail
-    python3 tools/assurance.py --min 0.75 # CI gate on scenario coverage
+    python3 tools/assurance.py --min 0.75 --min-coverage 0.80
 """
 
 import argparse
@@ -47,6 +61,44 @@ SCEN_SPLIT = re.compile(r"(?=^#### Scenario:)", re.M)
 SCEN_TITLE = re.compile(r"^#### Scenario:\s*(.+)", re.M)
 TESTS_LINE = re.compile(r"\*\*Tests:\*\*\s*(.+)")
 IMPL_LINE = re.compile(r"\*\*Implementation:\*\*\s*(.+)")
+
+
+def line_coverage():
+    """Read cached llvm-cov line coverage. Returns (pct, covered, total) or None.
+
+    Deliberately does not run coverage itself -- `make coverage` produces the
+    cache. A missing cache means the diagnostic below cannot be computed, which
+    is reported rather than silently treated as passing.
+    """
+    cache = REPO_ROOT / "target" / "llvm-cov.json"
+    if not cache.exists():
+        return None
+    try:
+        import json
+        lines = json.loads(cache.read_text())["data"][0]["totals"]["lines"]
+        return lines["percent"] / 100.0, lines["covered"], lines["count"]
+    except (ValueError, KeyError, IndexError):
+        return None
+
+
+def verdict(scen, line, scen_min, line_min):
+    """The 2x2: what work does this state actually call for?"""
+    if line is None:
+        return ("UNKNOWN", "no coverage cache — run `make coverage` to get the diagnostic")
+    lo_s, lo_l = scen < scen_min, line < line_min
+    if lo_s and lo_l:
+        return ("WRITE TESTS",
+                "evidence does not exist yet; linking cannot help because there is "
+                "nothing to link")
+    if lo_s and not lo_l:
+        return ("LINK TESTS",
+                "the tests exist but scenarios are not tied to them — traceability "
+                "work, not engineering work")
+    if not lo_s and lo_l:
+        return ("BROADEN TESTS",
+                "scenarios are linked but much of the program is unexercised: either "
+                "the linked tests are shallow, or there is code no scenario covers")
+    return ("HEALTHY", "scenarios are evidenced and the program is exercised")
 
 
 def resolve_tests(raw):
@@ -129,7 +181,7 @@ def parse_specs():
     return specs, scenarios
 
 
-def report(specs, scenarios, verbose=False):
+def report(specs, scenarios, verbose=False, scen_min=0.75, line_min=0.80):
     total = len(scenarios)
     if total == 0:
         print("No scenarios found in .openspec/specs/")
@@ -162,6 +214,17 @@ def report(specs, scenarios, verbose=False):
     print()
     print(f"Specs fully covered:   {len(fully)}/{len(specs)}")
     print()
+    cov = line_coverage()
+    if cov:
+        pct, c, t = cov
+        print(f"Line coverage:         {c}/{t}  ({pct:.0%})   [program health, not an ISPE link]")
+    else:
+        print("Line coverage:         no cache — run `make coverage`")
+    v, why = verdict(coverage, cov[0] if cov else None, scen_min, line_min)
+    print()
+    print(f"  NEXT WORK: {v}")
+    print(f"    {why}")
+    print()
     print("Per spec:")
     for name in sorted(per_spec):
         c, t = per_spec[name]
@@ -193,28 +256,45 @@ def report(specs, scenarios, verbose=False):
                 print(f"          -> {r}")
         print()
 
-    return coverage
+    return coverage, cov[0] if cov else None
 
 
 def main():
     ap = argparse.ArgumentParser(description="mvl-rust Assurance Checker")
     ap.add_argument("-v", "--verbose", action="store_true", help="Per-scenario detail")
     ap.add_argument("--min", type=float, default=0.0, help="CI gate on scenario coverage")
+    ap.add_argument("--min-coverage", type=float, default=0.0,
+                    help="CI gate on line coverage (requires `make coverage` cache)")
     args = ap.parse_args()
 
     specs, scenarios = parse_specs()
-    coverage = report(specs, scenarios, verbose=args.verbose)
+    coverage, line = report(specs, scenarios, verbose=args.verbose,
+                            scen_min=args.min or 0.75,
+                            line_min=args.min_coverage or 0.80)
 
     if any(s["missing"] for s in scenarios):
         n = sum(len(s["missing"]) for s in scenarios)
         print(f"\nFAIL: {n} unresolved Tests: link(s) — see above")
         sys.exit(1)
 
-    if args.min > 0:
-        if coverage < args.min:
-            print(f"\nFAIL: scenario coverage {coverage:.0%} below threshold {args.min:.0%}")
-            sys.exit(1)
-        print(f"\nPASS: scenario coverage {coverage:.0%} above threshold {args.min:.0%}")
+    failed = False
+    if args.min > 0 and coverage < args.min:
+        print(f"\nFAIL: scenario coverage {coverage:.0%} below threshold {args.min:.0%}")
+        failed = True
+    if args.min_coverage > 0:
+        if line is None:
+            print("\nFAIL: line-coverage gate requested but no cache — run `make coverage`")
+            failed = True
+        elif line < args.min_coverage:
+            print(f"\nFAIL: line coverage {line:.0%} below threshold {args.min_coverage:.0%}")
+            failed = True
+    if failed:
+        sys.exit(1)
+    if args.min > 0 or args.min_coverage > 0:
+        parts = [f"scenario coverage {coverage:.0%}"]
+        if line is not None:
+            parts.append(f"line coverage {line:.0%}")
+        print(f"\nPASS: {', '.join(parts)}")
 
 
 if __name__ == "__main__":
