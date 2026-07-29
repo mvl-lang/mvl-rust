@@ -1,8 +1,8 @@
 ---
 domain: workspace
-version: 0.1.2
-status: draft
-date: 2026-07-22
+version: 0.2.0
+status: active
+date: 2026-07-29
 ---
 
 # 001 — System Overview
@@ -97,18 +97,17 @@ fn abs(x: i32) -> i32 { ... }
 fn log_now(msg: &str) { ... }
 
 // Totality guarantee
-#[total]
+#[mvl::total]
 fn signum(n: i32) -> i32 {
     if n > 0 { 1 } else if n < 0 { -1 } else { 0 }
 }
 
-// Information flow label
-#[label(Secret)]
-type Password = String;
+// Information flow: the label lives in the type (spec 004)
+fn ingest(raw: String) -> Tainted<String> { Tainted::new(raw) }
 
-// Declassification (explicit)
-#[declassify]
-fn hash_for_logging(pw: &Password) -> String { ... }
+// Declassification is a declared exception, not a separate attribute
+#[mvl::relabel(from = "Tainted", to = "_", audit)]
+fn trust<T>(value: Tainted<T>, tag: &'static str) -> T { value.into_inner() }
 ```
 
 Exact grammar of predicate DSLs lands per-crate; `mvl-rust-core` provides the shared parser.
@@ -117,331 +116,184 @@ Exact grammar of predicate DSLs lands per-crate; `mvl-rust-core` provides the sh
 
 `mvl-rust` tracks a specific version of the MVL spec (`mvl-spec/VERSION`). Every attribute macro's semantics MUST match the corresponding MVL construct at that spec version. Drift is caught by `mvl-spec/tools/check-versions.py` (invoke with a flag pointing at a local `mvl-rust` checkout).
 
+## Detailed specifications
+
+This document covers the workspace's architecture and cross-cutting concerns. Per-tool behaviour lives in its own spec, in dependency order:
+
+| Spec | Covers | ADR |
+|---|---|---|
+| [002](../002-qualified-subset/spec.md) | The qualified subset — `rust-limit` | ADR-0002 |
+| [003](../003-function-contracts/spec.md) | Function contracts — `total`, `effect` | ADR-0003 |
+| [004](../004-information-flow/spec.md) | Information flow via types — `ifc` | ADR-0004 |
+| [005](../005-refinement-obligations/spec.md) | Refinement obligations and Γ | ADR-0005 |
+| [006](../006-layered-solver/spec.md) | The layered solver, L1–L5 | ADR-0006 §1–3 |
+| [007](../007-runtime-enforcement/spec.md) | Runtime enforcement of residuals | ADR-0006 §4–5 |
+| [008](../008-assurance-reporting/spec.md) | Diagnostics and assurance reporting | ADR-0006 §5 |
+
 ## Requirements
 
-### Requirement 1: The qualified subset [MUST]
+### Requirement 1: Verification attaches to unmodified Rust via attributes [MUST]
 
-`rust-limit` MUST provide a lint pass that identifies uses of Rust language features outside the qualified subset defined in `mvl-spec` Wave 2b (see [rust-limit-linter design](https://github.com/iheitlager/my-brain/blob/main/work/projects/mvl/rust-limit-linter.md)). The lint pass MUST run as a `cargo` subcommand and MUST emit diagnostics using rustc's standard span-annotated error format.
+A file under these tools MUST be a Rust file that `rustc` compiles unchanged. There MUST be no dialect, fork, preprocessor, or new syntax.
 
-**Implementation:** `crates/rust-limit/src/lints/`
+Verification information MUST be carried by attribute macros in the `mvl::` namespace, parsed centrally and recognised by **last path segment**, so `#[mvl::requires]`, `#[requires]` and `#[alias::requires]` all resolve. An attribute the workspace does not own MUST be skipped rather than rejected.
 
-**Tests:** `crates/rust-limit/tests/qualified_subset.rs`
+**Implementation:** `crates/mvl-rust-core/src/attrs.rs`
 
-#### Scenario: Forbidden construct rejected
+**Tests:** `crates/mvl-rust-core/tests/attrs.rs::recognizes_fully_qualified_mvl_paths`, `::unrecognized_attribute_returns_none`, `::malformed_refine_predicate_returns_parse_error`
 
-- GIVEN a Rust file containing an `unsafe` block
-- WHEN `cargo mvl-limit` runs
-- THEN the linter MUST emit a diagnostic naming `unsafe` as outside the qualified subset, with the exact span of the offending block
+#### Scenario: A third-party attribute is skipped, not rejected
 
-#### Scenario: Whitelisted construct accepted
+- GIVEN a function carrying `#[derive(Debug)]` alongside `#[mvl::requires(x > 0)]`
+- WHEN attributes are parsed
+- THEN the unowned attribute MUST be skipped
+- AND the `mvl::` attribute MUST still be recognised
 
-- GIVEN a Rust file using only permitted constructs (safe references, `Result`, `Option`, non-generic lifetimes, no macros beyond an allowlist)
-- WHEN `cargo mvl-limit` runs
-- THEN the linter MUST exit with status 0 and no diagnostics
+#### Scenario: A malformed predicate is a parse error, not silence
 
-### Requirement 2: Totality attribute [MUST]
+- GIVEN an `mvl::` attribute whose argument tokens do not match its grammar
+- WHEN parsing runs
+- THEN an error MUST be returned rather than the attribute being ignored
 
-`rust-total` MUST provide `#[total]` on `fn` declarations and MUST verify that: (a) every `match` on an enum is exhaustive, (b) no panicking construct is reachable (`unwrap`, `expect`, indexing without bounds proof, arithmetic that can overflow in `#[deny(overflow)]` context), (c) recursion is bounded by a `#[decreases(measure)]` annotation the verifier can prove strictly decreases.
+### Requirement 2: Verification is out-of-band from compilation [MUST]
 
-**Implementation:** `crates/rust-total/src/verifier.rs`
+Annotated code MUST compile and run identically whether or not any verification tool has been run. The tools MUST read source with `syn` and report diagnostics; nothing they do MUST reach `rustc`.
 
-**Tests:** `crates/rust-total/tests/totality.rs`
+The facade crate MUST be a convenience rather than a requirement for compilation.
 
-#### Scenario: Non-exhaustive match rejected
+> **Amended by spec 007 Requirement 3.** Once contract attributes enforce their predicates at runtime, this requirement no longer holds for `requires`/`ensures` — enforcement is the deliberate exception, and the tools remain out-of-band.
 
-- GIVEN `#[total] fn f(x: Option<i32>) -> i32 { match x { Some(n) => n } }`
-- WHEN the crate compiles
-- THEN compilation MUST fail with "non-exhaustive match under `#[total]`: variant `None` not handled"
+**Implementation:** `crates/mvl-macros/src/lib.rs`
 
-#### Scenario: Terminating recursion accepted
+**Tests:** `crates/mvl/tests/passthrough.rs::attributes_are_pass_through_and_dont_alter_behavior`, `::decreases_example_is_a_real_recursive_function`
 
-- GIVEN a `#[total]` function with `#[decreases(len - i)]` where the verifier can prove strict decrease
-- WHEN the crate compiles
-- THEN compilation MUST succeed
+#### Scenario: Annotations do not alter behaviour
 
-#### Scenario: Missing decreases annotation rejected
+- GIVEN a function annotated with `#[mvl::requires]` and `#[mvl::ensures]`
+- WHEN the program runs
+- THEN its observable behaviour MUST be identical to the unannotated function
 
-- GIVEN a recursive `#[total]` function without `#[decreases(...)]`
-- WHEN the crate compiles
-- THEN compilation MUST fail with a diagnostic pointing to the recursion site and requesting the annotation
+### Requirement 3: One dispatcher, five tools, no shared analysis state [MUST]
 
-### Requirement 3: Refinement attribute [MUST]
+`cargo mvl check` MUST run the five tools in the order `limit → total → refine → effect → ifc` as in-process library calls over explicit file paths. Each tool MUST also be independently invocable as its own `cargo` subcommand.
 
-`rust-refine` MUST provide `#[mvl::requires(pred)]` and `#[mvl::ensures(pred)]` on functions, and MUST discharge the resulting obligations through the same layered dispatch (L1 trivial → L2 intervals → L3 bounded-quantifier expansion → L4 linear arithmetic → L5 SMT → runtime) that the MVL compiler uses. Obligations MUST be attributable to a specific layer in the diagnostic output — this is the load-bearing UX for the certified-domain pitch.
+Shared infrastructure MUST be limited to the attribute grammar, the diagnostic type, and the solver. There MUST be no shared program representation and tools MUST NOT exchange results.
 
-L4 is implemented as Fourier–Motzkin elimination (#35). The MVL compiler names this layer "Cooper QE", which is inaccurate for what it actually runs — an upstream naming issue tracked as [`mvl-lang/mvl`#2022](https://github.com/mvl-lang/mvl/issues/2022) — so this spec names the technique rather than inheriting the label.
+**Implementation:** `crates/cargo-mvl/src/check.rs`, `crates/cargo-mvl/src/main.rs`
 
-Obligations arise at three kinds of program point (ADR-0005). At a **declaration site** the predicate is checked for internal coherence — nothing is known about arguments there. At a **call site** the callee's precondition, with the actual arguments substituted, MUST be discharged against the caller's hypothesis context Γ, which accumulates the caller's own parameter refinements, branch-condition narrowing, and callees' propagated postconditions. At a **return site** the function's own postcondition, with `result` bound to the returned expression, MUST be discharged against Γ as it stands at that point (#42).
+**Tests:** `crates/cargo-mvl/tests/check.rs`, `crates/cargo-mvl/tests/subcommands.rs`
 
-**Implementation:** `crates/rust-refine/src/checks.rs`, `crates/mvl-rust-core/src/solver/native.rs`, `crates/mvl-rust-core/src/attrs/predicate.rs`
+#### Scenario: Each tool is independently invocable
 
-**Tests:** `crates/rust-refine/tests/call_sites.rs`, `crates/mvl-rust-core/tests/entailment.rs`
+- GIVEN an installed workspace
+- WHEN `cargo mvl-limit <FILE>` is invoked directly
+- THEN only that tool MUST run, and its exit code MUST reflect only its own findings
 
-**Decided by:** ADR-0005 (obligation model and native solver), ADR-0006 (layer completion and runtime enforcement).
+### Requirement 4: No dependency on `mvl-lang/mvl` [MUST]
 
-#### Scenario: Simple bound proven at L2
+There MUST be no dependency — build-time, runtime, or logical — on `mvl-lang/mvl`. Its source MAY be read as a design reference and its test fixtures MAY be ported as cross-validation corpora, but neither constitutes a dependency.
 
-- GIVEN `#[refine(x >= 0 && x < 100)] fn f(x: i32) -> #[refine(y >= 0)] i32 { x }`
-- WHEN the crate compiles
-- THEN compilation MUST succeed AND the verifier MUST report the discharge layer as L2 (intervals)
+Rationale: cross-validation is the mechanism by which a divergence is caught, and it only works if the two implementations are actually separate. Where they disagree, the divergence MUST be asserted by a test rather than smoothed over.
 
-#### Scenario: Uncloseable obligation surfaces as runtime check
+**Implementation:** `crates/mvl-rust-core/src/solver/native.rs`
 
-- GIVEN a refinement over an opaque function output
-- WHEN the crate compiles
-- THEN compilation MUST succeed AND `rust-refine` MUST report the obligation as undischarged, naming what was known at that point, without claiming it is enforced
+**Tests:** `crates/rust-refine/tests/call_sites.rs`, `crates/mvl-rust-core/tests/solver.rs`
 
-Amended by ADR-0006 §5. The earlier wording required `rust-refine` itself to *emit a runtime assertion*, which it never did — it is an out-of-band lint with no codegen path (ADR-0001 §2), so the requirement was unmeetable as written and the diagnostic text asserting otherwise is what made an unenforced fact usable as a hypothesis (#47). Enforcement is ADR-0006 §4's concern and belongs to the `mvl::` proc macros, not to this tool.
+#### Scenario: A ported upstream fixture closes without the upstream solver
 
-#### Scenario: Undischarged obligation is not propagated as fact
+- GIVEN a fixture ported from the reference implementation's SMT-layer corpus
+- WHEN the obligation is discharged by this workspace's native solver
+- THEN it MUST close without invoking any external solver
+- AND the divergence in discharge layer MUST be asserted rather than hidden
 
-- GIVEN a callee whose postcondition reaches only `Runtime`
-- WHEN a caller binds its result and a later obligation could be proven from that postcondition
-- THEN the postcondition MUST NOT enter the caller's hypothesis context Γ (ADR-0006 §5)
+### Requirement 5: Greenfield only — no grandfathering, no exceptions [MUST]
 
-#### Scenario: Genuine violation rejected
+The tools target code written to be verified. There MUST NOT be a compatibility mode, a warn-instead-of-error tier for unverifiable constructs, a per-crate opt-out, or an `#[allow]`-shaped escape hatch for any verification attribute.
 
-- GIVEN `#[refine(x < 0)] fn f(x: i32) { ... }` called with `f(5)`
-- WHEN the crate compiles
-- THEN compilation MUST fail with a diagnostic including the counterexample from the solver (`x = 5` violates `x < 0`)
+Where a construct cannot be verified, the resolution MUST be a change to the code, not an exception in the tool.
 
-#### Scenario: Call-site precondition entailed by the caller's own refinements
+Precision MAY be traded for soundness; the reverse MUST NOT occur. A construct the tools cannot model MUST yield *no claim* rather than a weakened one.
 
-- GIVEN `#[mvl::requires(n > 5)] fn g(n: i32)` and a caller `#[mvl::requires(x > 10 && y > x)] fn f(x: i32, y: i32) { g(y) }`
-- WHEN `rust-refine` runs
-- THEN the call MUST be reported as proven, attributed to the layer that closed it (L4 — no single clause bounds `y`, so this needs linear arithmetic over the hypotheses plus the negated goal)
+**Implementation:** `crates/rust-limit/src/lints/mod.rs`
 
-#### Scenario: Branch condition narrows the hypothesis context
+**Tests:** `crates/rust-limit/tests/qualified_subset.rs::forbidden_construct_rejected`, `crates/rust-effect/src/checks.rs::tests::call_to_unresolvable_function_is_silently_skipped`
 
-- GIVEN `#[mvl::requires(n > 0)] fn g(n: i32)` and a caller `fn f(x: i32) { if x > 0 { g(x) } else { g(x) } }`
-- WHEN `rust-refine` runs
-- THEN the call in the `then` arm MUST be proven at L2, AND the call in the `else` arm MUST be an error (the negated condition puts `x <= 0` in Γ, which no value satisfying `n > 0` can meet)
+#### Scenario: An unmodellable construct yields no claim
 
-#### Scenario: Callee postcondition propagates to a later call
+- GIVEN a call the tools cannot resolve
+- WHEN analysis runs
+- THEN no obligation MUST be produced and no diagnostic MUST be emitted in either direction
 
-- GIVEN `#[mvl::ensures(result >= 10)] fn produce() -> i32`, `#[mvl::requires(n > 5)] fn g(n: i32)`, and a caller `fn f() { let y = produce(); g(y) }`
-- WHEN `rust-refine` runs
-- THEN the call `g(y)` MUST be proven, discharged against the postcondition `produce` guarantees for `y`
+### Requirement 6: Each crate publishes independently [MUST]
 
-#### Scenario: Unresolvable call produces no obligation
+Every crate MUST be publishable to crates.io on its own, with the workspace version inherited from the root manifest. CI MUST build and test across stable and the declared MSRV.
 
-- GIVEN a call to a function not defined as a free function in the same file
-- WHEN `rust-refine` runs
-- THEN no obligation MUST be reported for that call (same-file resolution boundary, matching `rust-effect`)
+**Implementation:** `Cargo.toml`, `.github/workflows/ci.yml`
 
-### Requirement 4: Effect attribute [SHOULD]
+**Tests:** `.github/workflows/ci.yml`
 
-`rust-effect` SHOULD provide `#[effect(list)]` on function declarations declaring the effects the function performs (`Console`, `Time`, `File`, `Network`, `Random`, `Panic`, `Nondet`, `Actor`, and user-declared effects). Effect tracking MUST be structural: a caller of an effectful function inherits its effects unless they are handled.
+#### Scenario: CI covers stable and MSRV
 
-**Implementation:** `crates/rust-effect/src/`
-
-**Tests:** `crates/rust-effect/tests/effect_propagation.rs`
-
-#### Scenario: Effect propagation
-
-- GIVEN `#[effect(Console)] fn print_line(s: &str)` and a caller `fn wrap(s: &str) { print_line(s) }`
-- WHEN the crate compiles
-- THEN compilation MUST fail with "caller `wrap` lacks declared effect `Console`; add `#[effect(Console)]` or handle the effect"
-
-#### Scenario: Pure function forbidden from calling effectful function
-
-- GIVEN `#[effect()] fn pure_computation() { print_line("side effect") }`
-- WHEN the crate compiles
-- THEN compilation MUST fail
-
-### Requirement 5: Information flow attribute [SHOULD]
-
-`rust-ifc` SHOULD provide `#[label(l)]` on type declarations and MUST enforce a Denning-lattice information flow discipline (`Public ≤ Tainted ≤ Secret`; declassification via functions annotated `#[declassify]`).
-
-**Implementation:** `crates/rust-ifc/src/`
-
-**Tests:** `crates/rust-ifc/tests/lattice.rs`
-
-#### Scenario: Cross-label flow rejected
-
-- GIVEN a `#[label(Secret)] String` value flowing into a `#[label(Public)] String` binding without a declassifier
-- WHEN the crate compiles
-- THEN compilation MUST fail with an IFC violation naming the source and sink
-
-#### Scenario: Explicit declassification accepted
-
-- GIVEN a `#[declassify]`-annotated function producing a `Public` from a `Secret` argument
-- WHEN the crate compiles
-- THEN compilation MUST succeed
-
-### Requirement 6: `cargo mvl` meta-command [MUST]
-
-The workspace MUST provide a `cargo mvl` subcommand (`crates/cargo-mvl`) that invokes the installed tool crates as a single pipeline. Subcommands: `cargo mvl check` (runs all installed tools), `cargo mvl limit` (linter only), `cargo mvl total`, `cargo mvl refine`, `cargo mvl effect`, `cargo mvl ifc`. Diagnostics from all tools MUST be rendered through a unified formatter so that users see one output stream, not five.
-
-**Implementation:** `crates/cargo-mvl/src/main.rs`
-
-**Tests:** `crates/cargo-mvl/tests/pipeline.rs`
-
-#### Scenario: Full check pipeline
-
-- GIVEN a crate using `#[total]`, `#[refine(...)]`, and `#[effect(...)]` attributes
-- WHEN a user runs `cargo mvl check`
-- THEN all installed tool crates MUST run in sequence AND diagnostics MUST be rendered in a single output stream with per-tool origin markers
-
-### Requirement 7: Diagnostic quality [MUST]
-
-All tool crates MUST emit diagnostics that: (a) use `proc_macro2::Span` for accurate source locations, (b) render through rustc's standard `Diagnostic` API so `cargo` displays them consistent with normal compiler errors, (c) include the offending attribute in the diagnostic caret, (d) suggest the concrete fix where mechanical (`#[decreases(...)]`, `#[declassify]`, etc.). Rust's compiler diagnostics are famously good; users will judge these tools against that bar.
-
-**Implementation:** `crates/mvl-rust-core/src/diagnostics.rs`
-
-**Tests:** `crates/mvl-rust-core/tests/diagnostics_ui.rs` (snapshot tests using `trybuild` or `expect-test`)
-
-#### Scenario: Diagnostic looks like a rustc error
-
-- GIVEN a `#[total]` violation
-- WHEN the crate compiles
-- THEN the emitted diagnostic MUST render with the same source-caret formatting as a rustc error AND MUST include the attribute span AND MUST propose a concrete fix
-
-### Requirement 8: Independent publishing [MUST]
-
-Each of the six tool crates (five tools plus `cargo-mvl`) MUST publish independently to crates.io. Users MUST be able to install any subset of them. `mvl-rust-core` MUST publish as a library crate; the tool crates MUST NOT re-export its internals as part of their public API.
-
-**Implementation:** `Cargo.toml` (workspace + each crate's `Cargo.toml`), `.github/workflows/publish-*.yml`
-
-**Tests:** `.github/workflows/ci.yml` (build + test matrix per crate)
-
-#### Scenario: Independent install
-
-- GIVEN a Rust project that installs only `rust-total`
-- WHEN `cargo add rust-total` runs
-- THEN the project MUST NOT be forced to pull `rust-refine`, `rust-effect`, `rust-ifc`, `rust-limit`, or `cargo-mvl`
-
-### Requirement 9: Version alignment with `mvl-spec` [MUST]
-
-The workspace's version MUST equal `mvl-spec/VERSION` at release checkpoints. Alignment MUST be verifiable via `mvl-spec/tools/check-versions.py` with a flag pointing at a local `mvl-rust` checkout (implementation: extend the script to accept `--mvl-rust-dir`, mirroring `--tree-sitter-dir`).
-
-**Implementation:** `Cargo.toml` (`[workspace.package] version = "..."`), inherited by each crate
-
-**Tests:** CI check invoking `check-versions.py`
-
-#### Scenario: Aligned at release
-
-- GIVEN `mvl-spec/VERSION` at `0.1.2` and `mvl-rust/Cargo.toml` workspace version at `0.1.2`
-- WHEN `check-versions.py --target 0.1.2 --mvl-rust-dir <mvl-rust>` runs
-- THEN it MUST exit 0
-
-### Requirement 10: Documentation [MUST]
-
-Each crate MUST publish API documentation to `docs.rs` automatically on release (default `cargo publish` behaviour). The workspace repo MUST host prose-style concept guides under `docs/` covering: (a) overview / when to use which tool, (b) integration recipes (`mvl-rust` in an existing Rust codebase, `mvl-rust` alongside Kani / Creusot / Prusti), (c) FAQ. Prose docs MUST be published to `mvl-lang.org/rust/` or similar path via CI.
-
-**Implementation:** `docs/` directory, `.github/workflows/publish-docs.yml`
-
-**Tests:** doctests in every crate MUST run under `cargo test`
-
-#### Scenario: docs.rs renders correctly on publish
-
-- GIVEN a `cargo publish` of a tool crate
-- WHEN docs.rs finishes building
-- THEN the rendered docs page MUST include the top-level module doc AND the attribute's usage examples
-
-### Requirement 11: Ferrocene qualified-subset compatibility [SHOULD]
-
-`mvl-rust` SHOULD compile and run under the Ferrocene toolchain (Rust qualified for DO-178C, IEC 62304, ISO 26262, IEC 61508). CI SHOULD include a Ferrocene target alongside stable Rust and MSRV. Where the qualified subset of Ferrocene forbids a construct that `mvl-rust` uses internally, that construct MUST be replaced or gated.
-
-**Implementation:** `.github/workflows/ferrocene.yml`, adjustments in `mvl-rust-core` where flagged
-
-**Tests:** full test suite runs green under Ferrocene
-
-**Blocked on:** access to a Ferrocene toolchain in CI (may need a private Ferrous Systems partnership); not a Phase 1 requirement
-
-#### Scenario: Ferrocene-hosted CI green
-
-- GIVEN a workspace commit
-- WHEN the Ferrocene CI job runs
-- THEN it MUST build and test all crates without errors
-
-### Requirement 12: Examples and integration tests [MUST]
-
-The `examples/` directory MUST contain at least one real Rust crate per attribute demonstrating: (a) the attribute in isolation, (b) the attribute in combination with the others, (c) explicit failure cases with expected diagnostics (using `trybuild`).
-
-**Implementation:** `examples/rust-limit-demo/`, `examples/rust-total-demo/`, etc.
-
-**Tests:** examples MUST be verified in CI
-
-#### Scenario: All examples compile and demonstrate the intended behaviour
-
-- GIVEN the examples suite
+- GIVEN a pull request
 - WHEN CI runs
-- THEN each example MUST either compile cleanly (positive cases) or fail with the expected diagnostic (negative cases via `trybuild`)
+- THEN the workspace MUST build and test green on both stable and the declared MSRV
 
-### Requirement 13: Shared assurance-JSON schema [MUST]
+### Requirement 7: Attribute semantics track a pinned `mvl-spec` version [MUST]
 
-`mvl-rust-core` MUST define a shared JSON schema for assurance-report output, versioned and stable across the six subcommands. Each tool crate MUST emit its section of the schema when invoked in reporting mode (via `--emit-assurance-json` or through `cargo mvl <subcommand>`). The aggregated schema is consumed by `cargo mvl assurance` and by external consumers (the MVL playground's assurance pane, CI dashboards, audit tooling).
+Each attribute's semantics MUST match the corresponding MVL construct at the tracked spec version. Drift MUST be detectable by an automated check rather than by review.
 
-Top-level shape:
+**Implementation:** `Cargo.toml` (planned — version-alignment check not yet wired)
 
-```
-{
-  version: "1.0",
-  target: { crate: String, commit: Option<String>, timestamp: String },
-  check: { obligations: [...], diagnostics: [...] },
-  prove: { obligations: [{ id, predicate, layer: "L1"|"L2"|"L3"|"L4"|"L5"|"runtime", provenance, counterexample? }] },
-  test: { tests: [{ name, outcome, duration_ms }], summary: {...} },
-  mcdc: { conditions: [...], coverage_pct: Number },
-  coverage: { lines: {...}, branches: {...} },
-  assurance: { claim, argument_tree, leaves: [{ warrant, obligation_id, provenance }] }
-}
-```
+**Tests:** `crates/mvl-rust-core/tests/attrs.rs` (planned — no cross-repo check yet)
 
-**Implementation:** `crates/mvl-rust-core/src/assurance/schema.rs`
+#### Scenario: Divergence from the tracked spec version is detected
 
-**Tests:** `crates/mvl-rust-core/tests/schema_stability.rs` (snapshot tests to catch accidental schema breaks)
+- GIVEN a local checkout of `mvl-spec` at a different version
+- WHEN the version-alignment check runs
+- THEN the mismatch MUST be reported
 
-#### Scenario: Schema versioned
+### Requirement 8: Every tool ships a compliant and a violating example [MUST]
 
-- GIVEN a change to the schema shape
-- WHEN CI runs the snapshot tests
-- THEN the tests MUST fail unless the schema version has been bumped
+Each tool MUST ship a paired example: one crate that passes cleanly and one that is rejected. Both MUST be exercised in CI, and the violating example MUST be asserted to fail rather than merely run.
 
-### Requirement 14: Per-tool assurance emission [MUST]
+**Implementation:** `examples/`, `Makefile`
 
-Each of the five tool crates (`rust-limit`, `rust-total`, `rust-refine`, `rust-effect`, `rust-ifc`) MUST support two output modes:
+**Tests:** `Makefile::examples`, `.github/workflows/ci.yml`
 
-- **Diagnostic mode (default)** — emit rustc-style diagnostics for humans; block the build on failure. This is the Gate behaviour.
-- **Assurance mode** — emit the tool's section of the schema from Requirement 13 as JSON on stdout, without failing the build. Invoked via `--emit-assurance-json` or through `cargo mvl <subcommand>`.
+#### Scenario: The violating example is asserted to fail
 
-The two modes MUST NOT diverge — the same underlying analysis produces both. Assurance-mode output is a *view* of the analysis, not a re-analysis.
+- GIVEN the violating example for any tool
+- WHEN `make examples` runs
+- THEN the tool MUST exit non-zero
+- AND the target MUST treat a zero exit as a failure of the example itself
 
-**Implementation:** each `crates/rust-*/src/assurance.rs` module
+### Requirement 9: Assurance subcommands emit structured evidence [MUST]
 
-**Tests:** per-crate `tests/assurance_mode.rs`
+`cargo mvl` MUST provide assurance-mode subcommands emitting machine-readable evidence: obligation traces, test results, and an aggregated assurance tree. Coverage and MC/DC reporting MUST be delegated to `cargo llvm-cov` rather than reimplemented.
 
-#### Scenario: rust-refine emits obligation-trace JSON
+**Implementation:** `crates/cargo-mvl/src/prove.rs`, `crates/cargo-mvl/src/test.rs`
 
-- GIVEN a crate with three refined functions
-- WHEN `rust-refine --emit-assurance-json` runs
-- THEN the emitted JSON MUST list every obligation with its discharge layer, matching the schema in R13
+**Tests:** `crates/cargo-mvl/tests/subcommands.rs`, `crates/rust-refine/tests/assurance_mode.rs`
 
-### Requirement 15: `cargo mvl` assurance subcommands [MUST]
+#### Scenario: `cargo mvl prove` emits per-obligation layers
 
-The `cargo-mvl` meta-command MUST expose subcommands that surface each assurance target: `cargo mvl prove`, `cargo mvl test`, `cargo mvl mcdc`, `cargo mvl coverage`, `cargo mvl assurance`. These subcommands are the primary interface for consuming the assurance surface — users don't invoke `--emit-assurance-json` directly in normal workflow.
+- GIVEN a crate using `#[mvl::requires]` and `#[mvl::ensures]`
+- WHEN `cargo mvl prove` runs
+- THEN the output MUST record, per obligation, the layer that discharged it or that it remains undischarged
 
-- `cargo mvl prove` — runs `rust-refine` in assurance mode, emits obligation-trace JSON.
-- `cargo mvl test` — invokes `cargo test` with the tools active, emits structured test-result JSON.
-- `cargo mvl mcdc` — shells out to `cargo llvm-cov --mcdc` (LLVM's MC/DC coverage mode); parses and re-emits per the R13 schema.
-- `cargo mvl coverage` — shells out to `cargo llvm-cov`; emits line + branch coverage per the R13 schema.
-- `cargo mvl assurance` — invokes each of the above, merges into the aggregated schema shape, writes to stdout or `target/mvl/assurance.json`.
+### Requirement 10: Ferrocene compatibility [SHOULD]
 
-**Implementation:** `crates/cargo-mvl/src/subcommands/{prove,test,mcdc,coverage,assurance}.rs`
+The workspace SHOULD build and test green under the Ferrocene toolchain, so that certified-domain adoption can ride Ferrocene's existing qualification rather than requiring a new one.
 
-**Tests:** `crates/cargo-mvl/tests/assurance_subcommands.rs`
+**Implementation:** `.github/workflows/ci.yml` (planned — Ferrocene job not yet added, #12)
 
-#### Scenario: `cargo mvl assurance` produces valid JSON
+**Tests:** `.github/workflows/ci.yml` (planned — #12)
 
-- GIVEN a workspace using `rust-refine` and `rust-total`
-- WHEN `cargo mvl assurance` runs
-- THEN the emitted JSON MUST validate against the R13 schema AND MUST include sections for `check`, `prove`, `test`, and `assurance`
+#### Scenario: The suite runs green under Ferrocene
 
-#### Scenario: `cargo mvl mcdc` uses llvm-cov
-
-- GIVEN a workspace with tests and `#[deny(dead_code)]`
-- WHEN `cargo mvl mcdc` runs
-- THEN the output MUST include per-condition MC/DC results derived from `cargo llvm-cov --mcdc`
+- GIVEN the Ferrocene toolchain is available to CI
+- WHEN the full suite runs under it
+- THEN it MUST pass without source changes
 
 ## Design decisions locked
 
@@ -449,12 +301,12 @@ The `cargo-mvl` meta-command MUST expose subcommands that surface each assurance
 |---|---|---|
 | Repo layout | Cargo workspace, one crate per tool + `mvl-rust-core` + `cargo-mvl` | Five separate repos |
 | Attribute style | Rustc proc-macros with `syn` | Function-like macros; `rustc_ast` internals |
-| Solver integration (Phase 3) | Shell out to `mvl solve --json` initially; migrate to library link | Reimplementation in `mvl-rust-core` |
+| Solver integration | Reimplemented natively in `mvl-rust-core`, no dependency on `mvl-lang/mvl` (ADR-0001 §4) | Shell out to `mvl solve --json`; link its solver as a library — both rejected as not independent verification |
 | Diagnostic emission | Rustc `Diagnostic` API via `proc_macro2::Span` | Custom formatter |
 | CI toolchains | Stable + MSRV; Ferrocene added when accessible | Nightly-only |
 | Publish target | crates.io + docs.rs | Internal registry |
 | Publish sequence | rust-limit → rust-total → rust-refine → rust-effect → rust-ifc | Big-bang release |
-| Assurance emission | Structured JSON per Requirement 13 schema | Free-form text output |
+| Assurance emission | Structured JSON per the shared schema (spec 008) | Free-form text output |
 | MC/DC coverage tooling | `cargo llvm-cov --mcdc` | Roll our own instrumentation |
 | Coverage tooling | `cargo llvm-cov` | `tarpaulin` |
 
