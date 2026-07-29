@@ -46,11 +46,32 @@ Assurance case ──map──> Compliance report (DO-178C)
 
 Consequence worth recording: compliance being thin here is **not a gap**. It is a mapping layer nothing has needed yet, and building it early would mean writing a translator for a document nobody has requested.
 
-### 3. The dashboard reports all three levels
+### 3. The dashboard reports all three levels, and each level is runnable
 
 `tools/assurance.py` keeps its name, because its scope grew to match it: it now reports verification, traceability and evidence under one heading, which *is* assembling the case. It prints compliance's absence as a deliberate boundary rather than an omission.
 
 Within it, traceability's unit is the **scenario** rather than the requirement (see spec 001 and the trace section of the dashboard) — a requirement is an umbrella claim, a scenario is a falsifiable one.
+
+**The taxonomy is executable, not just documented.** Each level has its own `make` target, so it can be run and can fail on its own:
+
+| Target | Level | Artefact |
+|---|---|---|
+| `make verify` | VERIFICATION — `compile` + `test` + `examples` | verdicts |
+| `make traceability` | TRACEABILITY — scenario→test links | ratios |
+| `make evidence` | EVIDENCE — `coverage` | records |
+| `make assurance` | the case — all three under one heading | a case |
+| `make assurance-gate` | the case, as a gate | — |
+| `make all` | hygiene + all three levels + the gate | — |
+
+That the levels fail independently is the point: verification green with traceability red is working code nobody can trace to a requirement, and the reverse is perfect paperwork over broken code. A single ratio reports them identically.
+
+`make traceability` deliberately needs neither cargo nor a coverage cache — it is the fastest check and the one most likely to break in a PR that renames a test.
+
+**Hygiene (`fmt-check`, `clippy`) is not a level.** It gates whether the code is well-formed enough to be worth verifying. Folding it into verification would make "verification: pass" mean two unrelated things.
+
+**There is no `compliance` target**, for the reason in §2. The previous one was a synonym for "run everything" — now `make all` — and naming that "compliance" was exactly the overloading this ADR exists to stop.
+
+CI mirrors the same structure: a `hygiene` job, a `verification` matrix job (stable + MSRV, with `examples` on stable only), and an `assurance` job that `needs: [verification]` — because a green traceability ratio over code that does not build looks like progress.
 
 ### 4. Renames applied
 

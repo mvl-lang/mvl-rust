@@ -1,5 +1,19 @@
 name: CI
 
+# Jobs mirror the assurance levels (ADR-0007). Assurance is the argument; three
+# levels support it, each with its own question:
+#
+#   hygiene        is the code well-formed enough to be worth verifying?
+#   verification   does the program satisfy its specification?   -> verdicts
+#   assurance      traceability + evidence, gated                -> ratios, records
+#
+# `assurance` needs `verification` on purpose: a green traceability ratio over
+# code that does not build looks like progress, which is worse than no number.
+# It costs one job of serialisation and buys an ordering the ADR argues for.
+#
+# Compliance (mapping the case onto DO-178C / ISO 26262 / CRA) has no job for
+# the same reason it has no Makefile target — nothing needs one yet.
+
 on:
   push:
     branches: [main]
@@ -9,8 +23,21 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
-    name: build + test (${{ matrix.rust }})
+  hygiene:
+    name: hygiene (fmt + clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: fmt --check (workspace + example crates)
+        run: make fmt-check
+      - name: clippy -D warnings
+        run: make clippy
+
+  verification:
+    name: verification (${{ matrix.rust }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -23,3 +50,29 @@ jobs:
           toolchain: ${{ matrix.rust }}
       - run: cargo build --workspace --all-targets
       - run: cargo test --workspace
+      # The paired compliant/violating fixtures are the closest thing to a
+      # conformance check on the five tools themselves. Stable only — they
+      # exercise tool behaviour, not toolchain compatibility.
+      - name: examples (paired compliant/violating per tool)
+        if: matrix.rust == 'stable'
+        run: make examples
+
+  assurance:
+    name: assurance gate (traceability + evidence)
+    runs-on: ubuntu-latest
+    needs: [verification]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      # Fast, cargo-free, and the most likely thing to break in a PR that
+      # renames a test: every scenario's Tests: link must resolve.
+      - name: traceability (scenario -> test links)
+        run: make traceability
+      # Thresholds are ratchets at the current level, not targets. Two failures
+      # here ignore the ratios entirely: the workspace not compiling, and any
+      # Tests: link that does not resolve.
+      - name: assurance gate (compile + links + scenario 75% + line 80%)
+        run: make assurance-gate

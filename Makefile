@@ -1,6 +1,6 @@
 .PHONY: help build test check fmt fmt-check clippy examples examples-verbose clean \
 	test-core test-limit test-total test-refine test-effect test-ifc test-cargo-mvl \
-	coverage assurance assurance-gate compliance compile
+	coverage assurance assurance-gate compile verify evidence traceability all
 
 help:
 	@echo "Targets:"
@@ -19,11 +19,17 @@ help:
 	@echo "  examples           build+run hello-world, rust-limit-demo, rust-total-demo, rust-refine-demo, rust-effect-demo, rust-ifc-demo, check all (summary only)"
 	@echo "  examples-verbose   same, but print the violating example's full diagnostics"
 	@echo "  check              fmt-check + clippy + test + examples (mirrors CI)"
+	@echo ""
+	@echo "Assurance (the case) and the three levels below it — see ADR-0007:"
+	@echo "  assurance          dashboard across all three levels (VERBOSE=true for per-scenario)"
+	@echo "  assurance-gate     the same as a CI gate (thresholds + hard failures)"
+	@echo "  verify             VERIFICATION  compile + test + examples -> verdicts"
+	@echo "  evidence           EVIDENCE      coverage -> records"
+	@echo "  traceability       TRACEABILITY  scenario->test links -> ratios (fast, no cargo)"
+	@echo "  all                everything: hygiene + all three levels + gate"
+	@echo ""
 	@echo "  compile            fail fast: does the workspace compile at all?"
 	@echo "  coverage           cargo llvm-cov line/function coverage (cached in target/llvm-cov.json)"
-	@echo "  assurance          assurance dashboard: verification + traceability + evidence"
-	@echo "  assurance-gate     CI gate: compile + unresolved links + scenario 75% + line 80%"
-	@echo "  compliance         check + coverage + assurance-gate (full pipeline)"
 	@echo "  clean              cargo clean (workspace + example crates)"
 
 build:
@@ -193,27 +199,36 @@ examples-verbose: build
 
 check: fmt-check clippy test examples
 
-# === Assurance (ISPE) ===
+# === Assurance ===
 #
-# ASSURANCE is the argument that this software is fit for purpose. Three levels
-# support it (ADR-0007), each with its own question, verb and artefact:
+# ASSURANCE is the ARGUMENT that this software is fit for purpose -- not a
+# measurement. Three levels support it (ADR-0007), each with its own question,
+# its own verb, and its own artefact. Two things sharing a verb are one level.
 #
-#   VERIFICATION   does the program satisfy its spec?    -> verdicts   (compile, examples, test)
-#   TRACEABILITY   do the four ISPE layers connect?      -> ratios     (assurance.py)
-#   EVIDENCE       what artefacts back the claims?       -> records    (coverage, --emit-verification-json)
+#   VERIFICATION   does the program satisfy its spec?     verify    -> verdicts
+#   TRACEABILITY   do intent/spec/program/evidence link?  trace     -> ratios
+#   EVIDENCE       what artefacts back the claims?        collect   -> records
 #
-# COMPLIANCE is downstream, not a fourth level: one case maps onto N standards.
+# Each has a target below, so the taxonomy is runnable rather than just written
+# down. They fail independently and that is the point: verification green with
+# traceability red is working code nobody can trace to a requirement; the
+# reverse is perfect paperwork over broken code.
 #
-# Traceability's unit is the SCENARIO, not the requirement: a requirement is an
-# umbrella claim, a scenario is a falsifiable one, and GIVEN/WHEN/THEN maps onto
-# arrange/act/assert. Measuring at requirement level let one test stand in for
-# five scenarios. Adapted from mvl-lang/mvl's tools/assurance.py.
+# Traceability's unit is the SCENARIO, not the requirement -- a requirement is
+# an umbrella claim, a scenario is a falsifiable one, and GIVEN/WHEN/THEN maps
+# onto arrange/act/assert. Measuring at requirement level let one test stand in
+# for five scenarios. Adapted from mvl-lang/mvl's tools/assurance.py.
+#
+# Hygiene (fmt-check, clippy) is deliberately NOT a level: it gates whether the
+# code is well-formed enough to be worth verifying. Folding it in would make
+# "verification: pass" mean two unrelated things.
 
 compile: ## Gate 1 -- if it does not compile, nothing downstream means anything
 	@cargo check --workspace --all-targets --quiet && echo "compiles"
 
 coverage: ## Line + function coverage via cargo-llvm-cov, cached for the dashboard
 	@command -v cargo-llvm-cov >/dev/null 2>&1 || { echo "cargo-llvm-cov not installed: cargo install cargo-llvm-cov"; exit 1; }
+	@mkdir -p target   # a fresh checkout has no target/, so the redirect below would fail
 	@cargo llvm-cov --workspace --json --ignore-run-fail > target/llvm-cov.json 2>/dev/null
 	@python3 -c "import json; d=json.load(open('target/llvm-cov.json')); t=d['data'][0]['totals']; l=t['lines']; f=t['functions']; print(f\"Lines:     {l['covered']}/{l['count']} ({l['percent']:.1f}%)\"); print(f\"Functions: {f['covered']}/{f['count']} ({f['percent']:.1f}%)\")"
 
@@ -227,7 +242,31 @@ assurance: ## Assurance dashboard across the three levels (VERBOSE=true for per-
 assurance-gate: coverage ## CI gate: compile + unresolved links + scenario 75% + line 80%
 	@python3 tools/assurance.py --with-compile --min 0.75 --min-coverage 0.80
 
-compliance: check assurance-gate ## Full pipeline: check + compile + coverage + assurance gate
+# ── The three levels, each runnable on its own ──────────────────────────────
+
+verify: compile test examples ## VERIFICATION: does the program satisfy its spec? -> verdicts
+
+evidence: coverage ## EVIDENCE: what artefacts back the claims? -> records
+
+traceability: ## TRACEABILITY: do the ISPE layers connect? -> ratios (fast: no cargo, no cache)
+	@python3 tools/assurance.py --traceability-only
+
+# ── Everything ─────────────────────────────────────────────────────────────
+
+all: check verify evidence assurance-gate ## Hygiene + all three levels + the gate
+
+# ── COMPLIANCE: deliberately absent ────────────────────────────────────────
+#
+# Compliance means mapping an assurance case onto a named standard -- DO-178C,
+# ISO 26262, EU CRA. It is DOWNSTREAM of the case, not a fourth level: one case
+# maps onto N standards, so compliance consumes the case rather than composing
+# it (ADR-0007 §2).
+#
+# There is no `compliance` target because nothing needs one yet. Building it
+# early would mean writing a translator for a document nobody has requested.
+# The previous `compliance` target was a synonym for "run everything" -- which
+# is `all` -- and naming that "compliance" was exactly the overloading ADR-0007
+# exists to stop.
 
 clean:
 	cargo clean

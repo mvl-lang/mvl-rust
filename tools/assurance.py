@@ -234,7 +234,7 @@ def parse_specs():
 
 
 def report(specs, scenarios, verbose=False, scen_min=0.75, line_min=0.80,
-           with_compile=False):
+           with_compile=False, traceability_only=False):
     total = len(scenarios)
     if total == 0:
         print("No scenarios found in .openspec/specs/")
@@ -258,11 +258,33 @@ def report(specs, scenarios, verbose=False, scen_min=0.75, line_min=0.80,
     compiles = compile_status(with_compile)
 
     print("=" * 68)
-    print("mvl-rust Assurance Dashboard")
+    print("mvl-rust Assurance Dashboard" + ("  —  traceability only" if traceability_only else ""))
     print("=" * 68)
-    print("The case: is this software fit for its purpose? Three levels below it.")
-    print("Compliance is downstream — it consumes this case, it is not part of it.")
-    print()
+    if not traceability_only:
+        print("The case: is this software fit for its purpose? Three levels below it.")
+        print("Compliance is downstream — it consumes this case, it is not part of it.")
+        print()
+
+    if traceability_only:
+        print("TRACEABILITY   do intent, spec, program and evidence connect?")
+        print(f"  Specs:               {len(specs)}")
+        print(f"  Requirements:        {n_reqs}")
+        print(f"  Scenarios:           {total}")
+        print(f"  Scenarios covered:   {len(covered)}/{total}  ({coverage:.0%})")
+        print(f"    no test link:      {len(unlinked)}")
+        print(f"    link unresolved:   {len(broken)}")
+        print(f"  Specs fully covered: {len(fully)}/{len(specs)}")
+        print()
+        print("  (verification and evidence: `make verify`, `make evidence`)")
+        print("=" * 68)
+        if broken:
+            print()
+            print(f"UNRESOLVED LINKS ({sum(len(s['missing']) for s in broken)}):")
+            for s_ in broken:
+                for miss in s_["missing"]:
+                    print(f"  {s_['spec']}/Req {s_['req']} — {s_['title'][:40]}: {miss}")
+            print("=" * 68)
+        return coverage, None, None
 
     print("VERIFICATION   does the program satisfy its specification?")
     if compiles is True:
@@ -342,13 +364,17 @@ def main():
                     help="CI gate on line coverage (requires `make coverage` cache)")
     ap.add_argument("--with-compile", action="store_true",
                     help="run cargo check and count tests (the gate does; the dashboard doesn't)")
+    ap.add_argument("--traceability-only", action="store_true",
+                    help="report only the traceability level — the one this script computes "
+                         "itself, so it needs no coverage cache and no cargo")
     args = ap.parse_args()
 
     specs, scenarios = parse_specs()
     coverage, line, compiles = report(specs, scenarios, verbose=args.verbose,
                                       scen_min=args.min or 0.75,
                                       line_min=args.min_coverage or 0.80,
-                                      with_compile=args.with_compile)
+                                      with_compile=args.with_compile,
+                                      traceability_only=args.traceability_only)
 
     if any(s["missing"] for s in scenarios):
         n = sum(len(s["missing"]) for s in scenarios)
