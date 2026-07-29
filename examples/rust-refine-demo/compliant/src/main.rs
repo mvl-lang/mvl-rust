@@ -1,5 +1,5 @@
 //! Demonstrates `rust-refine`'s native `L1`+`L2` obligation dispatch
-//! (ADR-0001) with satisfiable interval bounds -- the `mask_low_nibble`
+//! (ADR-0005) with satisfiable interval bounds -- the `mask_low_nibble`
 //! example from #22's real-`mvl`-example comparison -- plus `L3` bounded
 //! quantifier expansion (#31), mirroring `mvl-lang/mvl`'s own real
 //! `examples/cbtc_train_presence/invariants.mvl::require_dense_fleet` --

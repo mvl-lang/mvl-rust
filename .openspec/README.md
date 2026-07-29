@@ -49,9 +49,16 @@ Rationale for dropping delta specs and `tasks.md`:
 
 ## ADRs
 
+Read in order — 0001 is the parent the rest specialise.
+
 | # | ADR | Decision | Status |
 |---|-----|----------|--------|
-| [0001](adr/0001-solver-integration.md) | Solver Integration | Shell out to `mvl solve --json` for `rust-refine`; migrate to a linked solver crate once `mvl-lang/mvl` exposes one | Accepted |
+| [0001](adr/0001-annotation-driven-verification.md) | Annotation-Driven Verification Over Greenfield Rust | Host language is unmodified Rust; verification rides on inert `mvl::` attributes; no dependency on `mvl-lang/mvl`; greenfield only — no grandfathering, no exceptions | Accepted |
+| [0002](adr/0002-qualified-subset.md) | The Qualified Subset | `rust-limit` gates the other four tools with six syntactic rejections, each tied to a tool it would otherwise break; no reviewed-exception protocol | Accepted |
+| [0003](adr/0003-function-contracts-total-effect.md) | Function Contracts — `total` and `effect` | The baseline shape: declare on the function, check the body, report locally; no solver, no hypothesis context, never a premise | Accepted |
+| [0004](adr/0004-information-flow-via-types.md) | Information Flow via Types | The label lives in the type and `rustc` propagates it; `#[mvl::relabel]` is only a declared exception at the two boundary crossings | Accepted |
+| [0005](adr/0005-refinement-obligations.md) | Refinement Obligations and the Native Solver | Three program points, two questions, one native backend; obligations discharged against a hypothesis context Γ. *Supersedes the original 0001 and 0002.* | Accepted |
+| [0006](adr/0006-layered-solver-and-runtime-enforcement.md) | Layered Solver and Runtime Enforcement | `L4` is Fourier–Motzkin (not Cooper); `L5` via feature-gated Z3; enforcement by active proc macros with `assert!` always and a per-function opt-out; Γ's soundness invariant stated once | Accepted |
 
 ## Patterns
 

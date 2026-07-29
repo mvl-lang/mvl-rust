@@ -673,7 +673,7 @@ fn each_tail_match_arm_is_its_own_return_point() {
 fn a_diverging_body_has_no_return_point_to_check() {
     // `panic!()` produces no `result`, so there is nothing to substitute and
     // the postcondition holds vacuously -- the same conclusion the solver
-    // reaches for an unreachable program point (ADR-0002).
+    // reaches for an unreachable program point (ADR-0005).
     for body in [
         "panic!(\"no\")",
         "todo!()",
