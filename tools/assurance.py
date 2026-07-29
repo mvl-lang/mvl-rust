@@ -90,7 +90,9 @@ def parse_specs():
         # Find all requirements
         req_blocks = re.split(r"(?=^### Requirement \d+)", text, flags=re.MULTILINE)
         for block in req_blocks:
-            m = re.match(r"### Requirement (\d+): (.+?) \[(\w+)\]", block)
+            # Level may be multi-word ("MUST NOT"): `\w+` silently dropped those
+            # requirements from the dashboard entirely, denominator included.
+            m = re.match(r"### Requirement (\d+): (.+?) \[([A-Z][A-Z ]*)\]", block)
             if not m:
                 continue
 
@@ -105,10 +107,20 @@ def parse_specs():
             impl_missing = []
             if impl_paths and not planned:
                 for cand in impl_paths:
-                    f = cand.split("::")[0].strip()
+                    parts = cand.split("::")
+                    f = parts[0].strip()
                     _resolved = (REPO_ROOT / f).resolve()
                     if not (_resolved.is_relative_to(REPO_ROOT.resolve()) and _resolved.exists()):
                         impl_missing.append(f)
+                        continue
+                    # A named symbol must actually appear. Looser than the test
+                    # check (an impl symbol may be a fn, type, trait or module),
+                    # so this catches renames and typos without over-flagging.
+                    if _resolved.is_file():
+                        body = _resolved.read_text(errors="replace")
+                        for sym in (x.strip() for x in parts[1:]):
+                            if sym and not re.search(r"\b" + re.escape(sym) + r"\b", body):
+                                impl_missing.append(f"{f}::{sym}")
                 impl_exists = not impl_missing
             else:
                 impl_exists = False
@@ -216,6 +228,7 @@ def report(requirements, verbose=False):
     tests_linked = sum(1 for r in active if r["tests_linked"])
     tests_resolve = sum(1 for r in active if r["tests_resolve"])
     resolved_fns = sum(r["tests_resolved_n"] for r in active)
+    file_only = [r for r in active if r["tests_resolve"] and r["tests_resolved_n"] == 0]
     broken = [(r, r["tests_missing"] + r["impl_missing"]) for r in active
               if r["tests_missing"] or r["impl_missing"]]
     corpus_present = sum(
@@ -251,11 +264,15 @@ def report(requirements, verbose=False):
     print(f"Coverage (E->P):      {tests_resolve}/{total} evidence resolved  ({coverage:.0%})")
     print(f"  - Linked:           {tests_linked}/{total}")
     print(f"  - Test fns found:   {resolved_fns}")
-    print(f"  - Scenarios:        {total_scenarios} (not individually tied to a test — see caveat)")
+    print(f"  - File-only links:  {len(file_only)}/{total} name no test fn (weaker evidence)")
+    print(f"  - Scenarios:        {total_scenarios} (counted, NOT individually tied to a test)")
     if test_coverage is not None:
-        print(f"  - Line coverage:    {test_coverage}")
+        print(f"  - Line coverage:    {test_coverage} — workspace-wide, not scoped to these requirements")
     print()
-    print(f"Assurance (E/P):      {assured}/{impl_exists} of implemented have evidence  ({assurance:.0%})")
+    print(f"Assurance:            {assured}/{impl_exists} of implemented have evidence  ({assurance:.0%})")
+    print("  - NB: this is the conjunction of the two links above, not the")
+    print("        independent E->S measurement ISPE defines. It cannot fall")
+    print("        below them, so treat it as a consistency check, not a third axis.")
     print()
     if corpus_total:
         print(f"Corpus:               {corpus_present}/{corpus_total} present")
