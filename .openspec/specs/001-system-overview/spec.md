@@ -128,7 +128,7 @@ This document covers the workspace's architecture and cross-cutting concerns. Pe
 | [005](../005-refinement-obligations/spec.md) | Refinement obligations and Γ | ADR-0005 |
 | [006](../006-layered-solver/spec.md) | The layered solver, L1–L5 | ADR-0006 §1–3 |
 | [007](../007-runtime-enforcement/spec.md) | Runtime enforcement of residuals | ADR-0006 §4–5 |
-| [008](../008-assurance-reporting/spec.md) | Diagnostics and assurance reporting | ADR-0006 §5 |
+| [008](../008-reporting/spec.md) | Diagnostics and assurance reporting | ADR-0006 §5 |
 
 ## Requirements
 
@@ -265,7 +265,7 @@ Each tool MUST ship a paired example: one crate that passes cleanly and one that
 
 ### Requirement 9: Assurance subcommands emit structured evidence [MUST]
 
-`cargo mvl` MUST provide assurance-mode subcommands emitting machine-readable evidence: obligation traces, test results, and an aggregated assurance tree. Coverage and MC/DC reporting MUST be delegated to `cargo llvm-cov` rather than reimplemented.
+`cargo mvl` MUST provide evidence-emitting subcommands emitting machine-readable evidence: obligation traces, test results, and an aggregated assurance tree. Coverage and MC/DC reporting MUST be delegated to `cargo llvm-cov` rather than reimplemented.
 
 **Implementation:** `crates/cargo-mvl/src/prove.rs`, `crates/cargo-mvl/src/test.rs`
 

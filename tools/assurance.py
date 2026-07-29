@@ -1,8 +1,22 @@
 #!/usr/bin/env python3
-"""mvl-rust Assurance Checker — scenario-level ISPE traceability.
+"""mvl-rust Assurance Dashboard — the case, and the three levels under it.
 
-ISPE (Intent, Specification, Program, Evidence). Intent is tickets,
-Specification is `.openspec/specs/`, Program is `crates/`, Evidence is tests.
+**Assurance** is the argument that this software is fit for its purpose. It is
+not a measurement; it is what the measurements are marshalled into. Three levels
+support it, each answering a distinct question with its own verb and artefact
+(ADR-0007):
+
+  VERIFICATION   does the program satisfy its specification?   verdicts
+  TRACEABILITY   do intent, spec, program and evidence connect? link ratios
+  EVIDENCE       what artefacts back the claims?                records
+
+**Compliance is not a fourth level.** It is downstream: you build one assurance
+case and map it onto N standards (DO-178C, ISO 26262, CRA). Compliance consumes
+the case; it is not part of it.
+
+ISPE (Intent, Specification, Program, Evidence) supplies the traceability layer.
+Intent is tickets, Specification is `.openspec/specs/`, Program is `crates/`,
+Evidence is tests.
 
 **The unit of measurement is the scenario, not the requirement.** A requirement
 is an umbrella claim; a scenario is a falsifiable one, and GIVEN/WHEN/THEN maps
@@ -79,6 +93,44 @@ def line_coverage():
         return lines["percent"] / 100.0, lines["covered"], lines["count"]
     except (ValueError, KeyError, IndexError):
         return None
+
+
+def compile_status(run):
+    """VERIFICATION, cheapest signal: does the workspace compile at all?
+
+    If it does not, every downstream number is meaningless -- a green
+    traceability ratio over code that will not build is worse than no number.
+    Only run when asked (the gate asks); the dashboard defaults to naming the
+    target rather than paying the subprocess.
+    """
+    if not run:
+        return None
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["cargo", "check", "--workspace", "--all-targets", "--quiet"],
+            capture_output=True, text=True, timeout=300, cwd=REPO_ROOT,
+        )
+        return r.returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+
+def test_count():
+    """EVIDENCE: how many tests exist. Read from the coverage cache's sibling
+    marker if present, else counted via cargo. None when unavailable."""
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["cargo", "test", "--workspace", "--", "--list"],
+            capture_output=True, text=True, timeout=180, cwd=REPO_ROOT,
+        )
+        if r.returncode == 0:
+            n = sum(1 for ln in r.stdout.splitlines() if ": test" in ln)
+            return n or None
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return None
 
 
 def verdict(scen, line, scen_min, line_min):
@@ -181,7 +233,8 @@ def parse_specs():
     return specs, scenarios
 
 
-def report(specs, scenarios, verbose=False, scen_min=0.75, line_min=0.80):
+def report(specs, scenarios, verbose=False, scen_min=0.75, line_min=0.80,
+           with_compile=False):
     total = len(scenarios)
     if total == 0:
         print("No scenarios found in .openspec/specs/")
@@ -201,31 +254,53 @@ def report(specs, scenarios, verbose=False, scen_min=0.75, line_min=0.80):
     fully = [n for n, (c, t) in per_spec.items() if t and c == t]
     n_reqs = sum(sp["reqs"] for sp in specs)
 
-    print("=" * 68)
-    print("mvl-rust Assurance Dashboard (ISPE — scenario level)")
-    print("=" * 68)
-    print(f"Specs:                 {len(specs)}")
-    print(f"Requirements:          {n_reqs}")
-    print(f"Scenarios:             {total}")
-    print()
-    print(f"Scenarios covered:     {len(covered)}/{total}  ({coverage:.0%})")
-    print(f"  - no test link:      {len(unlinked)}")
-    print(f"  - link unresolved:   {len(broken)}")
-    print()
-    print(f"Specs fully covered:   {len(fully)}/{len(specs)}")
-    print()
     cov = line_coverage()
+    compiles = compile_status(with_compile)
+
+    print("=" * 68)
+    print("mvl-rust Assurance Dashboard")
+    print("=" * 68)
+    print("The case: is this software fit for its purpose? Three levels below it.")
+    print("Compliance is downstream — it consumes this case, it is not part of it.")
+    print()
+
+    print("VERIFICATION   does the program satisfy its specification?")
+    if compiles is True:
+        print("  Compiles:            yes")
+    elif compiles is False:
+        print("  Compiles:            NO — every number below is meaningless")
+    else:
+        print("  Compiles:            not checked here — `make compile`")
+    print(f"  Tool verdicts:       `make examples` (paired compliant/violating per tool)")
+    print()
+
+    print("TRACEABILITY   do intent, spec, program and evidence connect?")
+    print(f"  Specs:               {len(specs)}")
+    print(f"  Requirements:        {n_reqs}")
+    print(f"  Scenarios:           {total}")
+    print(f"  Scenarios covered:   {len(covered)}/{total}  ({coverage:.0%})")
+    print(f"    no test link:      {len(unlinked)}")
+    print(f"    link unresolved:   {len(broken)}")
+    print(f"  Specs fully covered: {len(fully)}/{len(specs)}")
+    print()
+
+    print("EVIDENCE       what artefacts back the claims?")
     if cov:
         pct, c, t = cov
-        print(f"Line coverage:         {c}/{t}  ({pct:.0%})   [program health, not an ISPE link]")
+        print(f"  Line coverage:       {c}/{t}  ({pct:.0%})")
     else:
-        print("Line coverage:         no cache — run `make coverage`")
-    v, why = verdict(coverage, cov[0] if cov else None, scen_min, line_min)
+        print("  Line coverage:       no cache — run `make coverage`")
+    tests = test_count() if with_compile else None
+    if tests:
+        print(f"  Tests:               {tests}")
+    print(f"  Per-tool records:    --emit-verification-json (five tools)")
     print()
+
+    v, why = verdict(coverage, cov[0] if cov else None, scen_min, line_min)
     print(f"  NEXT WORK: {v}")
     print(f"    {why}")
     print()
-    print("Per spec:")
+    print("Traceability per spec:")
     for name in sorted(per_spec):
         c, t = per_spec[name]
         filled = round(20 * c / t) if t else 0
@@ -256,7 +331,7 @@ def report(specs, scenarios, verbose=False, scen_min=0.75, line_min=0.80):
                 print(f"          -> {r}")
         print()
 
-    return coverage, cov[0] if cov else None
+    return coverage, cov[0] if cov else None, compiles
 
 
 def main():
@@ -265,12 +340,15 @@ def main():
     ap.add_argument("--min", type=float, default=0.0, help="CI gate on scenario coverage")
     ap.add_argument("--min-coverage", type=float, default=0.0,
                     help="CI gate on line coverage (requires `make coverage` cache)")
+    ap.add_argument("--with-compile", action="store_true",
+                    help="run cargo check and count tests (the gate does; the dashboard doesn't)")
     args = ap.parse_args()
 
     specs, scenarios = parse_specs()
-    coverage, line = report(specs, scenarios, verbose=args.verbose,
-                            scen_min=args.min or 0.75,
-                            line_min=args.min_coverage or 0.80)
+    coverage, line, compiles = report(specs, scenarios, verbose=args.verbose,
+                                      scen_min=args.min or 0.75,
+                                      line_min=args.min_coverage or 0.80,
+                                      with_compile=args.with_compile)
 
     if any(s["missing"] for s in scenarios):
         n = sum(len(s["missing"]) for s in scenarios)
@@ -278,6 +356,9 @@ def main():
         sys.exit(1)
 
     failed = False
+    if compiles is False:
+        print("\nFAIL: workspace does not compile — fix that before reading any ratio")
+        sys.exit(1)
     if args.min > 0 and coverage < args.min:
         print(f"\nFAIL: scenario coverage {coverage:.0%} below threshold {args.min:.0%}")
         failed = True

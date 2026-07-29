@@ -153,4 +153,4 @@ A malformed source file MUST surface as a parse error rather than a panic or a s
 | **Specification** | this document |
 | **Decision** | ADR-0002 (the subset), ADR-0001 §5 (the greenfield rule it depends on) |
 | **Program** | `crates/rust-limit/src/lints/` |
-| **Evidence** | `crates/rust-limit/tests/qualified_subset.rs` (15 tests), `crates/rust-limit/tests/assurance_mode.rs` (4 tests), `examples/rust-limit-demo/{compliant,violating}/` |
+| **Evidence** | `crates/rust-limit/tests/qualified_subset.rs` (15 tests), `crates/rust-limit/tests/verification_mode.rs` (4 tests), `examples/rust-limit-demo/{compliant,violating}/` |

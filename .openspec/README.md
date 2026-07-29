@@ -45,7 +45,14 @@ Rationale for dropping delta specs and `tasks.md`:
 
 | # | Spec | Focus | Status |
 |---|------|-------|--------|
-| [001](specs/001-system-overview/spec.md) | System Overview | Vision, workspace shape, the five tools, dependencies on `mvl-spec` | Draft |
+| [001](specs/001-system-overview/spec.md) | System Overview | Architecture, the attribute model, the five-tool dispatcher, independence, greenfield rule | Active |
+| [002](specs/002-qualified-subset/spec.md) | The Qualified Subset | `rust-limit` — six syntactic rejections gating the other four tools | Implemented |
+| [003](specs/003-function-contracts/spec.md) | Function Contracts | `total` and `effect` — declare on the function, check the body | Implemented |
+| [004](specs/004-information-flow/spec.md) | Information Flow via Types | `rust-ifc` — the label lives in the type; `relabel` polices the escape hatches | Implemented |
+| [005](specs/005-refinement-obligations/spec.md) | Refinement Obligations | Three program points, two questions, the hypothesis context Γ | Implemented |
+| [006](specs/006-layered-solver/spec.md) | The Layered Solver | L1–L4 shipped; L5 absent | Partial |
+| [007](specs/007-runtime-enforcement/spec.md) | Runtime Enforcement | Residual obligations — 0/7 scenarios evidenced | Not implemented |
+| [008](specs/008-reporting/spec.md) | Reporting Across the Assurance Levels | Diagnostics, the shared schema, obligation identity, aggregation | Implemented |
 
 ## ADRs
 
@@ -59,6 +66,7 @@ Read in order — 0001 is the parent the rest specialise.
 | [0004](adr/0004-information-flow-via-types.md) | Information Flow via Types | The label lives in the type and `rustc` propagates it; `#[mvl::relabel]` is only a declared exception at the two boundary crossings | Accepted |
 | [0005](adr/0005-refinement-obligations.md) | Refinement Obligations and the Native Solver | Three program points, two questions, one native backend; obligations discharged against a hypothesis context Γ. *Supersedes the original 0001 and 0002.* | Accepted |
 | [0006](adr/0006-layered-solver-and-runtime-enforcement.md) | Layered Solver and Runtime Enforcement | `L4` is Fourier–Motzkin (not Cooper); `L5` via feature-gated Z3; enforcement by active proc macros with `assert!` always and a per-function opt-out; Γ's soundness invariant stated once | Accepted |
+| [0007](adr/0007-assurance-vocabulary.md) | Assurance Vocabulary | Assurance is the argument; verification, traceability and evidence are the three levels below it; compliance is downstream, not a fourth level | Accepted |
 
 ## Patterns
 

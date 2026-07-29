@@ -162,4 +162,4 @@ Call resolution MUST be same-file free functions only. A call to anything else M
 | **Specification** | this document |
 | **Decision** | ADR-0003; ADR-0001 §1 (attribute carrier), §5 (greenfield rule) |
 | **Program** | `crates/rust-total/src/checks/`, `crates/rust-effect/src/checks.rs` |
-| **Evidence** | `crates/rust-total/tests/totality.rs` (13 tests), `crates/rust-effect/src/checks.rs::tests` (8 tests), per-tool `tests/assurance_mode.rs`, `examples/rust-total-demo/`, `examples/rust-effect-demo/` |
+| **Evidence** | `crates/rust-total/tests/totality.rs` (13 tests), `crates/rust-effect/src/checks.rs::tests` (8 tests), per-tool `tests/verification_mode.rs`, `examples/rust-total-demo/`, `examples/rust-effect-demo/` |
