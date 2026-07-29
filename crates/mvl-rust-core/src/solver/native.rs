@@ -942,20 +942,43 @@ fn constraints_from_clause(expr: &Expr) -> Option<Vec<Constraint>> {
 /// complexity guard" -- safe for *them* only because their caller
 /// (`try_cooper`) never claims satisfiability from this result, only ever
 /// escalating to `L5` on anything short of a proven contradiction), this
-/// backend needs the distinction explicit: it *does* want to claim
-/// `Proven` directly from a satisfiable result, so a complexity-guard
-/// bail must be kept distinguishable from a real proof of satisfiability.
+/// backend needs the distinction explicit: a complexity-guard bail must stay
+/// distinguishable from a completed elimination.
+///
+/// Note the original reason for the split — wanting to claim `Proven` directly
+/// from a satisfiable result — was itself the bug (#49). The split survives
+/// because "a guard fired" and "elimination completed, satisfiable over ℚ" are
+/// still different facts, even though neither is now grounds for `Proven`.
 enum SatOutcome {
     /// Rigorously proven contradictory (divisibility failure, a derived
     /// constant contradiction, or a trivially-false input constraint).
     /// Always safe to act on -- no complexity guard ever produces this.
     Contradiction,
-    /// Elimination ran to completion with no contradiction found — i.e.
-    /// satisfiable over the RATIONALS. This does **not** imply satisfiable
-    /// over the integers, so it is never grounds for `Proven` (#49). The
-    /// name is kept because it is what Fourier-Motzkin decides; the caveat
-    /// belongs here rather than in the name.
-    Satisfiable,
+    /// Elimination ran to completion with no contradiction found — satisfiable
+    /// over the **rationals**, which is all Fourier-Motzkin decides.
+    ///
+    /// This does **not** imply satisfiable over the integers, and is therefore
+    /// never grounds for `Proven` (#49). The name says so, rather than a doc
+    /// comment saying so under a name that suggests otherwise: the bug #49
+    /// fixed was a caller reading `Satisfiable` and concluding the predicate
+    /// was coherent.
+    ///
+    /// **Do not add an "exact over ℤ" variant without reading this.** The
+    /// obvious candidate — trust the divisibility check, since `a | c` means
+    /// `a·x + c = 0` has the integer solution `x = -c/a` — is wrong as stated,
+    /// because nothing establishes that several such solutions *agree*:
+    ///
+    /// - `2*x == 6 && 3*x == 6` — each equality passes divisibility (x = 3 and
+    ///   x = 2), `le_terms` is empty, so this arm is reached. Jointly UNSAT.
+    /// - `2*x == 6 && x > 100` — divisibility passes, and the `Eq` is dropped
+    ///   before the elimination phase, so Fourier-Motzkin only ever sees
+    ///   `x > 100` and finds it satisfiable. Jointly UNSAT.
+    ///
+    /// An exact-over-ℤ verdict would have to be confined to a system that is
+    /// *exactly one* single-variable equality with `a | c` and nothing else —
+    /// which recovers `a*x == c` standing alone and nothing more. Both cases
+    /// above are pinned by tests so the boundary stays a boundary.
+    SatisfiableOverRationals,
     /// A complexity guard fired before a definite answer was reached;
     /// could be either of the above.
     Unknown,
@@ -1001,7 +1024,7 @@ fn check_satisfiability(constraints: Vec<Constraint>) -> SatOutcome {
         .collect();
 
     if le_terms.is_empty() {
-        return SatOutcome::Satisfiable;
+        return SatOutcome::SatisfiableOverRationals;
     }
 
     let mut free_vars: Vec<String> = le_terms
@@ -1029,7 +1052,7 @@ fn fm_eliminate(constraints: Vec<LinTerm>, vars: &[String]) -> SatOutcome {
         return SatOutcome::Contradiction;
     }
     if vars.is_empty() {
-        return SatOutcome::Satisfiable;
+        return SatOutcome::SatisfiableOverRationals;
     }
 
     let var = &vars[0];
@@ -1092,8 +1115,9 @@ fn discharge_l4(clauses: &[&Expr]) -> Option<DischargeResult> {
                     .join(" && ")
             ),
         }),
-        // NOT `Proven`. Fourier-Motzkin decides satisfiability over the
-        // RATIONALS, and only its UNSAT verdict transfers to the integers
+        // NOT `Proven` -- the variant name now says why. Fourier-Motzkin
+        // decides satisfiability over the RATIONALS, and only its UNSAT
+        // verdict transfers to the integers
         // (ℤ ⊂ ℚ, so no rational solutions means no integer ones). The
         // converse fails: `2*x >= 1 && 2*x <= 1` is satisfiable at x = ½
         // with no integer solution, and `2*x == 2*y + 1` is a parity
@@ -1105,7 +1129,7 @@ fn discharge_l4(clauses: &[&Expr]) -> Option<DischargeResult> {
         // properly needs Cooper's divisibility atom (`2 | x'` is exactly
         // what the `Constraint` representation cannot hold) — deferred by
         // ADR-0006 §1 on the reference's own hit rates.
-        SatOutcome::Satisfiable => None,
+        SatOutcome::SatisfiableOverRationals => None,
         SatOutcome::Unknown => None,
     }
 }
@@ -1591,6 +1615,29 @@ mod tests {
             discharge("2 * x == 5"),
             DischargeResult::Violated { .. }
         ));
+    }
+
+    #[test]
+    fn two_equalities_each_passing_divisibility_can_still_be_jointly_unsat() {
+        // Pins the boundary documented on `SatOutcome::SatisfiableOverRationals`
+        // (#60). `2*x == 6` gives x = 3 and `3*x == 6` gives x = 2; each passes
+        // the divisibility check independently, `le_terms` is empty, so the
+        // "elimination completed" arm is reached -- but there is no joint
+        // solution. Trusting divisibility as an exact-over-ℤ verdict would
+        // report this `Proven`, reintroducing #49 by a different route.
+        assert_eq!(
+            discharge("2 * x == 6 && 3 * x == 6"),
+            DischargeResult::Runtime
+        );
+    }
+
+    #[test]
+    fn an_equality_and_an_inequality_can_be_jointly_unsat_unseen() {
+        // The second boundary case (#60): divisibility passes, and the `Eq` is
+        // dropped before the elimination phase, so Fourier-Motzkin only ever
+        // sees `x > 100` and finds it satisfiable. `x` must be 3, so the
+        // conjunction is UNSAT -- and nothing in this backend establishes that.
+        assert_eq!(discharge("2 * x == 6 && x > 100"), DischargeResult::Runtime);
     }
 
     #[test]
