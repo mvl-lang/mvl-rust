@@ -10,12 +10,18 @@
 //! and propagated postconditions all take part.
 
 // Since #42 the `ensures` is also checked against the body, not just for
-// coherence. Here that lands on a runtime check rather than a proof: the
-// return-site goal is `0 <= (b & 15) && (b & 15) <= 15`, and `&` is not in
-// the `Le`/`Eq` linear fragment the native backend reasons over -- bitwise
-// masking needs L5 (#37). A runtime check is the honest outcome, and
-// `at_least_ten` below shows the same obligation closing at L1 when the
-// returned expression *is* linear.
+// coherence. Here it cannot be discharged: the return-site goal is
+// `0 <= (b & 15) && (b & 15) <= 15`, and `&` is not in the `Le`/`Eq` linear
+// fragment the native backend reasons over -- bitwise masking needs L5 (#37).
+//
+// Since #47 that has a second consequence, and it is the honest one: because
+// this return site does not close, the postcondition is NOT propagated into
+// any caller's Γ. `main` binds the result below and learns nothing about it.
+// Before #47 it was propagated regardless, which meant a caller could prove
+// a further obligation from a fact nothing had established and nothing
+// enforces. `at_least_ten` below shows the same obligation closing at L1 when
+// the returned expression *is* linear -- and there the postcondition does
+// propagate, because it was earned.
 #[mvl::total]
 #[mvl::requires(0 <= b && b <= 255)]
 #[mvl::ensures(0 <= result && result <= 15)]

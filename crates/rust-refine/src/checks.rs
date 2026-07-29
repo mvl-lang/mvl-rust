@@ -294,6 +294,11 @@ struct CallSiteScan<'a> {
     /// closure's `return -1` be reported as a violating return of its
     /// enclosing function.
     returns_here: bool,
+    /// Which callees have established their own postconditions, keyed by name
+    /// (#47). `Some(map)` is the real walk: a callee's `ensures` may enter Γ
+    /// only when `map[callee]` is true. `None` marks the pre-pass that builds
+    /// that map, where nothing propagates at all -- see [`return_site_closure`].
+    closed: Option<&'a HashMap<String, bool>>,
     found: &'a mut Vec<FoundObligation>,
 }
 
@@ -443,6 +448,21 @@ impl CallSiteScan<'_> {
         let Some(facts) = self.functions.get(&callee) else {
             return;
         };
+
+        // Γ's soundness invariant (ADR-0006 §5): a fact enters Γ only if it
+        // has been established, or is an obligation some other program point
+        // is required to discharge. A postcondition whose own return site did
+        // not close is neither -- `rust-refine` inserts no runtime check
+        // (spec 007), so nothing anywhere enforces it. Propagating it is how
+        // `needs_big(y)` came to be reported "proven at L2" from a premise
+        // false for every input (#47).
+        //
+        // `None` is the pre-pass building the map: it propagates nothing, so
+        // closure is computed without assuming any other function's claim.
+        match self.closed {
+            Some(map) if map.get(&callee).copied().unwrap_or(false) => {}
+            _ => return,
+        }
 
         let mut bindings: HashMap<String, Expr> = HashMap::new();
         if facts.params.len() == call.args.len() {
@@ -660,6 +680,7 @@ impl<'ast> Visit<'ast> for CallSiteScan<'_> {
             // A nested `fn` is its own return target, even when the `fn` sits
             // inside a closure body where the enclosing scan had it cleared.
             returns_here: true,
+            closed: self.closed,
             found: &mut *self.found,
         };
         nested.visit_block(&node.block);
@@ -854,6 +875,55 @@ fn negated_op(op: &syn::BinOp) -> Option<&'static str> {
 
 /// Finds every obligation in `source` — declaration sites and call sites
 /// both — without discharging or rendering them yet.
+/// Which functions establish their own postconditions at every return point.
+///
+/// Γ may only assume a callee's `ensures` once the callee has been shown to
+/// deliver it (ADR-0006 §5, spec 007 Requirement 2). Outcomes are not known
+/// during the walk -- `discharge` runs later -- so they are computed here in a
+/// pre-pass and consulted by [`CallSiteScan::propagate_postcondition`].
+///
+/// **Deliberately conservative: this pass propagates nothing.** A return site
+/// that would only close using a fact propagated from elsewhere is therefore
+/// not credited, and that function's own postcondition does not propagate in
+/// turn. That under-credits rather than over-credits, which is the required
+/// direction (ADR-0001 §5: imprecise is acceptable, unsound is not) -- and it
+/// sidesteps a real circularity, since closure would otherwise depend on the
+/// very map being built. A fixpoint iteration would recover the precision;
+/// nothing needs it yet.
+///
+/// A function with no `ensures` has no return-site obligations and maps to
+/// `true` vacuously. Harmless: it has no postcondition to propagate either.
+fn return_site_closure(
+    file: &syn::File,
+    functions: &HashMap<String, FnFacts>,
+) -> HashMap<String, bool> {
+    let mut closed = HashMap::new();
+    for item in &file.items {
+        let Item::Fn(item_fn) = item else { continue };
+        let name = item_fn.sig.ident.to_string();
+        let facts = functions.get(&name);
+        let mut found = Vec::new();
+        let mut scan = CallSiteScan {
+            caller: &name,
+            functions,
+            gamma: facts.map(FnFacts::hypotheses).unwrap_or_default(),
+            locals: Vec::new(),
+            ensures: facts.map(|f| f.ensures.as_slice()).unwrap_or(&[]),
+            in_tail: true,
+            returns_here: true,
+            closed: None,
+            found: &mut found,
+        };
+        scan.visit_block(&item_fn.block);
+        let all_closed = found
+            .iter()
+            .filter(|f| f.kind == ObligationKind::ReturnSite)
+            .all(|f| matches!(f.discharge(), DischargeResult::Proven { .. }));
+        closed.insert(name, all_closed);
+    }
+    closed
+}
+
 pub fn find_obligations(source: &str) -> Result<Vec<FoundObligation>, CheckError> {
     let file: syn::File = syn::parse_str(source).map_err(CheckError::Parse)?;
 
@@ -869,6 +939,8 @@ pub fn find_obligations(source: &str) -> Result<Vec<FoundObligation>, CheckError
             functions.insert(item_fn.sig.ident.to_string(), FnFacts::of(item_fn));
         }
     }
+
+    let closed = return_site_closure(&file, &functions);
 
     for item in &file.items {
         if let Item::Fn(item_fn) = item {
@@ -887,6 +959,7 @@ pub fn find_obligations(source: &str) -> Result<Vec<FoundObligation>, CheckError
                 // in it returns from this function.
                 in_tail: true,
                 returns_here: true,
+                closed: Some(&closed),
                 found: &mut found,
             };
             scan.visit_block(&item_fn.block);
@@ -936,13 +1009,13 @@ fn return_site_diagnostic(found: &FoundObligation, result: &DischargeResult) -> 
             Diagnostic::new(
                 Level::Note,
                 format!(
-                    "`{name}` postcondition `{}` is not established by this return ({known}), \
-                     inserting a runtime check",
+                    "`{name}` postcondition `{}` is not established by this return \
+                     ({known}) -- no runtime check is inserted, so it is unverified",
                     found.predicate_text()
                 ),
                 found.span,
             )
-            .with_label("runtime fallback")
+            .with_label("unverified")
         }
         DischargeResult::Violated { counterexample } => Diagnostic::new(
             Level::Error,
@@ -972,13 +1045,14 @@ fn declaration_diagnostic(found: &FoundObligation, result: &DischargeResult) -> 
         DischargeResult::Runtime => Diagnostic::new(
             Level::Note,
             format!(
-                "`{}` {} could not be discharged by L1-L2, inserting a runtime check",
+                "`{}` {} could not be discharged by any layer \
+                 -- no runtime check is inserted, so it is unverified",
                 found.fn_name,
                 found.kind.as_str()
             ),
             found.span,
         )
-        .with_label("runtime fallback"),
+        .with_label("unverified"),
         DischargeResult::Violated { counterexample } => Diagnostic::new(
             Level::Error,
             format!(
@@ -1024,13 +1098,13 @@ fn call_site_diagnostic(
             Diagnostic::new(
                 Level::Note,
                 format!(
-                    "`{callee}` precondition `{}` is not entailed in `{caller}` ({known}), \
-                     inserting a runtime check",
+                    "`{callee}` precondition `{}` is not entailed in `{caller}` \
+                     ({known}) -- no runtime check is inserted, so it is unverified",
                     found.predicate_text()
                 ),
                 found.span,
             )
-            .with_label("runtime fallback")
+            .with_label("unverified")
         }
         DischargeResult::Violated { counterexample } => Diagnostic::new(
             Level::Error,
