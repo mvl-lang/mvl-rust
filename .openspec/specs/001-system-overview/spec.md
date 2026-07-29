@@ -80,7 +80,7 @@ Each `crates/rust-*` and `crates/cargo-mvl` publishes independently to `crates.i
 2. **Link as a Rust library** — the MVL compiler exposes its solver as a `libmvl_solver` crate. Fastest, but requires refactoring the compiler.
 3. **Reimplement** in `mvl-rust-core` — self-contained, but duplicates code and risks drift.
 
-**Recommendation: start with (1), migrate to (2) when the compiler exposes a solver crate.** ADR-0001 will lock this decision before `rust-refine` implementation starts.
+**Decided: option (3), reimplement.** Options (1) and (2) were rejected because sharing an implementation is not independent verification — see ADR-0001 §4 for the reasoning and ADR-0005 for what replaced them.
 
 ### Attribute shape reference
 
@@ -171,13 +171,13 @@ Exact grammar of predicate DSLs lands per-crate; `mvl-rust-core` provides the sh
 
 L4 is implemented as Fourier–Motzkin elimination (#35). The MVL compiler names this layer "Cooper QE", which is inaccurate for what it actually runs — an upstream naming issue tracked as [`mvl-lang/mvl`#2022](https://github.com/mvl-lang/mvl/issues/2022) — so this spec names the technique rather than inheriting the label.
 
-Obligations arise at two kinds of program point (ADR-0002). At a **declaration site** the predicate is checked for internal coherence — nothing is known about arguments there. At a **call site** the callee's precondition, with the actual arguments substituted, MUST be discharged against the caller's hypothesis context Γ, which accumulates the caller's own parameter refinements, branch-condition narrowing, and callees' propagated postconditions.
+Obligations arise at three kinds of program point (ADR-0005). At a **declaration site** the predicate is checked for internal coherence — nothing is known about arguments there. At a **call site** the callee's precondition, with the actual arguments substituted, MUST be discharged against the caller's hypothesis context Γ, which accumulates the caller's own parameter refinements, branch-condition narrowing, and callees' propagated postconditions. At a **return site** the function's own postcondition, with `result` bound to the returned expression, MUST be discharged against Γ as it stands at that point (#42).
 
 **Implementation:** `crates/rust-refine/src/checks.rs`, `crates/mvl-rust-core/src/solver/native.rs`, `crates/mvl-rust-core/src/attrs/predicate.rs`
 
 **Tests:** `crates/rust-refine/tests/call_sites.rs`, `crates/mvl-rust-core/tests/entailment.rs`
 
-**Blocked on:** ADR-0001 (solver integration story), ADR-0002 (call-site obligation model).
+**Decided by:** ADR-0005 (obligation model and native solver), ADR-0006 (layer completion and runtime enforcement).
 
 #### Scenario: Simple bound proven at L2
 
@@ -189,7 +189,15 @@ Obligations arise at two kinds of program point (ADR-0002). At a **declaration s
 
 - GIVEN a refinement over an opaque function output
 - WHEN the crate compiles
-- THEN compilation MUST succeed AND `rust-refine` MUST emit a runtime assertion at the site with attribution to the unclosed obligation ("could not be discharged by L1–L5; runtime check inserted")
+- THEN compilation MUST succeed AND `rust-refine` MUST report the obligation as undischarged, naming what was known at that point, without claiming it is enforced
+
+Amended by ADR-0006 §5. The earlier wording required `rust-refine` itself to *emit a runtime assertion*, which it never did — it is an out-of-band lint with no codegen path (ADR-0001 §2), so the requirement was unmeetable as written and the diagnostic text asserting otherwise is what made an unenforced fact usable as a hypothesis (#47). Enforcement is ADR-0006 §4's concern and belongs to the `mvl::` proc macros, not to this tool.
+
+#### Scenario: Undischarged obligation is not propagated as fact
+
+- GIVEN a callee whose postcondition reaches only `Runtime`
+- WHEN a caller binds its result and a later obligation could be proven from that postcondition
+- THEN the postcondition MUST NOT enter the caller's hypothesis context Γ (ADR-0006 §5)
 
 #### Scenario: Genuine violation rejected
 
@@ -450,7 +458,7 @@ The `cargo-mvl` meta-command MUST expose subcommands that surface each assurance
 | MC/DC coverage tooling | `cargo llvm-cov --mcdc` | Roll our own instrumentation |
 | Coverage tooling | `cargo llvm-cov` | `tarpaulin` |
 
-Downstream ADRs (`0001-solver-integration.md`, `0002-attribute-grammar.md`, `0003-ferrocene-toolchain.md`) will document these once the initial code is landing.
+Recorded in `adr/0001-annotation-driven-verification.md` (attribute model and the greenfield rule) and `adr/0002-qualified-subset.md` (the `rust-limit` subset). A Ferrocene-toolchain ADR remains unwritten — tracked as #12.
 
 ## Ideas (not yet requirements)
 

@@ -1,5 +1,5 @@
 //! The native `L1` (trivial) + `L2` (integer interval arithmetic) + `L3`
-//! (bounded quantifier expansion) backend (ADR-0001 v0.1 scope + #31's
+//! (bounded quantifier expansion) backend (ADR-0005 v0.1 scope + #31's
 //! quantifier extension).
 //!
 //! Two questions, two entry points:

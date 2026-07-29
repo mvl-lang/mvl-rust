@@ -1,4 +1,4 @@
-//! No concrete `SolverBackend` exists yet (ADR-0001: a native L1+L2
+//! No concrete `SolverBackend` exists yet (ADR-0005: a native L1+L2
 //! backend is tracked as its own follow-up ticket) — these tests cover
 //! the data model (`Obligation`, `DischargeResult`, `Layer`) that any
 //! future backend and the assurance-JSON schema (spec Requirement 13)

@@ -1,5 +1,5 @@
 //! Finds every refinement obligation in a source file and discharges it
-//! through the native backend (`mvl_rust_core::solver::native`, ADR-0001).
+//! through the native backend (`mvl_rust_core::solver::native`, ADR-0005).
 //!
 //! Obligations arise at three kinds of program point (#38, #42), asking
 //! different questions of the solver:
@@ -681,7 +681,7 @@ fn forwards_tail(expr: &Expr) -> bool {
 /// Macros that never produce a value, so a body ending in one has no return
 /// point to check -- `fn f() -> i64 { panic!() }` establishes its
 /// postcondition vacuously, the same conclusion the solver reaches for an
-/// unreachable program point (ADR-0002).
+/// unreachable program point (ADR-0005).
 ///
 /// `rust-total`'s `PANICKING_MACROS` covers the first three for panic-freedom;
 /// `unreachable` is added here because divergence, not panicking, is what

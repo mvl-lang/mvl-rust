@@ -6,7 +6,7 @@
 //! elimination, `L5` full SMT, with an uncloseable obligation falling
 //! through to a runtime check.
 //!
-//! Per ADR-0001 (`.openspec/adr/0001-solver-integration.md`), this
+//! Per ADR-0005 (`.openspec/adr/0005-refinement-obligations.md`), this
 //! dispatcher is implemented **natively** in `mvl-rust-core` — not by
 //! shelling out to or linking `mvl-lang/mvl`'s own solver. Doing either
 //! would mean `rust-refine` isn't independent verification at all (the
@@ -17,7 +17,7 @@
 //!
 //! [`SolverBackend`] is the abstraction point tool crates depend on.
 //! [`native::NativeBackend`] is the concrete `L1`+`L2` implementation
-//! (v0.1 scope per ADR-0001 — `L3`–`L5` deferred, falling through to
+//! (v0.1 scope per ADR-0005 — `L3`–`L5` deferred, falling through to
 //! `DischargeResult::Runtime`) that `rust-refine` (#8) uses.
 
 pub mod native;
@@ -70,7 +70,7 @@ pub enum DischargeResult {
 }
 
 /// Abstract interface for the obligation dispatcher. Implemented natively
-/// in `mvl-rust-core` (ADR-0001) — there is no shell-out or linked
+/// in `mvl-rust-core` (ADR-0005) — there is no shell-out or linked
 /// backend. Native reasoning always produces *some* outcome (`Proven`,
 /// `Runtime`, or `Violated`), never an I/O-style failure, so this doesn't
 /// return a `Result`.
