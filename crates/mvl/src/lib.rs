@@ -59,9 +59,7 @@
 //! assert_eq!(trusted, "from the environment");
 //! ```
 
-pub use mvl_macros::{
-    decreases, effect, ensures, label, partial, refine, relabel, requires, total,
-};
+pub use mvl_macros::{decreases, effect, ensures, label, relabel, requires, total};
 
 use std::marker::PhantomData;
 

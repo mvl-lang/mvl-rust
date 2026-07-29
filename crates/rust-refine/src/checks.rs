@@ -45,9 +45,18 @@
 //! - **Return points are recognised structurally**, and only where a value
 //!   provably flows outwards: a trailing expression, an explicit `return`,
 //!   and through `if`/`else`, `match` arms, and plain or `unsafe` blocks in
-//!   tail position. A construct not on that list yields no obligation rather
-//!   than a guessed one — the pre-#42 silence is the safe direction, since a
-//!   false return-site violation is an error that fails the build.
+//!   tail position. A construct not on that list is **substituted whole** —
+//!   `loop { break -5; }` becomes the goal `(loop { break - 5 ; }) > 0` —
+//!   which the solver cannot decide, so it falls to a runtime outcome (#48).
+//!
+//!   This is not the same as yielding nothing, and the difference now matters.
+//!   Since #47 a function's postcondition propagates only when *every* return
+//!   site closed, and that test is an `all()` — so a function with **zero**
+//!   return-site obligations is treated as closed. Skipping unmodelled
+//!   constructs, which earlier versions of this doc claimed happened, would
+//!   therefore mark `fn f() -> i64 { loop { break -5; } }` closed and
+//!   propagate `result > 0` from a body returning `-5`. The undecidable
+//!   obligation is what keeps that honest.
 //! - **`?` is not a return point** here. It is an early return of `Err(…)`
 //!   whose value isn't `result`-shaped under `syn`'s type-free view, so
 //!   nothing is claimed about it either way.
@@ -275,12 +284,18 @@ struct CallSiteScan<'a> {
     /// Whether the node being visited is in tail position of *this*
     /// function, i.e. whether its value becomes the return value.
     ///
-    /// Defaults to cleared and is only forwarded by nodes known to pass
-    /// their value outwards. That asymmetry is deliberate: a construct this
-    /// scan doesn't understand then yields *no* return obligation, which is
-    /// the pre-#42 behaviour (a missing check), rather than a *false* one.
-    /// A spurious return-site violation is `Level::Error` and fails the
-    /// build, so it is the louder mistake of the two.
+    /// Defaults to cleared and is only forwarded by nodes known to pass their
+    /// value outwards. That asymmetry is deliberate, but note what it does and
+    /// does not buy (#48): clearing the flag stops the scan descending into a
+    /// position whose value is not returned. It does **not** mean an unmodelled
+    /// tail expression is skipped — [`Self::visit_tail_expr`] substitutes such
+    /// an expression whole, producing an obligation the solver cannot decide.
+    ///
+    /// That is the safe direction for two reasons. A spurious return-site
+    /// *violation* is `Level::Error` and fails the build, so guessing is the
+    /// louder mistake; and an undecidable obligation still prevents the
+    /// function being credited as closed, which is what stops its postcondition
+    /// propagating unearned (#47).
     in_tail: bool,
     /// Whether an explicit `return` at this point returns from *this*
     /// function. Cleared for closure and `async` bodies, which own their own
@@ -1052,8 +1067,26 @@ fn negated_op(op: &syn::BinOp) -> Option<&'static str> {
 /// very map being built. A fixpoint iteration would recover the precision;
 /// nothing needs it yet.
 ///
-/// A function with no `ensures` has no return-site obligations and maps to
-/// `true` vacuously. Harmless: it has no postcondition to propagate either.
+/// **Zero return-site obligations maps to `true`**, because `all()` over an
+/// empty set is `true`. Two ways that arises, and only one is safe (#48):
+///
+/// - **No `ensures` at all** — vacuous and harmless. There is no postcondition
+///   to propagate either way.
+/// - **A diverging body** (`panic!`/`todo!`/`unimplemented!`/`unreachable!`)
+///   produces no `result`, so no return point. The postcondition *does* then
+///   propagate — verified — and that is sound only because the function never
+///   returns, making the caller's continuation unreachable. Proving things
+///   about unreachable code is vacuous, the same conclusion the solver reaches
+///   for a contradictory Γ.
+///
+/// So the empty case is currently correct **for a specific reason**, not by
+/// construction. Any future change that makes a function have zero return-site
+/// obligations *while still returning* would silently mark it closed and
+/// propagate an unestablished postcondition. Skipping unmodelled tail
+/// expressions is exactly such a change — see [`CallSiteScan::visit_tail_expr`]
+/// and the module doc. If a second non-divergent source ever appears, this
+/// should become `!found.is_empty() && found.all(...)` and divergence handled
+/// explicitly.
 fn return_site_closure(
     file: &syn::File,
     functions: &HashMap<String, FnFacts>,

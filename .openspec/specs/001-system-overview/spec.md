@@ -13,9 +13,9 @@ The `mvl-rust` workspace is a second implementation of MVL's language guarantees
 
 **MVL's ideas belong in Rust too.** Refinement types, effect tracking, totality, and information flow control are not MVL-specific — they are properties any statically-typed language can express. Proving they work in Rust is what turns MVL from "a project's opinion" into "a family of language guarantees that happens to have two implementations."
 
-Concretely: an engineering team on Rust adds `#[refine(x > 0)]` to a new function and the same discharge machinery MVL uses closes the obligation. If the team eventually migrates to MVL, the semantics carry over — only the syntax differs. If the team stays on Rust, they still have every guarantee MVL was pitched to deliver.
+Concretely: an engineering team on Rust adds `#[mvl::requires(x > 0)]` to a new function and the same discharge machinery MVL uses closes the obligation. If the team eventually migrates to MVL, the semantics carry over — only the syntax differs. If the team stays on Rust, they still have every guarantee MVL was pitched to deliver.
 
-**The LLM angle is load-bearing.** LLMs already generate excellent Rust and know the attribute idiom. Getting an LLM to produce `#[refine(x > 0)] fn f(x: i32) -> i32 { x + 1 }` is a much smaller ask than getting it to produce syntactically-correct MVL. `mvl-rust` is where the LLM-native verified-code story lands soonest against the largest audience.
+**The LLM angle is load-bearing.** LLMs already generate excellent Rust and know the attribute idiom. Getting an LLM to produce `#[mvl::requires(x > 0)] fn f(x: i32) -> i32 { x + 1 }` is a much smaller ask than getting it to produce syntactically-correct MVL. `mvl-rust` is where the LLM-native verified-code story lands soonest against the largest audience.
 
 **The Ferrocene angle is opportunistic, not central.** Ferrocene qualifies Rust for DO-178C already. `mvl-rust` on top of Ferrocene delivers verified-Rust-for-certified-domains without qualifying MVL itself. That is the pitch for the segment where reviewer cost is regulated to be highest. It is a segment, not the primary market — see `iheitlager/my-brain` `work/projects/mvl/claude-aviation-software.md` Wave 2b/2e.
 
@@ -49,7 +49,7 @@ mvl-rust/
 │   ├── mvl-rust-core/       shared: attribute grammar, AST walker, solver bindings, diagnostics
 │   ├── rust-limit/          qualified-subset linter (Clippy-flavored, no attribute)
 │   ├── rust-total/          #[total]  — totality attribute + verifier
-│   ├── rust-refine/         #[refine(pred)] — refinement type attribute + L1–L5 dispatch
+│   ├── rust-refine/         #[requires]/#[ensures] — refinement obligations + L1–L5 dispatch
 │   ├── rust-effect/         #[effect(list)] — effect algebra attribute
 │   ├── rust-ifc/            #[label(l)] — information flow labels + declassification
 │   └── cargo-mvl/           cargo subcommand — one entry point for all five tools
@@ -88,8 +88,8 @@ The attributes MVL-Rust introduces:
 
 ```rust
 // Refinement type on parameter and return
-#[refine(x >= 0 && x < 100)]
-#[refine_ret(y => y >= 0)]
+#[mvl::requires(x >= 0 && x < 100)]
+#[mvl::ensures(result >= 0)]
 fn abs(x: i32) -> i32 { ... }
 
 // Effect declaration
@@ -155,7 +155,7 @@ Verification information MUST be carried by attribute macros in the `mvl::` name
 - WHEN parsing runs
 - THEN an error MUST be returned rather than the attribute being ignored
 
-**Tests:** `crates/mvl-rust-core/tests/attrs.rs::malformed_refine_predicate_returns_parse_error`
+**Tests:** `crates/mvl-rust-core/tests/attrs.rs::malformed_predicate_returns_parse_error`
 
 ### Requirement 2: Verification is out-of-band from compilation [MUST]
 
