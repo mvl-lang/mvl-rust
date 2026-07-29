@@ -31,20 +31,12 @@ passthrough_attr!(
     "Pass-through for `#[mvl::total]`. See the crate docs."
 );
 passthrough_attr!(
-    partial,
-    "Pass-through for `#[mvl::partial]`. See the crate docs."
-);
-passthrough_attr!(
     decreases,
     "Pass-through for `#[mvl::decreases(measure)]`. See the crate docs."
 );
 passthrough_attr!(
     effect,
     "Pass-through for `#[mvl::effect(list)]`. See the crate docs."
-);
-passthrough_attr!(
-    refine,
-    "Pass-through for `#[mvl::refine(pred)]`. See the crate docs."
 );
 passthrough_attr!(
     requires,

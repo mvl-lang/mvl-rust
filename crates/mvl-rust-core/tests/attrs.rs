@@ -10,14 +10,26 @@ fn parse_fn_attrs(src: &str) -> Vec<Attribute> {
 }
 
 #[test]
-fn parses_refine_attr() {
-    let attrs = parse_fn_attrs("#[refine(x >= 0 && x < 100)] fn f(x: i32) -> i32 { x }");
-    match MvlAttr::try_from_attribute(&attrs[0]) {
-        Some(Ok(MvlAttr::Refine(r))) => {
-            let expected: syn::Expr = syn::parse_quote!(x >= 0 && x < 100);
-            assert_eq!(r.predicate, expected);
-        }
-        other => panic!("expected Ok(Refine(_)), got {other:?}"),
+fn refine_and_partial_are_no_longer_recognised() {
+    // Removed in #54. Both were parsed and read by no tool, so an author who
+    // wrote one got silence rather than verification -- and `refine` was the
+    // attribute spec 001 advertised as the headline example. `requires`/
+    // `ensures` cover everything `refine` was for.
+    //
+    // They now fall through to `None`, the same as any third-party attribute:
+    // unrecognised rather than recognised-and-ignored. Re-adding either with an
+    // implementation is cheap; an inert attribute is worse than an absent one.
+    for src in [
+        "#[refine(x >= 0)] fn f(x: i32) -> i32 { x }",
+        "#[mvl::refine(x >= 0)] fn f(x: i32) -> i32 { x }",
+        "#[partial] fn f() {}",
+        "#[mvl::partial] fn f() {}",
+    ] {
+        let attrs = parse_fn_attrs(src);
+        assert!(
+            MvlAttr::try_from_attribute(&attrs[0]).is_none(),
+            "`{src}` must not be recognised"
+        );
     }
 }
 
@@ -27,15 +39,6 @@ fn parses_total_attr_with_no_arguments() {
     assert!(matches!(
         MvlAttr::try_from_attribute(&attrs[0]),
         Some(Ok(MvlAttr::Total(_)))
-    ));
-}
-
-#[test]
-fn parses_partial_attr_with_no_arguments() {
-    let attrs = parse_fn_attrs("#[partial] fn f() {}");
-    assert!(matches!(
-        MvlAttr::try_from_attribute(&attrs[0]),
-        Some(Ok(MvlAttr::Partial(_)))
     ));
 }
 
@@ -159,8 +162,16 @@ fn unrecognized_attribute_returns_none() {
 }
 
 #[test]
-fn malformed_refine_predicate_returns_parse_error() {
-    let attrs = parse_fn_attrs("#[refine(x >=)] fn f() {}");
+fn malformed_predicate_returns_parse_error() {
+    // The distinction that matters: an attribute this workspace *owns* with a
+    // malformed argument is `Some(Err(_))` -- a reported parse error -- while an
+    // attribute it does not own is `None` and skipped silently. Getting those
+    // two confused would either reject third-party attributes or swallow a
+    // typo in one of ours.
+    //
+    // Vehicle changed from `refine` to `requires` in #54; `refine` was removed
+    // and now correctly returns `None` like any unowned attribute.
+    let attrs = parse_fn_attrs("#[requires(x >=)] fn f() {}");
     match MvlAttr::try_from_attribute(&attrs[0]) {
         Some(Err(_)) => {}
         other => panic!("expected Some(Err(_)), got {other:?}"),
@@ -176,8 +187,6 @@ fn malformed_refine_predicate_returns_parse_error() {
 fn recognizes_fully_qualified_mvl_paths() {
     let cases = [
         ("#[mvl::total] fn f() {}", "total"),
-        ("#[mvl::partial] fn f() {}", "partial"),
-        ("#[mvl::refine(x > 0)] fn f(x: i32) {}", "refine"),
         ("#[mvl::decreases(n)] fn f() {}", "decreases"),
         ("#[mvl::effect(Console)] fn f() {}", "effect"),
         ("#[mvl::requires(x > 0)] fn f(x: i32) {}", "requires"),

@@ -15,27 +15,9 @@ use syn::{Attribute, Expr, Ident, LitStr, Token};
 mod predicate;
 pub use predicate::Predicate;
 
-/// `#[mvl::refine(pred)]` — a whole-function precondition.
-#[derive(Debug, Clone)]
-pub struct RefineAttr {
-    pub predicate: Expr,
-}
-
-impl Parse for RefineAttr {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        Ok(RefineAttr {
-            predicate: input.parse()?,
-        })
-    }
-}
-
 /// `#[mvl::total]` on a `fn` declaration. Carries no arguments.
 #[derive(Debug, Clone, Default)]
 pub struct TotalAttr;
-
-/// `#[mvl::partial]` on a `fn` declaration. Carries no arguments.
-#[derive(Debug, Clone, Default)]
-pub struct PartialAttr;
 
 /// `#[mvl::decreases(measure)]` alongside `#[mvl::total]` on a recursive
 /// function.
@@ -103,6 +85,15 @@ impl Parse for EnsuresAttr {
 
 /// `#[mvl::label]` declaring a new IFC label (lattice point). Carries no
 /// arguments — it decorates the label's own marker type.
+///
+/// **No tool consumes this**, and that is deliberate rather than an omission:
+/// ADR-0004 makes the *type* the carrier of a label, so `rust-ifc` recognises
+/// `Tainted<T>`/`Secret<T>`/`Labeled<L, T>` structurally and needs no
+/// annotation to do it. The attribute marks intent for a reader — and is
+/// applied in real code, including this workspace's own built-in labels in the
+/// `mvl` facade — so it is kept rather than removed with `refine`/`partial`
+/// (#54). A future `rust-ifc` that validates label *declarations* (rather than
+/// only the crossings) would be its first consumer.
 #[derive(Debug, Clone, Default)]
 pub struct LabelAttr;
 
@@ -170,9 +161,7 @@ impl Parse for RelabelItem {
 /// one a given [`syn::Attribute`] parsed as.
 #[derive(Debug, Clone)]
 pub enum MvlAttr {
-    Refine(RefineAttr),
     Total(TotalAttr),
-    Partial(PartialAttr),
     Decreases(DecreasesAttr),
     Effect(EffectAttr),
     Requires(RequiresAttr),
@@ -190,9 +179,7 @@ impl MvlAttr {
     pub fn try_from_attribute(attr: &Attribute) -> Option<syn::Result<MvlAttr>> {
         let last = attr.path().segments.last()?;
         let parsed = match last.ident.to_string().as_str() {
-            "refine" => attr.parse_args::<RefineAttr>().map(MvlAttr::Refine),
             "total" => Ok(MvlAttr::Total(TotalAttr)),
-            "partial" => Ok(MvlAttr::Partial(PartialAttr)),
             "decreases" => attr.parse_args::<DecreasesAttr>().map(MvlAttr::Decreases),
             "effect" => attr.parse_args::<EffectAttr>().map(MvlAttr::Effect),
             "requires" => attr.parse_args::<RequiresAttr>().map(MvlAttr::Requires),
