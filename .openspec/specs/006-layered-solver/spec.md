@@ -194,6 +194,7 @@ The solver MUST delegate to an SMT solver when the native layers are exhausted. 
 - **Real Cooper's algorithm is deferred.** It would close the ℚ/ℤ gap and the parity cases natively, but it is a rewrite rather than an extension, and the reference discharges four of 174 obligations at this layer.
 - **No atom normalisation.** Compound atoms (`s.field`, `xs.len()`) are not lifted to opaque variables, so goals over them never reach the arithmetic layers — where the reference proves them at L2.
 - **L1 reflexivity is unsound for floats.** `x == x` is false for NaN, and there is no type information to exclude an `f64`. Sound within the unbounded-ℤ scope; admitting float-typed terms needs a real type signal first.
+- **Lifting the call-free gate needs four things, not one.** #45 frames a tri-state purity signal as the prerequisite; ADR-0008 records that it is one of four, alongside a *checkable* purity claim (an explicit `#[mvl::effect()]` is not one), the type signal above, and a notion of determinism that MVL's effect vocabulary does not currently express. Deliberately unscheduled: the gate is imprecise rather than unsound, which ADR-0001 §5 accepts.
 - **Call-freedom is a syntactic approximation of purity** (Requirement 2). #45 tracks the real signal; spec 003 Requirement 4 records why the effect system cannot currently supply it.
 
 ---

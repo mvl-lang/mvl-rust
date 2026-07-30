@@ -84,8 +84,15 @@ information.
 That conflation is load-bearing and has a known cost. It means *unannotated* and
 *annotated-as-pure* are indistinguishable — which is exactly why `rust-effect`
 cannot be used as the purity oracle `rust-refine`'s reflexivity rule needs (#45,
-and ADR-0005 §Consequences). A tri-state signal would be required, and adding
-one is a change to this decision, not an extension of it.
+and ADR-0005 §Consequences).
+
+**ADR-0008 settles what follows from that, and keeps this decision unchanged.**
+A tri-state signal is required but not sufficient: an *explicit*
+`#[mvl::effect()]` is not a purity licence either, because this section's claim
+is checked only against same-file resolvable calls, and effects reach a function
+through the routes that are silently unresolvable. So the third state belongs in
+the licence reader rather than here — an obligation and a licence have opposite
+safe defaults, and this section is the obligation.
 
 v1 scope, deliberately smaller than MVL's own effect system
 (`mvl-lang/mvl#846`):
