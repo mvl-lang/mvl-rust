@@ -21,7 +21,7 @@ use mvl_rust_core::assurance::schema::{
     TestSection, TestSummary,
 };
 use mvl_rust_core::assurance::version::ASSURANCE_SCHEMA_VERSION;
-use mvl_rust_core::solver::{DischargeResult, Layer, Obligation, ObligationClass};
+use mvl_rust_core::solver::{DischargeResult, Layer, Obligation, ObligationClass, Warrant};
 use std::path::Path;
 
 /// Derived from [`ASSURANCE_SCHEMA_VERSION`] rather than hardcoded, so a
@@ -102,8 +102,15 @@ fn fully_populated_report() -> AssuranceReport {
         kind: ObligationClass::CallSite,
     };
     let result = DischargeResult::Proven { layer: Layer::L2 };
+    // `Warrant::Enforcement`, not `::Proof`, so the round-trip below also
+    // exercises the `premises` field's shape -- a fixture meant to be
+    // "fully populated" should cover every variant's fields, not just the
+    // simplest one.
+    let warrant = Warrant::Enforcement {
+        premises: vec!["helper".to_string()],
+    };
     report.prove = Some(ProveSection {
-        obligations: vec![ObligationRecord::new(&obligation, &result)],
+        obligations: vec![ObligationRecord::new(&obligation, &result, &warrant)],
     });
 
     report.test = Some(TestSection {

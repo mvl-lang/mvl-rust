@@ -158,3 +158,48 @@ pub enum DischargeResult {
 pub trait SolverBackend {
     fn discharge(&self, obligation: &Obligation) -> DischargeResult;
 }
+
+/// What actually backs a reported outcome — the third axis alongside
+/// [`ObligationClass`] ("which question was asked") and [`Layer`]/
+/// [`DischargeResult`] ("did static reasoning close it") (#69, spec 007
+/// Requirement 6).
+///
+/// Upstream `mvl-lang/mvl` never needed this distinction: it enforces
+/// *every* runtime-checkable `requires`/`ensures` unconditionally, with no
+/// opt-out, so every postcondition is always backed by a check nobody can
+/// disable and "proven or enforced" is a distinction without a difference
+/// for propagation purposes. This port introduced `#[mvl::unchecked]`
+/// (#53) specifically to resolve the `#[mvl::total]`/panic-freedom
+/// collision — a problem upstream doesn't have, since its `total` is
+/// termination-only (ADR-0003 §Consequences amendment). Once a function can
+/// nominally carry `#[mvl::ensures]` while opting out of the assert,
+/// "was this actually enforced" stops being universally true, and Γ
+/// propagation (ADR-0006 §5 condition 5) needs a way to say so.
+///
+/// | `Warrant` | What it claims |
+/// |---|---|
+/// | `Proof` | A real static entailment/satisfiability proof, untainted by any enforced-not-proven premise |
+/// | `Enforcement` | Rests on at least one runtime-enforced (not statically proven) premise, named exactly — not a proof, but not silently unverified either |
+/// | `None` | Neither proven nor backed by enforcement — genuinely unverified |
+///
+/// Computed only for entailment obligations (`ObligationClass::CallSite`/
+/// `ReturnSite`); a `Declaration`-kind coherence check has no Γ and no
+/// enforcement concept to rest on, so it is always `Proof` or `None`,
+/// never `Enforcement`. `DischargeResult::Violated` is always `None`
+/// regardless of enforcement — a demonstrated counterexample is a real
+/// defect to fix, and the safety net an assert provides doesn't excuse it.
+///
+/// `premises` names the exact functions this outcome depends on, computed
+/// by `rust-refine` via leave-one-out re-discharge (`checks.rs`): each
+/// candidate enforced-not-proven Γ hypothesis is removed and the goal
+/// re-discharged; if the outcome still holds without it, it wasn't
+/// load-bearing. This is exact, not a conservative over-approximation —
+/// a hypothesis that happened to be in scope but wasn't actually needed for
+/// this particular proof is not listed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "warrant", rename_all = "lowercase")]
+pub enum Warrant {
+    Proof,
+    Enforcement { premises: Vec<String> },
+    None,
+}

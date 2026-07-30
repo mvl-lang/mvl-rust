@@ -14,7 +14,7 @@
 //! `chained_hypotheses_close_at_l4_without_an_smt_solver`.
 
 use mvl_rust_core::diagnostics::Level;
-use mvl_rust_core::solver::{DischargeResult, Layer};
+use mvl_rust_core::solver::{DischargeResult, Layer, Warrant};
 use rust_refine::checks::{check_source, find_obligations, ObligationKind};
 
 /// Every call-site obligation in `source`, as `(callee, outcome)`.
@@ -40,6 +40,24 @@ fn only_call_site(source: &str) -> DischargeResult {
         "expected exactly one call-site obligation, got {sites:?}"
     );
     sites.into_iter().next().unwrap().1
+}
+
+/// Like [`only_call_site`], but also returns what backs the outcome (#69) --
+/// for tests asserting the *provenance* the wire schema reports, not just
+/// whether the goal discharged.
+fn only_call_site_warrant(source: &str) -> (DischargeResult, Warrant) {
+    let found = find_obligations(source).expect("fixture parses");
+    let sites: Vec<_> = found
+        .iter()
+        .filter(|f| matches!(f.kind, ObligationKind::CallSite { .. }))
+        .collect();
+    assert_eq!(
+        sites.len(),
+        1,
+        "expected exactly one call-site obligation, got {sites:?}"
+    );
+    let site = sites[0];
+    (site.discharge(), site.warrant())
 }
 
 fn assert_proven_at(result: &DischargeResult, expected: Layer) {
@@ -903,8 +921,17 @@ fn an_unenforced_postcondition_does_not_enter_gamma() {
     // return site cannot be discharged either way. Before #47 the caller
     // picked it up regardless and reported `(y) > 50` as "proven at L2" from
     // a premise false for every `i64`.
+    //
+    // Since #69, an *undischarged-but-enforced* postcondition (no
+    // `#[mvl::unchecked]`) now legitimately propagates — see
+    // `an_enforced_but_undischarged_postcondition_now_enters_gamma` below,
+    // which is exactly this fixture without the opt-out. "Unenforced" is
+    // the narrower, genuinely-uncovered case this test now pins:
+    // `#[mvl::unchecked]` means no runtime check exists at all, so nothing
+    // backs the postcondition either statically or at runtime.
     let result = only_call_site(
-        "#[mvl::ensures(result > 100)]\n\
+        "#[mvl::unchecked]\n\
+         #[mvl::ensures(result > 100)]\n\
          fn suspicious(b: i64) -> i64 { b & 15 }\n\
          #[mvl::requires(v > 50)]\n\
          fn needs_big(v: i64) {}\n\
@@ -913,7 +940,42 @@ fn an_unenforced_postcondition_does_not_enter_gamma() {
     assert_eq!(
         result,
         DischargeResult::Runtime,
-        "an undischarged postcondition must not prove a downstream call"
+        "a genuinely unenforced postcondition must not prove a downstream call"
+    );
+}
+
+#[test]
+fn an_enforced_but_undischarged_postcondition_now_enters_gamma() {
+    // #69: the same fixture as `an_unenforced_postcondition_does_not_enter_gamma`,
+    // minus `#[mvl::unchecked]`. `suspicious` carries `#[mvl::ensures]` and is
+    // not opted out, so it is enforced regardless of the fact that `b & 15`
+    // leaves its own return site undischarged (`&` is outside the linear
+    // fragment) -- ADR-0006 Section 5's soundness argument for enforcement is
+    // unconditional: an `assert!` at the return means "either the
+    // postcondition holds, or the process aborted", which licenses
+    // propagation even though no static layer closed it.
+    //
+    // Requirement 6: the caller's own call-site obligation must not be
+    // reported as a plain proof just because the solver says `Proven` --
+    // it rests on `suspicious`'s enforcement, and the wire-facing `Warrant`
+    // must say so explicitly.
+    let (result, warrant) = only_call_site_warrant(
+        "#[mvl::ensures(result > 100)]\n\
+         fn suspicious(b: i64) -> i64 { b & 15 }\n\
+         #[mvl::requires(v > 50)]\n\
+         fn needs_big(v: i64) {}\n\
+         fn caller(b: i64) { let y = suspicious(b); needs_big(y); }",
+    );
+    assert!(
+        matches!(result, DischargeResult::Proven { .. }),
+        "an enforced postcondition must propagate even though its own return site is undischarged, got {result:?}"
+    );
+    assert_eq!(
+        warrant,
+        Warrant::Enforcement {
+            premises: vec!["suspicious".to_string()]
+        },
+        "a proof resting on suspicious's enforcement must not be reported as a plain proof"
     );
 }
 
@@ -923,7 +985,11 @@ fn an_established_postcondition_still_enters_gamma() {
     // closes at L1, so `produce`'s postcondition is established and remains a
     // usable premise. Without this the fix would silently disable propagation
     // altogether, which passes the test above for the wrong reason.
-    let result = only_call_site(
+    //
+    // #69: also a regression guard the other way -- a proof that never
+    // touched an enforced-not-proven premise must stay a real `Proof`, not
+    // get swept into `Enforcement` just because propagation happened at all.
+    let (result, warrant) = only_call_site_warrant(
         "#[mvl::ensures(result > 0)]\n\
          fn produce() -> i64 { 1 }\n\
          #[mvl::requires(v > 0)]\n\
@@ -934,16 +1000,91 @@ fn an_established_postcondition_still_enters_gamma() {
         matches!(result, DischargeResult::Proven { .. }),
         "an established postcondition must still propagate, got {result:?}"
     );
+    assert_eq!(
+        warrant,
+        Warrant::Proof,
+        "a fully statically-established chain must remain a real proof, got {warrant:?}"
+    );
+}
+
+#[test]
+fn a_red_herring_enforced_hypothesis_does_not_taint_an_unrelated_proof() {
+    // #69's exactness guarantee, not the coarse "any tainted clause present"
+    // approximation it replaces: `suspicious`'s enforced-not-proven fact
+    // `y > 100` sits in Γ when `need_pos(z)` is checked, but the goal `z > 0`
+    // is proven entirely from the branch-narrowing fact `z > 0` -- the
+    // tainted hypothesis is never actually used. This must stay a real
+    // `Proof`, not get swept into `Enforcement` just because an unrelated
+    // enforced fact happened to coexist in Γ.
+    let (result, warrant) = only_call_site_warrant(
+        "#[mvl::ensures(result > 100)]\n\
+         fn suspicious(b: i64) -> i64 { b & 15 }\n\
+         #[mvl::requires(v > 0)]\n\
+         fn need_pos(v: i64) {}\n\
+         fn caller(b: i64, z: i64) {\n\
+             let y = suspicious(b);\n\
+             if z > 0 {\n\
+                 need_pos(z);\n\
+             }\n\
+         }",
+    );
+    assert!(
+        matches!(result, DischargeResult::Proven { .. }),
+        "expected `z > 0` to close from branch narrowing, got {result:?}"
+    );
+    assert_eq!(
+        warrant,
+        Warrant::Proof,
+        "an unrelated enforced fact in Γ must not taint a proof that never used it, got {warrant:?}"
+    );
+}
+
+#[test]
+fn two_jointly_necessary_enforced_premises_are_both_named() {
+    // #69: a conjunctive goal needing *both* enforced-not-proven facts at
+    // once -- neither alone suffices, so leave-one-out against the full
+    // hypothesis set finds each individually necessary, and both are named.
+    let (result, warrant) = only_call_site_warrant(
+        "#[mvl::ensures(result > 0)]\n\
+         fn get_x(a: i64) -> i64 { a & 1 }\n\
+         #[mvl::ensures(result > 0)]\n\
+         fn get_y(a: i64) -> i64 { a & 1 }\n\
+         #[mvl::requires(v > 0 && w > 0)]\n\
+         fn need_both(v: i64, w: i64) {}\n\
+         fn caller(a: i64) {\n\
+             let x = get_x(a);\n\
+             let y = get_y(a);\n\
+             need_both(x, y);\n\
+         }",
+    );
+    assert!(
+        matches!(result, DischargeResult::Proven { .. }),
+        "expected the conjunction to close using both propagated facts, got {result:?}"
+    );
+    match warrant {
+        Warrant::Enforcement { mut premises } => {
+            premises.sort();
+            assert_eq!(premises, vec!["get_x".to_string(), "get_y".to_string()]);
+        }
+        other => panic!("expected Enforcement naming both premises, got {other:?}"),
+    }
 }
 
 #[test]
 fn a_violated_postcondition_does_not_enter_gamma_either() {
     // The other half of "not established": a return site that is definitely
     // `Violated` is no more usable as a premise than one that is merely
-    // undischarged. The callee is an error in its own right; that must not
-    // also license a proof in the caller.
+    // undischarged, *for a function with no enforcement at all*. The callee
+    // is an error in its own right; that must not also license a proof in
+    // the caller.
+    //
+    // Since #69, this specifically needs `#[mvl::unchecked]` to stay blocked
+    // -- see `a_violated_but_enforced_postcondition_still_propagates_soundly`
+    // below for why an *enforced* `Violated` return site is safe to
+    // propagate after all (the assert backstops it too).
     let result = only_call_site(
-        "#[mvl::ensures(result > 0)]\n\
+        "#[mvl::unchecked]\n\
+         #[mvl::ensures(result > 0)]\n\
          fn always_negative() -> i64 { -1 }\n\
          #[mvl::requires(v > 0)]\n\
          fn need_pos(v: i64) {}\n\
@@ -953,12 +1094,49 @@ fn a_violated_postcondition_does_not_enter_gamma_either() {
 }
 
 #[test]
+fn a_violated_but_enforced_postcondition_still_propagates_soundly() {
+    // #69: `always_negative`'s body always returns `-1`, so its own return
+    // site is a demonstrated `Violated`, not merely undischarged -- and
+    // yet, since it is *enforced* (no `#[mvl::unchecked]`), every actual
+    // call to it aborts every time. ADR-0006 Section 5's argument covers
+    // this the same way it covers a diverging body (see
+    // `a_diverging_body_propagates_because_the_continuation_is_unreachable`
+    // above): the caller's continuation after the call is unreachable in
+    // any real execution, so assuming its postcondition there is vacuous,
+    // not unsound.
+    let (result, warrant) = only_call_site_warrant(
+        "#[mvl::ensures(result > 0)]\n\
+         fn always_negative() -> i64 { -1 }\n\
+         #[mvl::requires(v > 0)]\n\
+         fn need_pos(v: i64) {}\n\
+         fn caller() { let y = always_negative(); need_pos(y); }",
+    );
+    assert!(
+        matches!(result, DischargeResult::Proven { .. }),
+        "an enforced postcondition must propagate even from a demonstrably violated return site, got {result:?}"
+    );
+    assert_eq!(
+        warrant,
+        Warrant::Enforcement {
+            premises: vec!["always_negative".to_string()]
+        }
+    );
+}
+
+#[test]
 fn a_runtime_outcome_does_not_claim_a_check_was_inserted() {
     // Spec 007 Requirement 1. The tool emits no runtime check, so a diagnostic
     // saying it does is a claim nothing backs — and it is what made an
     // unenforced fact read as usable in the first place (#47).
+    //
+    // Since #69 this specifically needs `#[mvl::unchecked]`: without it,
+    // `mask_low_nibble` (a real `#53` example) is enforced by `mvl-macros`
+    // regardless of this return site being undischarged, and the correct
+    // diagnostic says so -- see
+    // `an_enforced_runtime_outcome_says_so_instead_of_unverified` below.
     let diagnostics = check_source(
-        "#[mvl::requires(0 <= b && b <= 255)]\n\
+        "#[mvl::unchecked]\n\
+         #[mvl::requires(0 <= b && b <= 255)]\n\
          #[mvl::ensures(0 <= result && result <= 15)]\n\
          fn mask_low_nibble(b: i64) -> i64 { b & 15 }",
     )
@@ -977,6 +1155,42 @@ fn a_runtime_outcome_does_not_claim_a_check_was_inserted() {
         assert!(
             d.message.contains("unverified"),
             "must say the obligation is unverified: {}",
+            d.message
+        );
+    }
+}
+
+#[test]
+fn an_enforced_runtime_outcome_says_so_instead_of_unverified() {
+    // #69: the same fixture, minus `#[mvl::unchecked]`. `mask_low_nibble`
+    // carries `#[mvl::ensures]` and is not opted out, so `mvl-macros` (#53)
+    // really does inject an `assert!` here -- calling this "unverified"
+    // would itself be the stale claim once #53 shipped. `rust-refine` still
+    // never claims *it* inserted anything; it names the enforcement rather
+    // than asserting or denying its existence in the abstract.
+    let diagnostics = check_source(
+        "#[mvl::requires(0 <= b && b <= 255)]\n\
+         #[mvl::ensures(0 <= result && result <= 15)]\n\
+         fn mask_low_nibble(b: i64) -> i64 { b & 15 }",
+    )
+    .expect("fixture parses");
+    let enforced: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.message.contains("is not established statically"))
+        .collect();
+    assert!(
+        !enforced.is_empty(),
+        "expected an undischarged-but-enforced return site"
+    );
+    for d in enforced {
+        assert!(
+            d.message.contains("mask_low_nibble"),
+            "must name the enforcing function: {}",
+            d.message
+        );
+        assert!(
+            !d.message.contains("unverified"),
+            "must not call an enforced obligation unverified: {}",
             d.message
         );
     }
@@ -1145,10 +1359,15 @@ fn an_unmodelled_tail_construct_is_substituted_whole_and_stays_unclosed() {
 
 #[test]
 fn an_unmodelled_tail_construct_blocks_propagation() {
-    // The consequence of the above, end to end: because `f`'s return site never
-    // closes, its postcondition must not reach the caller's Γ.
+    // The consequence of the above, end to end, *for a genuinely unenforced
+    // function*: because `f`'s return site never closes and it opts out of
+    // enforcement, its postcondition must not reach the caller's Γ either
+    // way. Since #69 this needs `#[mvl::unchecked]` to stay blocked -- an
+    // enforced `f` would propagate regardless, the same as
+    // `an_enforced_but_undischarged_postcondition_now_enters_gamma`.
     let result = only_call_site(
-        "#[mvl::ensures(result > 0)]\n\
+        "#[mvl::unchecked]\n\
+         #[mvl::ensures(result > 0)]\n\
          fn f() -> i64 { loop { break -5; } }\n\
          #[mvl::requires(v > 0)]\n\
          fn need_pos(v: i64) {}\n\

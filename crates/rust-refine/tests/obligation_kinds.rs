@@ -92,7 +92,7 @@ fn requires_and_ensures_on_a_declaration_share_one_class() {
 #[test]
 fn a_residual_is_not_a_proof_even_at_a_call_site() {
     use mvl_rust_core::assurance::schema::ObligationRecord;
-    use mvl_rust_core::solver::{DischargeResult, Obligation};
+    use mvl_rust_core::solver::{DischargeResult, Obligation, Warrant};
 
     // The half of #56 that a `kind` field alone does not fix: an obligation
     // can ask the right question and still not answer it. ADR-0006 §5 --
@@ -103,21 +103,25 @@ fn a_residual_is_not_a_proof_even_at_a_call_site() {
         provenance: "src/lib.rs:1:1".into(),
         kind: ObligationClass::CallSite,
     };
-    let residual = ObligationRecord::new(&obligation, &DischargeResult::Runtime);
+    let residual = ObligationRecord::new(&obligation, &DischargeResult::Runtime, &Warrant::None);
     assert_eq!(residual.layer, Some(Layer::Runtime));
     assert!(
         !residual.is_proof(),
         "a call-site obligation left to a runtime check is not a proof"
     );
 
-    let proven = ObligationRecord::new(&obligation, &DischargeResult::Proven { layer: Layer::L2 });
+    let proven = ObligationRecord::new(
+        &obligation,
+        &DischargeResult::Proven { layer: Layer::L2 },
+        &Warrant::Proof,
+    );
     assert!(proven.is_proof());
 }
 
 #[test]
 fn a_discharged_coherence_check_is_not_a_proof() {
     use mvl_rust_core::assurance::schema::ObligationRecord;
-    use mvl_rust_core::solver::{DischargeResult, Obligation};
+    use mvl_rust_core::solver::{DischargeResult, Obligation, Warrant};
 
     // The other half: statically discharged, at a real layer, and still not
     // evidence that anything holds -- only that it *could*.
@@ -127,7 +131,11 @@ fn a_discharged_coherence_check_is_not_a_proof() {
         provenance: "src/lib.rs:1:1".into(),
         kind: ObligationClass::Declaration,
     };
-    let record = ObligationRecord::new(&obligation, &DischargeResult::Proven { layer: Layer::L2 });
+    let record = ObligationRecord::new(
+        &obligation,
+        &DischargeResult::Proven { layer: Layer::L2 },
+        &Warrant::Proof,
+    );
     assert_eq!(record.layer, Some(Layer::L2));
     assert!(!record.is_proof());
 }
@@ -135,7 +143,7 @@ fn a_discharged_coherence_check_is_not_a_proof() {
 #[test]
 fn the_class_is_on_the_wire_under_a_stable_name() {
     use mvl_rust_core::assurance::schema::ObligationRecord;
-    use mvl_rust_core::solver::{DischargeResult, Obligation};
+    use mvl_rust_core::solver::{DischargeResult, Obligation, Warrant};
 
     let obligation = Obligation {
         id: "f::returns::ensures#0".into(),
@@ -143,7 +151,11 @@ fn the_class_is_on_the_wire_under_a_stable_name() {
         provenance: "src/lib.rs:1:1".into(),
         kind: ObligationClass::ReturnSite,
     };
-    let record = ObligationRecord::new(&obligation, &DischargeResult::Proven { layer: Layer::L1 });
+    let record = ObligationRecord::new(
+        &obligation,
+        &DischargeResult::Proven { layer: Layer::L1 },
+        &Warrant::Proof,
+    );
     let json = serde_json::to_value(&record).unwrap();
     assert_eq!(json["kind"], "return-site");
     assert_eq!(json["layer"], "L1");

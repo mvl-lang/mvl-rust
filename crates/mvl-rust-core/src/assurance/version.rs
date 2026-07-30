@@ -18,4 +18,11 @@
 //! - `1.1` — `ObligationRecord.kind` added, and the type renamed from
 //!   `ProvenObligationRecord` (#56). A new required field, so a strict
 //!   `1.0` validator rejects `1.1` documents.
-pub const ASSURANCE_SCHEMA_VERSION: &str = "1.1";
+//! - `1.2` — `ObligationRecord.warrant` added (#69): distinguishes a real
+//!   proof from an outcome resting on a runtime-enforced (not statically
+//!   proven) premise, per spec 007 Requirement 6. Required, not optional —
+//!   a consumer that doesn't know to look for it must not be able to
+//!   silently read an enforced outcome as a proof, so a strict `1.1`
+//!   validator rejects `1.2` documents rather than accepting them missing
+//!   the field.
+pub const ASSURANCE_SCHEMA_VERSION: &str = "1.2";

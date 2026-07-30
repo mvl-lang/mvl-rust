@@ -5,20 +5,22 @@
 //! obligation's provenance with the file path, the same convention
 //! `rust-refine`'s own `--emit-verification-json` uses.
 
-use mvl_rust_core::solver::{DischargeResult, Obligation};
+use mvl_rust_core::solver::{DischargeResult, Obligation, Warrant};
 use rust_refine::checks::{self, CheckError};
 
 /// Obligations found in `source`, discharged, with provenance bound to
-/// `origin` (the file path `source` was read from).
+/// `origin` (the file path `source` was read from), and what backs each
+/// outcome (#69).
 pub fn prove_source(
     origin: &str,
     source: &str,
-) -> Result<Vec<(Obligation, DischargeResult)>, CheckError> {
+) -> Result<Vec<(Obligation, DischargeResult, Warrant)>, CheckError> {
     let found = checks::find_obligations(source)?;
     Ok(found
         .iter()
         .map(|f| {
             let result = f.discharge();
+            let warrant = f.warrant();
             let start = f.span.start();
             let obligation = Obligation {
                 id: f.id(),
@@ -26,7 +28,7 @@ pub fn prove_source(
                 provenance: format!("{origin}:{}:{}", start.line, start.column + 1),
                 kind: f.class(),
             };
-            (obligation, result)
+            (obligation, result, warrant)
         })
         .collect())
 }

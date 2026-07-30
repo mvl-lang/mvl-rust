@@ -97,6 +97,7 @@ fn run_verification_mode(args: &[String]) -> ExitCode {
             Ok(found) => {
                 for f in &found {
                     let discharge_result = f.discharge();
+                    let warrant = f.warrant();
                     let start = f.span.start();
                     let obligation = Obligation {
                         id: f.id(),
@@ -104,7 +105,7 @@ fn run_verification_mode(args: &[String]) -> ExitCode {
                         provenance: format!("{arg}:{}:{}", start.line, start.column + 1),
                         kind: f.class(),
                     };
-                    results.push((obligation, discharge_result));
+                    results.push((obligation, discharge_result, warrant));
                 }
             }
             Err(err) => {

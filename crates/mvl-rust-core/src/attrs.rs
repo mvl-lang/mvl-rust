@@ -19,6 +19,18 @@ pub use predicate::Predicate;
 #[derive(Debug, Clone, Default)]
 pub struct TotalAttr;
 
+/// `#[mvl::unchecked]` on a `fn` declaration — opts it out of `requires`/
+/// `ensures` runtime enforcement (`mvl-macros`, #53). Carries no arguments.
+///
+/// Added for #69: `rust-refine` needs to know whether a function's contract
+/// is actually enforced (to decide whether its postcondition may propagate
+/// into a caller's Γ), and `unchecked` is what turns enforcement off despite
+/// `requires`/`ensures` still being present. Before this, only `mvl-macros`
+/// recognized the attribute, with its own private matcher — `rust-refine`
+/// (and every other source-scanning tool crate) had no way to see it at all.
+#[derive(Debug, Clone, Default)]
+pub struct UncheckedAttr;
+
 /// `#[mvl::decreases(measure)]` alongside `#[mvl::total]` on a recursive
 /// function.
 #[derive(Debug, Clone)]
@@ -162,6 +174,7 @@ impl Parse for RelabelItem {
 #[derive(Debug, Clone)]
 pub enum MvlAttr {
     Total(TotalAttr),
+    Unchecked(UncheckedAttr),
     Decreases(DecreasesAttr),
     Effect(EffectAttr),
     Requires(RequiresAttr),
@@ -180,6 +193,7 @@ impl MvlAttr {
         let last = attr.path().segments.last()?;
         let parsed = match last.ident.to_string().as_str() {
             "total" => Ok(MvlAttr::Total(TotalAttr)),
+            "unchecked" => Ok(MvlAttr::Unchecked(UncheckedAttr)),
             "decreases" => attr.parse_args::<DecreasesAttr>().map(MvlAttr::Decreases),
             "effect" => attr.parse_args::<EffectAttr>().map(MvlAttr::Effect),
             "requires" => attr.parse_args::<RequiresAttr>().map(MvlAttr::Requires),

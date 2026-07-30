@@ -7,7 +7,7 @@
 //! The `assurance` section (claim/argument_tree/leaves) is explicitly
 //! **provisional** — see [`AssuranceLeaf`]'s doc comment.
 
-use crate::solver::{Layer, ObligationClass};
+use crate::solver::{Layer, ObligationClass, Warrant};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -116,6 +116,13 @@ pub struct CheckSection {
 /// summarising this list should split on
 /// [`ObligationClass::is_entailment`] and exclude `Layer::Runtime` rather
 /// than totalling it.
+///
+/// A fourth column, `warrant` (#69), cuts across the three above: `kind`
+/// says which question was asked, `layer` says whether static reasoning
+/// closed it, and `warrant` says what actually backs the reported outcome
+/// — a real proof, an enforced-but-unproven premise, or neither. See
+/// [`Warrant`]'s own doc comment for why this axis didn't exist before #69
+/// and why upstream `mvl-lang/mvl` never needed it.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ObligationRecord {
     pub id: String,
@@ -128,13 +135,22 @@ pub struct ObligationRecord {
     pub layer: Option<Layer>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub counterexample: Option<String>,
+    /// What backs this outcome — see [`Warrant`]. Required, not optional:
+    /// a consumer reading `layer: L2` alone cannot tell a real proof from
+    /// one resting on an enforced-not-proven premise (#69, spec 007
+    /// Requirement 6), and an absent field a consumer might default to
+    /// `Proof` is exactly the silent-upgrade failure mode Requirement 6
+    /// exists to prevent.
+    pub warrant: Warrant,
 }
 
 impl ObligationRecord {
-    /// Builds a wire record from an obligation and its discharge outcome.
+    /// Builds a wire record from an obligation, its discharge outcome, and
+    /// what actually backs it (#69).
     pub fn new(
         obligation: &crate::solver::Obligation,
         result: &crate::solver::DischargeResult,
+        warrant: &Warrant,
     ) -> Self {
         use crate::solver::DischargeResult;
         let (layer, counterexample) = match result {
@@ -149,18 +165,25 @@ impl ObligationRecord {
             kind: obligation.kind,
             layer,
             counterexample,
+            warrant: warrant.clone(),
         }
     }
 
     /// Whether this record is a real entailment proof: the right question
-    /// asked *and* actually discharged statically.
+    /// asked, actually discharged statically, *and* untainted by any
+    /// enforced-not-proven premise.
     ///
-    /// Both halves matter. A `call-site` record with `layer: runtime` asked
+    /// All three matter. A `call-site` record with `layer: runtime` asked
     /// the right question and did not answer it, and ADR-0006 §5 is explicit
     /// that injecting the check "buys soundness, not the right to keep
-    /// calling it a proof".
+    /// calling it a proof" — and, since #69, a record whose `layer` a
+    /// solver genuinely closed can still rest on a premise that was only
+    /// enforced, not proven, which `warrant` catches even when `layer`
+    /// alone would look like a clean proof.
     pub fn is_proof(&self) -> bool {
-        self.kind.is_entailment() && matches!(self.layer, Some(layer) if layer != Layer::Runtime)
+        self.kind.is_entailment()
+            && matches!(self.layer, Some(layer) if layer != Layer::Runtime)
+            && matches!(self.warrant, Warrant::Proof)
     }
 }
 

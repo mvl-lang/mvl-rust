@@ -43,6 +43,17 @@ fn parses_total_attr_with_no_arguments() {
 }
 
 #[test]
+fn parses_unchecked_attr_with_no_arguments() {
+    // #69: rust-refine needs to see `#[mvl::unchecked]` to know whether a
+    // function's contract is actually enforced, not just declared.
+    let attrs = parse_fn_attrs("#[unchecked] fn f() {}");
+    assert!(matches!(
+        MvlAttr::try_from_attribute(&attrs[0]),
+        Some(Ok(MvlAttr::Unchecked(_)))
+    ));
+}
+
+#[test]
 fn parses_decreases_attr() {
     let attrs = parse_fn_attrs("#[decreases(len - i)] fn f() {}");
     match MvlAttr::try_from_attribute(&attrs[0]) {

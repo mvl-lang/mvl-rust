@@ -2,7 +2,7 @@
 
 **Domain:** Enforcement / soundness of Γ
 **Version:** 0.1.0
-**Status:** Partially implemented — Requirements 1–2 landed in #47; 3–5 landed in #53; 6 (and Requirement 2's "or enforced" clause) await #69
+**Status:** Fully implemented — Requirements 1–2 landed in #47; 3–5 landed in #53; Requirement 2's "or enforced" clause and Requirement 6 landed in #69
 **Date:** 2026-07-29
 **Decided by:** ADR-0006 §4–§5
 
@@ -19,6 +19,8 @@ That combination is the direct cause of #47. This spec is the formalisation of t
 ### Philosophy
 
 - **`Runtime` means unenforced, everywhere the tool speaks** — in Γ, in diagnostics, and in the assurance report. Until enforcement exists, nothing may claim otherwise.
+
+  **Amended by #69.** Once enforcement exists (#53), a `Runtime` discharge outcome is no longer synonymous with "unenforced" — a call/return-site obligation the static solver leaves `Runtime` may still be backed by a real `assert!`. The stronger, still-accurate principle: **an obligation may claim no more than it has actually established, static or enforced**, and `Warrant` (#69) is what lets the tool say precisely which one, everywhere it speaks, instead of collapsing both into "unverified".
 - **Enforcement is callee-side.** A check at the callee covers every caller, including ones a same-file scan cannot resolve. No call-site scheme has that property.
 - **Injection buys soundness, not the right to call it a proof.** An obligation closed against a runtime-enforced premise is not `Proven`.
 
@@ -61,13 +63,26 @@ This is the invariant stated in ADR-0006 §5:
 
 #### Scenario: A runtime-only postcondition proves nothing downstream
 
-- GIVEN `#[mvl::ensures(result > 100)] fn suspicious(b: i64) -> i64 { b & 15 }`, whose return-site obligation cannot be discharged
+- GIVEN `#[mvl::ensures(result > 100)] fn suspicious(b: i64) -> i64 { b & 15 }`, whose return-site obligation cannot be discharged, carrying `#[mvl::unchecked]`
 - AND a caller binding `let y = suspicious(b);` then calling `#[mvl::requires(v > 50)] fn needs_big(v: i64)`
 - WHEN the call-site obligation is discharged
 - THEN it MUST NOT be reported as `Proven`
 - AND `result > 100` MUST NOT appear in the caller's Γ
 
 **Tests:** `crates/rust-refine/tests/call_sites.rs::an_unenforced_postcondition_does_not_enter_gamma`, `::an_established_postcondition_still_enters_gamma`, `::a_violated_postcondition_does_not_enter_gamma_either`
+
+#### Scenario: The "or enforced" clause — an undischarged-but-enforced postcondition now propagates
+
+**Landed by #69.** The same fixture as above, minus `#[mvl::unchecked]`: `suspicious` carries `#[mvl::ensures]` and is not opted out, so `mvl-macros` (#53) really does assert it on every return, regardless of what the static solver concluded about that return site. ADR-0006 §5's soundness argument for enforcement is unconditional — "either the postcondition holds, or the process aborted" — so this is not a precision improvement bolted on afterward, it is the condition Requirement 2 was always written to permit ("or the postcondition is enforced under Requirement 3") and that #53 alone could not yet satisfy, since nothing propagated on enforcement grounds until this gate relaxed.
+
+- GIVEN the same `suspicious`/`needs_big`/`caller` fixture, without `#[mvl::unchecked]`
+- WHEN the call-site obligation is discharged
+- THEN it MUST be usable to close the caller's obligation
+- AND the outcome MUST be reported per Requirement 6 — resting on `suspicious`'s enforcement, not a proof outright
+
+This applies **regardless of the callee's own return-site outcome** — `Proven`, `Runtime`, or even a demonstrated `Violated` are all safe to propagate from once the function is enforced, since the same "abort instead of a bad value" backstop covers all three; only `#[mvl::unchecked]` forfeits it.
+
+**Tests:** `crates/rust-refine/tests/call_sites.rs::an_enforced_but_undischarged_postcondition_now_enters_gamma`, `::a_violated_but_enforced_postcondition_still_propagates_soundly`
 
 ### Requirement 3: Contract attributes enforce their predicates at runtime [MUST]
 
@@ -158,19 +173,34 @@ The opt-out attribute (`#[mvl::unchecked]`) still exists, and is still worth hav
 
 Where an obligation is discharged against a premise that is runtime-enforced rather than statically established, the reported provenance MUST distinguish it from an obligation proven outright.
 
-**Implementation:** `crates/mvl-rust-core/src/assurance/schema.rs` — not yet implemented (#53)
+**Landed by #69** via a new wire-facing discriminator, [`Warrant`](../../../crates/mvl-rust-core/src/solver/mod.rs) (`ObligationRecord.warrant`, assurance schema `1.2`) — a third axis alongside `kind` (which question) and `layer` (did static reasoning close it): `Proof` (a real, untainted proof), `Enforcement { premises }` (rests on the named functions' runtime enforcement), or `None` (neither). `ObligationRecord::is_proof()` requires `Warrant::Proof` in addition to its existing checks, so nothing downstream that already calls `is_proof()` needs to change to get this protection.
+
+**Exactness, not a conservative over-approximation.** `rust-refine` re-discharges the goal against only the untainted hypotheses first: if that alone still proves it, every enforced-not-proven fact present in Γ was a red herring and the outcome is a real `Proof` — a proof that merely *coexists* with an unrelated enforced fact is not swept into `Enforcement`. Where enforcement genuinely is needed, leave-one-out against the full hypothesis set finds every *individually* necessary premise exactly (sound by monotonicity of interval/Fourier–Motzkin reasoning); the one documented gap is two independently-sufficient enforced premises used as alternatives rather than a conjunction, where the reported set is sufficient but not guaranteed globally smallest — see `crates/rust-refine/src/checks.rs::FoundObligation::warrant_for_proof`'s doc comment.
+
+**Implementation:** `crates/mvl-rust-core/src/solver/mod.rs::Warrant`, `crates/mvl-rust-core/src/assurance/schema.rs::ObligationRecord`, `crates/rust-refine/src/checks.rs::FoundObligation::warrant`
 
 #### Scenario: An enforced premise taints the outcome it supports
 
 - GIVEN a call-site obligation closed using a postcondition that is enforced rather than proven
 - WHEN the outcome is reported
 - THEN it MUST NOT be presented identically to an obligation closed from statically established facts
+- AND the report MUST name exactly which function's enforcement it rests on
+
+**Tests:** `crates/rust-refine/tests/call_sites.rs::an_enforced_but_undischarged_postcondition_now_enters_gamma`, `::a_violated_but_enforced_postcondition_still_propagates_soundly`, `::two_jointly_necessary_enforced_premises_are_both_named`
+
+#### Scenario: A proof that never used an enforced premise stays a proof
+
+- GIVEN Γ contains an enforced-not-proven fact from one call, and a separate call-site obligation is discharged using only other, genuinely established hypotheses
+- WHEN the outcome is reported
+- THEN it MUST be `Warrant::Proof`, not `Enforcement`, even though an enforced fact was present elsewhere in Γ
+
+**Tests:** `crates/rust-refine/tests/call_sites.rs::a_red_herring_enforced_hypothesis_does_not_taint_an_unrelated_proof`, `::an_established_postcondition_still_enters_gamma`
 
 ---
 
 ## Known Limitations
 
-- **7 of 8 scenarios are now evidenced (#53).** The one that isn't — Requirement 6's, "an enforced premise taints the outcome it supports" — has nothing to evidence yet: `rust-refine`'s propagation gate (`checks.rs`) requires *static* discharge, so no enforced-but-residual premise is ever used to close another obligation today, and there is no taint to test the absence of. It stays unlinked rather than marked done, and counts against scenario coverage until the follow-up ticket lands.
+- **All scenarios in this spec are now evidenced (#53, #69).**
 - **Requirement 3 changes the runtime behaviour of existing annotated code.** It contradicts the facade crate's documented "unaffected by whether this crate is even a dependency", breaks the passthrough test by design, and amends ADR-0001 §2.
 - **Enforcement becomes dependent on the `mvl` crate being a dependency.** Dropping it produces an unresolved-attribute compile error — fail-loud, therefore acceptable.
 - **An abort replaces a silent wrong answer.** For the target domains that is the right trade, but it is a stated decision. There is no profile in which a check Γ depends on may be elided.
@@ -178,6 +208,7 @@ Where an obligation is discharged against a premise that is runtime-enforced rat
 - **Requirements 1 and 2 recover soundness without any injection**, by declining to propagate what is not established, at a cost in precision. They are sequenced first for that reason.
 - **The reference implementation's own enforcement has at least seven holes** — explicit `return` paths, inline parameter refinements, return-type refinements, trait-impl methods, instrumented builds, one backend entirely, and predicates that fail to lower. Requirement 3 is therefore implementing an intent, not porting a mechanism, and can exceed it.
 - **The `?` operator is an uninstrumented return point.** `ensures` covers the tail expression and every explicit `return`, but a `?`-driven early return produces a value with no check. Consistent with `rust-refine`'s own static checker (also blind to `?`), so no unsound Γ claim results — but it is a real, silent enforcement gap for any function using `?`. Pinned by `crates/mvl/tests/enforcement.rs::a_violating_early_return_via_try_operator_does_not_abort` rather than left to drift unnoticed. Closing it is future work, not scoped to #53/#69.
+- **`Warrant::Enforcement`'s `premises` is not guaranteed globally minimal.** When two enforced-not-proven facts are independently-sufficient alternatives rather than a conjunction (either alone would close the goal), `rust-refine` reports a sufficient witness set built by adding candidates back in scan order, not the smallest possible one. The yes/no question ("does this rest on enforcement at all") is exact regardless; only the *exact membership* of `premises` in this specific redundant-alternative case is best-effort. See `crates/rust-refine/src/checks.rs::FoundObligation::warrant_for_proof`'s doc comment.
 
 ---
 
@@ -185,8 +216,8 @@ Where an obligation is discharged against a premise that is runtime-enforced rat
 
 | Layer | Artefact |
 |---|---|
-| **Intent** | #47 (Γ invariant and the honesty fixes — Reqs 1–2), #53 (proc-macro enforcement — Reqs 3–5), #69 (relaxed propagation + taint — Req 2's enforced clause, Req 6), #48 (return-point doc invariant) |
+| **Intent** | #47 (Γ invariant and the honesty fixes — Reqs 1–2), #53 (proc-macro enforcement — Reqs 3–5), #69 (relaxed propagation + taint — Req 2's enforced clause, Req 6 — landed), #48 (return-point doc invariant) |
 | **Specification** | this document; spec 005 (the Γ it protects), spec 006 (what produces residuals), spec 008 (how outcomes are reported) |
 | **Decision** | ADR-0006 §4 (mechanism, and why source rewriting was rejected), §5 (the invariant and its five conditions); ADR-0001 §2 (amended by Req 3); ADR-0003 §2 (the totality collision Req 5's shipped resolution rests on) |
-| **Program** | `crates/mvl-macros/src/lib.rs`, `crates/mvl-macros/src/inject.rs` (Reqs 3–5); `crates/rust-refine/src/checks.rs`, `crates/mvl-rust-core/src/assurance/schema.rs` (Req 2's enforced clause + Req 6, #69) |
-| **Evidence** | `crates/mvl-macros/src/inject.rs::tests`, `crates/mvl/tests/enforcement.rs`, `crates/rust-total/tests/totality.rs` (Reqs 3–5); Req 6 has none yet, pending #69 |
+| **Program** | `crates/mvl-macros/src/lib.rs`, `crates/mvl-macros/src/inject.rs` (Reqs 3–5); `crates/rust-refine/src/checks.rs::FnFacts`, `::ClosureKind`, `::return_site_closure`, `::CallSiteScan::propagate_postcondition`, `::FoundObligation::warrant` (Req 2's enforced clause, #69); `crates/mvl-rust-core/src/solver/mod.rs::Warrant`, `crates/mvl-rust-core/src/assurance/schema.rs::ObligationRecord` (Req 6, #69); `crates/mvl-rust-core/src/attrs.rs::MvlAttr::Unchecked` (lets `rust-refine` see `#[mvl::unchecked]` at all, #69) |
+| **Evidence** | `crates/mvl-macros/src/inject.rs::tests`, `crates/mvl/tests/enforcement.rs`, `crates/rust-total/tests/totality.rs` (Reqs 3–5); `crates/rust-refine/tests/call_sites.rs` (the Γ soundness + `Warrant` sections), `crates/mvl-rust-core/tests/schema_stability.rs` (schema `1.2`) (Req 2's enforced clause + Req 6, #69) |
