@@ -214,3 +214,30 @@ fn binary_arithmetic_in_a_total_function_is_accepted() {
         diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn requires_and_ensures_on_a_total_function_are_not_flagged() {
+    // Since #53 these attributes expand to a real `assert!`, which panics on
+    // failure -- but this checker scans the author's source, never the
+    // macro-expanded body, so there is no `assert!` token here to flag even
+    // in principle. The decision (ADR-0003 §2, "total on its promised
+    // domain"): a contract assert firing means a caller broke that domain,
+    // which is outside what `#[mvl::total]` promises, not a counterexample
+    // to it. This pins the silence as deliberate -- a regression here would
+    // most likely arrive as someone adding `assert` to `PANICKING_MACROS`
+    // without registering that distinction.
+    let source = r#"
+        #[mvl::total]
+        #[mvl::requires(x > 0)]
+        #[mvl::ensures(result > 0)]
+        fn f(x: i32) -> i32 {
+            x
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert!(
+        diagnostics.is_empty(),
+        "a contract assert must not be treated as violating #[mvl::total]'s panic-freedom promise, got {:?}",
+        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}

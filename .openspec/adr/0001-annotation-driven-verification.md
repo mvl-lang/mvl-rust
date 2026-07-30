@@ -74,6 +74,29 @@ the workspace's largest open gap: an obligation the tools cannot discharge is
 **reported, not enforced**. That gap is out of scope here and is the subject of
 ADR-0006.
 
+**Amendment (#53): no longer true of `#[mvl::requires]`/`#[mvl::ensures]`.**
+Those two now expand to a real `assert!` (ADR-0006 §4) rather than discarding
+their tokens — the gap this section named is what ADR-0006 closes for them.
+What survives this section, precisely:
+
+- **The five verification tools are entirely unaffected** — `rust-limit`,
+  `rust-total`, `rust-refine`, `rust-effect`, `rust-ifc` still read source text
+  with `syn` and never reach `rustc`. Nothing about *their* architecture
+  changed; what changed is the attribute *mechanism* for two of the six
+  attributes. Whether any of the five tools has ever run remains completely
+  irrelevant to what a build produces — the macro expands the same way either
+  way, since it is not one of the five tools and consults none of them.
+- **`total`, `decreases`, `effect`, `label`, `relabel` remain exactly as
+  described here** — inert pass-throughs, discarding their tokens, read only by
+  the tools that report on them.
+- **The facade is no longer merely a convenience for `requires`/`ensures`.**
+  Enforcement needs `mvl-macros`' real expansion, which needs the `mvl` crate
+  actually present as a dependency — drop it and the attribute doesn't resolve,
+  so the crate fails to compile. That failure is deliberate: it is loud rather
+  than the silent gap this section used to describe. The tools' own behavior
+  — scanning the same source whether or not `mvl` is a dependency — is
+  unchanged.
+
 ### 3. One dispatcher, five tools, no shared analysis state
 
 `cargo mvl check <FILE>...` runs the five tools in a fixed order —
