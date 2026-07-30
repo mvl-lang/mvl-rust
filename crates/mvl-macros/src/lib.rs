@@ -126,16 +126,23 @@ pub fn unchecked(_attr: TokenStream, item: TokenStream) -> TokenStream {
         // produce the real diagnostic.
         return item;
     };
-    function.attrs.retain(|attr| !is_contract_attr(attr.path()));
+    function
+        .attrs
+        .retain(|attr| !path_names_one_of(attr.path(), &["requires", "ensures"]));
     quote!(#function).into()
 }
 
-/// Whether `path` names `requires` or `ensures`, matched on the last segment
-/// for the same reason [`is_unchecked`] is.
-fn is_contract_attr(path: &syn::Path) -> bool {
+/// Whether `path`'s last segment matches one of `names`.
+///
+/// Matched on the **last segment**, not [`syn::Path::get_ident`] — real usage
+/// is the fully-qualified `#[mvl::requires]`/`#[mvl::ensures]`/
+/// `#[mvl::unchecked]`, and `get_ident` returns `None` for any multi-segment
+/// path, so a naive `get_ident` check would silently miss every real
+/// occurrence.
+fn path_names_one_of(path: &syn::Path, names: &[&str]) -> bool {
     path.segments
         .last()
-        .is_some_and(|segment| segment.ident == "requires" || segment.ident == "ensures")
+        .is_some_and(|segment| names.iter().any(|name| segment.ident == name))
 }
 
 /// `#[mvl::requires(pred)]` — a whole-function precondition, **enforced**.
@@ -160,7 +167,7 @@ pub fn ensures(attr: TokenStream, item: TokenStream) -> TokenStream {
     expand(attr, item, inject::inject_ensures)
 }
 
-/// Shared plumbing: parse the predicate, parse the item, apply `inject`.
+/// Shared plumbing: parse the item, parse the predicate, apply `inject`.
 ///
 /// A malformed predicate becomes a compile error at the attribute's own
 /// span. That is a deliberate change from the pass-through era, where the
@@ -171,13 +178,21 @@ fn expand(
     item: TokenStream,
     inject: fn(&mut syn::Block, &Predicate),
 ) -> TokenStream {
-    let predicate = match syn::parse::<Predicate>(attr) {
-        Ok(predicate) => predicate,
-        Err(err) => return err.to_compile_error().into(),
-    };
+    // Parsed first so a predicate error below can still emit the function
+    // alongside the diagnostic: the item itself is fine, and every other
+    // call site in the crate should not also error with "cannot find
+    // function" on top of the one real typo.
     let mut function = match syn::parse::<ItemFn>(item) {
         Ok(function) => function,
         Err(err) => return err.to_compile_error().into(),
+    };
+
+    let predicate = match syn::parse::<Predicate>(attr) {
+        Ok(predicate) => predicate,
+        Err(err) => {
+            let compile_error = err.to_compile_error();
+            return quote!(#compile_error #function).into();
+        }
     };
 
     // Handles `#[mvl::unchecked]` written *below* this attribute, where it
@@ -193,17 +208,9 @@ fn expand(
 }
 
 /// Whether the function carries `#[mvl::unchecked]` (in any spelling).
-///
-/// Matches on the path's **last segment**, the same way
-/// `mvl_rust_core::attrs` recognises annotations: real usage is the
-/// fully-qualified `#[mvl::unchecked]`, and `syn::Path::get_ident` returns
-/// `None` for any multi-segment path, so a naive `get_ident` check would
-/// silently fail to see every real occurrence.
 fn is_unchecked(function: &ItemFn) -> bool {
-    function.attrs.iter().any(|attr| {
-        attr.path()
-            .segments
-            .last()
-            .is_some_and(|segment| segment.ident == "unchecked")
-    })
+    function
+        .attrs
+        .iter()
+        .any(|attr| path_names_one_of(attr.path(), &["unchecked"]))
 }

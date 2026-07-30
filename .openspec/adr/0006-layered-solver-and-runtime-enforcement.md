@@ -143,6 +143,14 @@ attributes are two-line pass-throughs, and the predicate parser is written.
 Wrapping the whole body means it covers explicit-`return` paths, which upstream's
 own Rust backend provably does not.
 
+**Amendment (#53, review follow-up): "all-paths" excludes the `?` operator.**
+`?`'s early return has no `Expr::Return` node for `mvl-macros` to rewrite — only
+an `Expr::Try` wrapping the fallible expression — so a function returning early
+via `foo()?` is not instrumented. This mirrors `rust-refine`'s own static checker,
+which is equally blind to `?`, so no unsound Γ claim results from the gap. It is
+still a real, silent hole in runtime enforcement for any function using `?`,
+tracked in spec 007's Known Limitations rather than left implicit.
+
 **`assert!`, not `debug_assert!`, and not elidable.** Upstream explicitly
 rejected `debug_assert` (#672, with tests asserting its absence), and §5 below
 shows why: a check that compiles out under release breaks the assumption the

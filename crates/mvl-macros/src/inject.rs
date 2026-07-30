@@ -120,26 +120,29 @@ fn unsuffixed(value: i64) -> proc_macro2::Literal {
 /// The assertion for `predicate`, carrying `provenance` in its message so a
 /// failure names the contract that was violated rather than just a line.
 ///
-/// Wrapped in a block carrying `#[allow(clippy::all)]`. `quote!(#expr)`
-/// re-emits the predicate's tokens with their **original spans** — the same
-/// ones the author wrote in the attribute argument — so once the predicate
-/// becomes live code, clippy lints it exactly as if the author had written it
-/// inline in the body. Caught concretely: `#[mvl::requires(0 <= b && b <=
-/// 255)]`, taken verbatim from the compliant demo's `mask_low_nibble`,
-/// triggers `clippy::manual_range_contains` suggesting `(0..=255).contains(&b)`
-/// — a refactor of the *predicate*, which is a contract specification in a
-/// grammar that happens to reuse Rust's expression syntax for parsing
-/// convenience, not a stylistic opinion about the author's Rust code. An
-/// attribute is not written as an outer attribute on `assert!(...)` itself
-/// (verified: rustc reports it unused when placed there, since the attribute
-/// attaches to the macro *invocation* rather than anything it can carry
-/// through expansion) but on the wrapping block, which the allow governs
-/// regardless of where the tokens inside originated.
+/// Wrapped in a block carrying `#[allow(clippy::manual_range_contains)]`.
+/// `quote!(#expr)` re-emits the predicate's tokens with their **original
+/// spans** — the same ones the author wrote in the attribute argument — so
+/// once the predicate becomes live code, clippy lints it exactly as if the
+/// author had written it inline in the body. Caught concretely:
+/// `#[mvl::requires(0 <= b && b <= 255)]`, taken verbatim from the compliant
+/// demo's `mask_low_nibble`, triggers `clippy::manual_range_contains`
+/// suggesting `(0..=255).contains(&b)` — a refactor of the *predicate*, which
+/// is a contract specification in a grammar that happens to reuse Rust's
+/// expression syntax for parsing convenience, not a stylistic opinion about
+/// the author's Rust code. Named specifically rather than `clippy::all`, so a
+/// future, unrelated lint on a different predicate shape still surfaces
+/// instead of being silently swallowed by this allow. An attribute is not
+/// written as an outer attribute on `assert!(...)` itself (verified: rustc
+/// reports it unused when placed there, since the attribute attaches to the
+/// macro *invocation* rather than anything it can carry through expansion)
+/// but on the wrapping block, which the allow governs regardless of where the
+/// tokens inside originated.
 fn assertion(predicate: &Predicate, provenance: &str) -> TokenStream {
     let condition = predicate_to_bool(predicate);
     let rendered = predicate.render();
     quote! {
-        #[allow(clippy::all)]
+        #[allow(clippy::manual_range_contains)]
         {
             assert!(#condition, concat!(#provenance, " violated: ", #rendered));
         }
@@ -343,6 +346,24 @@ mod tests {
         inject_ensures(&mut b, &predicate("forall i in [-5..5] . i > -10"));
         let text = rendered(&b);
         assert!(!text.contains("i64"), "got: {text}");
+    }
+
+    #[test]
+    fn empty_range_lowers_to_the_same_all_any_construct() {
+        // `lo > hi` is not rejected at parse time (see
+        // `mvl-rust-core`'s predicate parser) -- injection just emits
+        // `(lo..=hi).all/any(...)` over what is then an empty range at
+        // runtime, and `Iterator::all`/`::any` already give the right
+        // vacuous-truth/falsity semantics for that case. Pinned here so
+        // the behavior is deliberate rather than untested.
+        let mut b = block("{ 1 }");
+        inject_ensures(&mut b, &predicate("forall i in [5..1] . false"));
+        let text = rendered(&b);
+        assert!(text.contains(". all"), "expected `.all(...)`, got: {text}");
+        assert!(
+            text.contains("5 ..= 1"),
+            "bounds must be emitted as given, not reordered: {text}"
+        );
     }
 
     #[test]

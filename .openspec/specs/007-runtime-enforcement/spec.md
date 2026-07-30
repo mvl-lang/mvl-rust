@@ -88,6 +88,10 @@ Wrapping the whole body — rather than only the trailing expression — MUST co
 
 **Tests:** `crates/mvl/tests/enforcement.rs::a_violating_explicit_return_aborts`, `crates/mvl-macros/src/inject.rs::tests::explicit_return_is_instrumented`
 
+**Known gap: the `?` operator is not an instrumented return point.** `?`'s early return is invisible to `syn` — there is no `Expr::Return` node to rewrite, only an `Expr::Try` wrapping the fallible expression. A function that returns early via `foo()?` produces a value `ensures` never checks. This is not a new soundness hole: `rust-refine`'s own static checker (`crates/rust-refine/src/checks.rs::visit_expr_return`) has the same blind spot, so Γ never assumed that path was covered either. It is, however, a real runtime-enforcement gap, tracked rather than silently left — see Known Limitations below.
+
+**Tests:** `crates/mvl/tests/enforcement.rs::a_violating_early_return_via_try_operator_does_not_abort` (pins the current gap so a future change to this behavior is deliberate, not silent)
+
 #### Scenario: Enforcement is not elided in release
 
 - GIVEN a crate built in release mode
@@ -173,6 +177,7 @@ Where an obligation is discharged against a premise that is runtime-enforced rat
 - **Declaration-site obligations have no runtime analogue.** Coherence asks whether a predicate is satisfiable; there is no program point to assert at. Those stay static-only, which is adequate — a self-contradictory `requires` is already an error.
 - **Requirements 1 and 2 recover soundness without any injection**, by declining to propagate what is not established, at a cost in precision. They are sequenced first for that reason.
 - **The reference implementation's own enforcement has at least seven holes** — explicit `return` paths, inline parameter refinements, return-type refinements, trait-impl methods, instrumented builds, one backend entirely, and predicates that fail to lower. Requirement 3 is therefore implementing an intent, not porting a mechanism, and can exceed it.
+- **The `?` operator is an uninstrumented return point.** `ensures` covers the tail expression and every explicit `return`, but a `?`-driven early return produces a value with no check. Consistent with `rust-refine`'s own static checker (also blind to `?`), so no unsound Γ claim results — but it is a real, silent enforcement gap for any function using `?`. Pinned by `crates/mvl/tests/enforcement.rs::a_violating_early_return_via_try_operator_does_not_abort` rather than left to drift unnoticed. Closing it is future work, not scoped to #53/#69.
 
 ---
 

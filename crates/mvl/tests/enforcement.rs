@@ -53,6 +53,25 @@ fn a_violating_explicit_return_aborts() {
     via_explicit_return(3);
 }
 
+#[mvl::ensures(result.is_ok())]
+fn via_try_operator(x: i64) -> Result<i64, ()> {
+    // The `?` early return has no `Expr::Return` node -- only `Expr::Try` --
+    // so `ReturnRewriter` never sees it (ADR-0006 Section 4 amendment,
+    // spec 007 Known Limitations). This test pins that gap: were this path
+    // instrumented, returning `Err(())` here would violate `result.is_ok()`
+    // and abort; instead the assertion never runs and the `Err` propagates
+    // silently. If a future change closes the gap, this test should be
+    // updated deliberately rather than the gap drifting further unnoticed.
+    let value: Result<i64, ()> = Err(());
+    let _ = value?;
+    Ok(x * 1000)
+}
+
+#[test]
+fn a_violating_early_return_via_try_operator_does_not_abort() {
+    assert_eq!(via_try_operator(3), Err(()));
+}
+
 #[mvl::ensures(forall i in [0..3] . result > i)]
 fn quantified_ok() -> i64 {
     10
