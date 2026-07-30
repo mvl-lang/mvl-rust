@@ -9,7 +9,7 @@
 
 use super::schema::{AssuranceReport, CheckSection, DiagnosticRecord, ProveSection};
 use crate::diagnostics::{Diagnostic, Level};
-use crate::solver::{DischargeResult, Obligation};
+use crate::solver::{DischargeResult, Obligation, Warrant};
 
 fn level_str(level: Level) -> &'static str {
     match level {
@@ -60,11 +60,11 @@ pub fn build_check_report(
 /// Builds a full assurance report for `rust-refine`'s `prove` section:
 /// every obligation it extracted, paired with the [`DischargeResult`] the
 /// native `L1`+`L2` backend ([`crate::solver::native::NativeBackend`])
-/// returned for it.
+/// returned for it and the [`Warrant`] backing that outcome (#69).
 pub fn build_prove_report(
     tool_name: impl Into<String>,
     timestamp: impl Into<String>,
-    obligations: &[(Obligation, DischargeResult)],
+    obligations: &[(Obligation, DischargeResult, Warrant)],
 ) -> AssuranceReport {
     use super::schema::ObligationRecord;
 
@@ -72,7 +72,7 @@ pub fn build_prove_report(
     report.prove = Some(ProveSection {
         obligations: obligations
             .iter()
-            .map(|(obligation, result)| ObligationRecord::new(obligation, result))
+            .map(|(obligation, result, warrant)| ObligationRecord::new(obligation, result, warrant))
             .collect(),
     });
     report
@@ -138,7 +138,7 @@ mod tests {
         let report = build_prove_report(
             "rust-refine",
             "2026-07-27T00:00:00Z",
-            &[(obligation, result)],
+            &[(obligation, result, crate::solver::Warrant::Proof)],
         );
 
         assert_eq!(report.target.crate_name, "rust-refine");

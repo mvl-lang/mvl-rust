@@ -74,7 +74,7 @@ use std::collections::HashMap;
 use mvl_rust_core::attrs::{MvlAttr, Predicate};
 use mvl_rust_core::diagnostics::{Diagnostic, Level};
 use mvl_rust_core::solver::native::{discharge_entailment, discharge_predicate, substitute_exprs};
-use mvl_rust_core::solver::{DischargeResult, Layer, ObligationClass};
+use mvl_rust_core::solver::{DischargeResult, Layer, ObligationClass, Warrant};
 use proc_macro2::Span;
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
@@ -135,6 +135,20 @@ pub struct FoundObligation {
     pub kind: ObligationKind,
     pub predicate: Predicate,
     pub hypotheses: Vec<Expr>,
+    /// Parallel to `hypotheses`, same length, same index (#69): `Some(callee)`
+    /// when that hypothesis is `callee`'s postcondition, propagated via the
+    /// *enforced* (not statically proven) half of the relaxed `closed` gate
+    /// — see [`return_site_closure`]. `None` for every other kind of
+    /// hypothesis (the function's own `requires`, branch narrowing, a
+    /// propagated postcondition from a *proven*-closed callee) — these are
+    /// genuinely established facts, not resting on a runtime check.
+    pub hypothesis_provenance: Vec<Option<String>>,
+    /// Whether this obligation's own target function -- the callee for a
+    /// call site, the function itself for a return site -- carries the
+    /// relevant contract attribute and is not `#[mvl::unchecked]` (#69).
+    /// Unused (always `false`) for a declaration-site obligation, which has
+    /// no per-site enforcement concept to rest on.
+    pub enforced: bool,
     pub span: Span,
     /// Which occurrence this is among the obligations in `fn_name` sharing
     /// its [`Self::id_stem`] — 0-based, in visit order. Assigned by
@@ -220,6 +234,166 @@ impl FoundObligation {
             }
         }
     }
+
+    /// What actually backs this obligation's outcome (#69, spec 007
+    /// Requirement 6) — see [`Warrant`]'s own doc comment for why this axis
+    /// exists and why upstream never needed it.
+    ///
+    /// A declaration-site obligation has no Γ and no per-site enforcement
+    /// concept: `Proof` if `discharge()` is `Proven`, `None` otherwise,
+    /// never `Enforcement`.
+    ///
+    /// For an entailment obligation (`CallSite`/`ReturnSite`):
+    /// - `Violated` is always `None` — a demonstrated counterexample is a
+    ///   real defect the enforcement backstop doesn't excuse; propagation
+    ///   soundness (ADR-0006 §5) is about executions that *return*
+    ///   normally, and a violated obligation's runtime consequence is an
+    ///   abort, not a silent bad value.
+    /// - `Runtime` becomes `Enforcement { premises: [target] }` exactly
+    ///   when `self.enforced` — the direct case: no static proof at this
+    ///   site, but a real `assert!` exists for it regardless (the callee's
+    ///   `requires`, or this function's own `ensures`).
+    /// - `Proven` is re-checked in [`Self::warrant_for_proof`], which is
+    ///   where the exactness guarantee (and its one documented limit) live.
+    pub fn warrant(&self) -> Warrant {
+        if !self.class().is_entailment() {
+            return match self.discharge() {
+                DischargeResult::Proven { .. } => Warrant::Proof,
+                _ => Warrant::None,
+            };
+        }
+        match self.discharge() {
+            DischargeResult::Violated { .. } => Warrant::None,
+            DischargeResult::Runtime => {
+                if self.enforced {
+                    Warrant::Enforcement {
+                        premises: vec![self.enforcement_target()],
+                    }
+                } else {
+                    Warrant::None
+                }
+            }
+            DischargeResult::Proven { .. } => self.warrant_for_proof(),
+        }
+    }
+
+    /// The function this obligation's own enforcement is about — the
+    /// callee for a call site (its `requires` fires there), this function
+    /// itself for a return site (its `ensures` fires on its own return).
+    fn enforcement_target(&self) -> String {
+        match &self.kind {
+            ObligationKind::CallSite { callee } => callee.clone(),
+            ObligationKind::ReturnSite => self.fn_name.clone(),
+            ObligationKind::Requires | ObligationKind::Ensures => {
+                unreachable!("declaration kinds return from `warrant` before reaching this")
+            }
+        }
+    }
+
+    /// Determines whether a statically `Proven` outcome rests on any
+    /// enforced-not-proven Γ hypothesis, and if so, names exactly which
+    /// functions it depends on.
+    ///
+    /// **The yes/no question is exact.** The untainted (non-enforced)
+    /// hypotheses are re-discharged alone first: if that subset already
+    /// proves the goal, every tainted hypothesis actually present was a red
+    /// herring — this is a real `Proof`, full stop, regardless of what else
+    /// happened to be in Γ. This is what makes a proof that merely
+    /// *coexists* with an unrelated enforced fact indistinguishable from
+    /// one derived without #69 ever having relaxed the gate.
+    ///
+    /// **Naming *which* premises is exact whenever they are individually
+    /// necessary**, found by leave-one-out against the *full* hypothesis
+    /// set: removing a genuinely necessary premise alone must break the
+    /// proof, by monotonicity of interval/Fourier–Motzkin reasoning (adding
+    /// a hypothesis can only prove more, never less) — so this check cannot
+    /// under- or over-report a premise that is individually load-bearing.
+    ///
+    /// **One documented limitation**: two enforced premises that are only
+    /// *jointly* sufficient as alternatives (either alone would suffice, so
+    /// neither is individually necessary) are not disentangled into "the"
+    /// minimal explanation — native discharge has no notion of one. The
+    /// remaining candidates are added back in scan order until the result
+    /// is sufficient, giving a real, sufficient witness set — just not
+    /// guaranteed to be the globally smallest one in that specific case.
+    fn warrant_for_proof(&self) -> Warrant {
+        let tainted: Vec<usize> = self
+            .hypothesis_provenance
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| p.is_some().then_some(i))
+            .collect();
+        if tainted.is_empty() {
+            return Warrant::Proof;
+        }
+
+        let subset_of = |indices: &[usize]| -> Vec<Expr> {
+            self.hypotheses
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| indices.contains(i))
+                .map(|(_, e)| e.clone())
+                .collect()
+        };
+        let is_proven = |hyps: &[Expr]| {
+            matches!(
+                discharge_entailment(hyps, &self.predicate),
+                DischargeResult::Proven { .. }
+            )
+        };
+
+        let clean: Vec<usize> = (0..self.hypotheses.len())
+            .filter(|i| !tainted.contains(i))
+            .collect();
+        if is_proven(&subset_of(&clean)) {
+            // Every tainted hypothesis was a red herring: not needed.
+            return Warrant::Proof;
+        }
+
+        // At least one enforced premise is genuinely necessary. Find every
+        // one that is *individually* necessary first (exact).
+        let mut chosen: Vec<usize> = tainted
+            .iter()
+            .copied()
+            .filter(|&i| {
+                let without_i: Vec<usize> = clean
+                    .iter()
+                    .copied()
+                    .chain(tainted.iter().copied().filter(|&j| j != i))
+                    .collect();
+                !is_proven(&subset_of(&without_i))
+            })
+            .collect();
+
+        // The individually-necessary set might not yet be sufficient on its
+        // own (independently-sufficient alternatives) -- add the rest back
+        // in scan order until it is. Guaranteed to terminate sufficient:
+        // once every tainted index is included, `chosen ∪ clean` is the
+        // full hypothesis set, which `self.discharge()` already proved.
+        for &i in &tainted {
+            let full_subset: Vec<usize> = clean
+                .iter()
+                .copied()
+                .chain(chosen.iter().copied())
+                .collect();
+            if is_proven(&subset_of(&full_subset)) {
+                break;
+            }
+            if !chosen.contains(&i) {
+                chosen.push(i);
+            }
+        }
+
+        let mut premises: Vec<String> = Vec::new();
+        for &i in &chosen {
+            if let Some(name) = &self.hypothesis_provenance[i] {
+                if !premises.contains(name) {
+                    premises.push(name.clone());
+                }
+            }
+        }
+        Warrant::Enforcement { premises }
+    }
 }
 
 /// What a same-file callee declares that its call sites need: parameter
@@ -230,6 +404,10 @@ struct FnFacts {
     params: Vec<String>,
     requires: Vec<Predicate>,
     ensures: Vec<Predicate>,
+    /// Whether this function carries `#[mvl::unchecked]` (#69) — `requires`/
+    /// `ensures` on it inject nothing (`mvl-macros`, #53), so its contract
+    /// is declared but not actually backed by a runtime check.
+    unchecked: bool,
 }
 
 impl FnFacts {
@@ -242,10 +420,19 @@ impl FnFacts {
             match MvlAttr::try_from_attribute(attr) {
                 Some(Ok(MvlAttr::Requires(requires))) => facts.requires.push(requires.predicate),
                 Some(Ok(MvlAttr::Ensures(ensures))) => facts.ensures.push(ensures.predicate),
+                Some(Ok(MvlAttr::Unchecked(_))) => facts.unchecked = true,
                 _ => {}
             }
         }
         facts
+    }
+
+    /// Whether this function's `ensures` is actually backed by a runtime
+    /// check — present *and* not opted out (#69). Only meaningful when
+    /// `ensures` is non-empty; a function with no postcondition has nothing
+    /// to be enforced.
+    fn ensures_enforced(&self) -> bool {
+        !self.ensures.is_empty() && !self.unchecked
     }
 
     /// The clauses this function's own `requires` contribute to Γ inside
@@ -297,6 +484,12 @@ impl<'ast> Visit<'ast> for DeclarationFinder<'_> {
                 kind,
                 predicate,
                 hypotheses: Vec::new(),
+                hypothesis_provenance: Vec::new(),
+                // A declaration-site coherence check has no Γ and so
+                // nothing to be enforced against -- see `warrant`'s doc
+                // comment (#69). Unused for this kind, but always `false`
+                // rather than left ambiguous.
+                enforced: false,
                 span: attr.span(),
                 // Assigned by `number_occurrences` once the walk is over.
                 occurrence: 0,
@@ -316,6 +509,13 @@ struct CallSiteScan<'a> {
     caller: &'a str,
     functions: &'a HashMap<String, FnFacts>,
     gamma: Vec<Expr>,
+    /// Parallel to `gamma`, same length, same index (#69): `Some(callee)`
+    /// wherever that Γ clause is `callee`'s postcondition, pushed via the
+    /// *enforced* (not statically proven) half of the relaxed closure gate.
+    /// `None` for every other clause. Threaded through every push/truncate
+    /// site `gamma` itself goes through, so a [`FoundObligation`] snapshot
+    /// of one always has a same-shaped snapshot of the other.
+    gamma_provenance: Vec<Option<String>>,
     /// Names bound by a `let` in scope. A call through one of these is a
     /// local (closure, function pointer), not the same-file free function
     /// that happens to share its name.
@@ -324,6 +524,11 @@ struct CallSiteScan<'a> {
     /// has to establish (#42). Empty for a function without a postcondition,
     /// which makes the whole return-point walk a no-op.
     ensures: &'a [Predicate],
+    /// Whether *this* function (the one being scanned) carries
+    /// `#[mvl::unchecked]` (#69) -- used to compute `enforced` on a
+    /// return-site [`FoundObligation`], which asks whether an unproven
+    /// postcondition is at least backed by a real runtime check.
+    self_unchecked: bool,
     /// Whether the node being visited is in tail position of *this*
     /// function, i.e. whether its value becomes the return value.
     ///
@@ -352,12 +557,38 @@ struct CallSiteScan<'a> {
     /// closure's `return -1` be reported as a violating return of its
     /// enclosing function.
     returns_here: bool,
-    /// Which callees have established their own postconditions, keyed by name
-    /// (#47). `Some(map)` is the real walk: a callee's `ensures` may enter Γ
-    /// only when `map[callee]` is true. `None` marks the pre-pass that builds
-    /// that map, where nothing propagates at all -- see [`return_site_closure`].
-    closed: Option<&'a HashMap<String, bool>>,
+    /// Which callees have established their own postconditions, and how,
+    /// keyed by name (#47, relaxed by #69). `Some(map)` is the real walk: a
+    /// callee's `ensures` may enter Γ when `map[callee]` is
+    /// [`ClosureKind::Proven`] (cleanly) or [`ClosureKind::Enforced`]
+    /// (tainted -- see [`Self::propagate_postcondition`]). `None` marks the
+    /// pre-pass that builds that map, where nothing propagates at all --
+    /// see [`return_site_closure`].
+    closed: Option<&'a HashMap<String, ClosureKind>>,
     found: &'a mut Vec<FoundObligation>,
+}
+
+/// Whether a function's postcondition may propagate into a caller's Γ, and
+/// whether doing so taints the result (#69).
+///
+/// Before #69 this was a bare `bool`: propagation required every return
+/// site to be statically [`DischargeResult::Proven`]. That is still
+/// [`ClosureKind::Proven`], unchanged. [`ClosureKind::Enforced`] is the
+/// relaxation ADR-0006 §5 condition 5 anticipated: the function carries
+/// `#[mvl::ensures]`, is not `#[mvl::unchecked]`, and so is backed by a
+/// real runtime check regardless of what the static solver concluded about
+/// any individual return site -- an `assert!` at every return point makes
+/// "either the postcondition holds, or the process aborted before
+/// returning" true unconditionally, which is exactly the soundness
+/// argument the static-only case relies on, just resting on enforcement
+/// instead of proof. [`ClosureKind::Open`] is everything else (no
+/// `ensures`, `unchecked`, or a returns-list this scan somehow left
+/// unresolved) -- not safe to propagate at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClosureKind {
+    Proven,
+    Enforced,
+    Open,
 }
 
 impl CallSiteScan<'_> {
@@ -369,9 +600,12 @@ impl CallSiteScan<'_> {
     /// scoping is index-based — leaving a narrowed region truncates back
     /// to a saved depth, so positions have to stay stable.
     fn invalidate(&mut self, name: &str) {
-        for clause in &mut self.gamma {
+        for (i, clause) in self.gamma.iter_mut().enumerate() {
             if mentions_ident(clause, name) {
                 *clause = true_expr();
+                // The clause is now a vacuous `true`, not `callee`'s
+                // postcondition any more -- nothing to taint (#69).
+                self.gamma_provenance[i] = None;
             }
         }
     }
@@ -403,11 +637,13 @@ impl CallSiteScan<'_> {
             return;
         }
         let saved_gamma = self.gamma.clone();
+        let saved_gamma_provenance = self.gamma_provenance.clone();
         let saved_locals = self.locals.len();
         self.invalidate_all(bound);
         self.locals.extend(bound.iter().cloned());
         f(self);
         self.gamma = saved_gamma;
+        self.gamma_provenance = saved_gamma_provenance;
         self.locals.truncate(saved_locals);
     }
 
@@ -469,6 +705,11 @@ impl CallSiteScan<'_> {
                 kind: ObligationKind::ReturnSite,
                 predicate: substitute_exprs(ensures, &bindings),
                 hypotheses: self.gamma.clone(),
+                hypothesis_provenance: self.gamma_provenance.clone(),
+                // `self.ensures` is non-empty (checked above), so this
+                // function's postcondition is enforced exactly when it
+                // isn't `#[mvl::unchecked]` (#69).
+                enforced: !self.self_unchecked,
                 span,
                 // Assigned by `number_occurrences` once the walk is over.
                 occurrence: 0,
@@ -504,6 +745,10 @@ impl CallSiteScan<'_> {
             .zip(node.args.iter().cloned())
             .collect();
 
+        // `facts.requires` is non-empty (checked above), so the callee's
+        // precondition is enforced exactly when it isn't `#[mvl::unchecked]`
+        // (#69).
+        let enforced = !facts.unchecked;
         for requires in &facts.requires {
             self.found.push(FoundObligation {
                 fn_name: self.caller.to_string(),
@@ -512,6 +757,8 @@ impl CallSiteScan<'_> {
                 },
                 predicate: substitute_exprs(requires, &bindings),
                 hypotheses: self.gamma.clone(),
+                hypothesis_provenance: self.gamma_provenance.clone(),
+                enforced,
                 span: node.span(),
                 // Assigned by `number_occurrences` once the walk is over.
                 occurrence: 0,
@@ -541,18 +788,23 @@ impl CallSiteScan<'_> {
 
         // Γ's soundness invariant (ADR-0006 §5): a fact enters Γ only if it
         // has been established, or is an obligation some other program point
-        // is required to discharge. A postcondition whose own return site did
-        // not close is neither -- `rust-refine` inserts no runtime check
-        // (spec 007), so nothing anywhere enforces it. Propagating it is how
-        // `needs_big(y)` came to be reported "proven at L2" from a premise
-        // false for every input (#47).
+        // is required to discharge, or (#69) is backed by a real runtime
+        // check regardless of what the static solver concluded. A
+        // postcondition that is neither proven nor enforced -- `unchecked`,
+        // or no `ensures` at all -- must not enter Γ: propagating it unearned
+        // is how `needs_big(y)` came to be reported "proven at L2" from a
+        // premise false for every input (#47).
         //
         // `None` is the pre-pass building the map: it propagates nothing, so
         // closure is computed without assuming any other function's claim.
-        match self.closed {
-            Some(map) if map.get(&callee).copied().unwrap_or(false) => {}
+        // `Some(ClosureKind::Open)` and an absent entry both mean "do not
+        // propagate" -- an unresolved or genuinely open closure carries no
+        // claim of any kind.
+        let taint: Option<String> = match self.closed.and_then(|map| map.get(&callee)) {
+            Some(ClosureKind::Proven) => None,
+            Some(ClosureKind::Enforced) => Some(callee.clone()),
             _ => return,
-        }
+        };
 
         // On an arity mismatch, propagate NOTHING (#50). `FnFacts::params`
         // skips receivers and pattern parameters, so a legal compiling function
@@ -575,6 +827,7 @@ impl CallSiteScan<'_> {
         for ensures in &facts.ensures {
             if let Predicate::Expr(expr) = substitute_exprs(ensures, &bindings) {
                 self.gamma.push(expr);
+                self.gamma_provenance.push(taint.clone());
             }
         }
     }
@@ -612,6 +865,7 @@ impl<'ast> Visit<'ast> for CallSiteScan<'_> {
             }
         }
         self.gamma.truncate(depth);
+        self.gamma_provenance.truncate(depth);
         self.locals.truncate(locals_depth);
     }
 
@@ -766,16 +1020,22 @@ impl<'ast> Visit<'ast> for CallSiteScan<'_> {
         let pattern_bound = condition_pattern_idents(&node.cond);
 
         let depth = self.gamma.len();
+        // A branch-narrowing condition is a genuinely established fact, not
+        // an enforced-not-proven premise -- `None` provenance (#69).
         self.gamma.push((*node.cond).clone());
+        self.gamma_provenance.push(None);
         self.with_shadowed(&pattern_bound, |this| {
             this.visit_block_with_tail(&node.then_branch, arms_are_tail)
         });
         self.gamma.truncate(depth);
+        self.gamma_provenance.truncate(depth);
 
         if let Some((_, else_branch)) = &node.else_branch {
             self.gamma.push(negate_condition(&node.cond));
+            self.gamma_provenance.push(None);
             self.visit_with_tail(else_branch, arms_are_tail);
             self.gamma.truncate(depth);
+            self.gamma_provenance.truncate(depth);
         }
     }
 
@@ -793,12 +1053,14 @@ impl<'ast> Visit<'ast> for CallSiteScan<'_> {
         self.visit_with_tail(&node.cond, false);
         let depth = self.gamma.len();
         self.gamma.push((*node.cond).clone());
+        self.gamma_provenance.push(None);
         let mut shadowed = condition_pattern_idents(&node.cond);
         shadowed.extend(assigned_in_block(&node.body));
         self.with_shadowed(&shadowed, |this| {
             this.visit_block_with_tail(&node.body, false)
         });
         self.gamma.truncate(depth);
+        self.gamma_provenance.truncate(depth);
     }
 
     /// A `loop` body carries no condition to narrow with, but the same
@@ -836,12 +1098,17 @@ impl<'ast> Visit<'ast> for CallSiteScan<'_> {
         // Its own contract, not the enclosing function's -- a nested `fn`'s
         // return points establish *its* `ensures`.
         let facts = FnFacts::of(node);
+        let hypotheses = facts.hypotheses();
         let mut nested = CallSiteScan {
             caller: &caller,
             functions: self.functions,
-            gamma: facts.hypotheses(),
+            // Its own `requires` -- genuinely established, not enforced-not-
+            // proven premises, so `None` provenance throughout (#69).
+            gamma_provenance: vec![None; hypotheses.len()],
+            gamma: hypotheses,
             locals: Vec::new(),
             ensures: &facts.ensures,
+            self_unchecked: facts.unchecked,
             in_tail: true,
             // A nested `fn` is its own return target, even when the `fn` sits
             // inside a closure body where the enclosing scan had it cleared.
@@ -1134,33 +1401,54 @@ fn negated_op(op: &syn::BinOp) -> Option<&'static str> {
 /// and the module doc. If a second non-divergent source ever appears, this
 /// should become `!found.is_empty() && found.all(...)` and divergence handled
 /// explicitly.
+///
+/// **Relaxed by #69**: a function that isn't fully `Proven`-closed may still
+/// be [`ClosureKind::Enforced`]-closed — carrying `#[mvl::ensures]`, not
+/// `#[mvl::unchecked]` — regardless of what any individual return site's
+/// static discharge concluded. This is deliberately *not* conditioned on
+/// each return site's own outcome: ADR-0006 §5's soundness argument for
+/// enforcement is unconditional (an `assert!` at every return point means
+/// "either the postcondition holds, or the process aborted", full stop),
+/// so even a return site the solver reports `Runtime` or `Violated` for is
+/// still safely covered by the same backstop as one it reports `Proven`
+/// for. Only `#[mvl::unchecked]` — no runtime check at all — forfeits this.
 fn return_site_closure(
     file: &syn::File,
     functions: &HashMap<String, FnFacts>,
-) -> HashMap<String, bool> {
+) -> HashMap<String, ClosureKind> {
     let mut closed = HashMap::new();
     for item in &file.items {
         let Item::Fn(item_fn) = item else { continue };
         let name = item_fn.sig.ident.to_string();
         let facts = functions.get(&name);
+        let hypotheses = facts.map(FnFacts::hypotheses).unwrap_or_default();
         let mut found = Vec::new();
         let mut scan = CallSiteScan {
             caller: &name,
             functions,
-            gamma: facts.map(FnFacts::hypotheses).unwrap_or_default(),
+            gamma_provenance: vec![None; hypotheses.len()],
+            gamma: hypotheses,
             locals: Vec::new(),
             ensures: facts.map(|f| f.ensures.as_slice()).unwrap_or(&[]),
+            self_unchecked: facts.is_some_and(|f| f.unchecked),
             in_tail: true,
             returns_here: true,
             closed: None,
             found: &mut found,
         };
         scan.visit_block(&item_fn.block);
-        let all_closed = found
+        let all_proven = found
             .iter()
             .filter(|f| f.kind == ObligationKind::ReturnSite)
             .all(|f| matches!(f.discharge(), DischargeResult::Proven { .. }));
-        closed.insert(name, all_closed);
+        let kind = if all_proven {
+            ClosureKind::Proven
+        } else if facts.is_some_and(FnFacts::ensures_enforced) {
+            ClosureKind::Enforced
+        } else {
+            ClosureKind::Open
+        };
+        closed.insert(name, kind);
     }
     closed
 }
@@ -1213,9 +1501,11 @@ pub fn find_obligations(source: &str) -> Result<Vec<FoundObligation>, CheckError
             let mut scan = CallSiteScan {
                 caller: &caller,
                 functions: &functions,
+                gamma_provenance: vec![None; gamma.len()],
                 gamma,
                 locals: Vec::new(),
                 ensures,
+                self_unchecked: facts.is_some_and(|f| f.unchecked),
                 // The function body's own trailing expression is its return
                 // value, so the walk starts in tail position -- and a `return`
                 // in it returns from this function.
@@ -1236,11 +1526,17 @@ pub fn find_obligations(source: &str) -> Result<Vec<FoundObligation>, CheckError
 /// Every obligation produces one, regardless of outcome, per spec
 /// Requirement 3's "report which layer discharged it" UX -- `Proven`/
 /// `Runtime` are informational (`Level::Note`, doesn't fail the build);
-/// only `Violated` is `Level::Error`.
-pub fn to_diagnostic(found: &FoundObligation, result: &DischargeResult) -> Diagnostic {
+/// only `Violated` is `Level::Error`. `warrant` (#69) is what actually backs
+/// a `Proven`/`Runtime` outcome for an entailment obligation -- see
+/// [`Warrant`]'s own doc comment.
+pub fn to_diagnostic(
+    found: &FoundObligation,
+    result: &DischargeResult,
+    warrant: &Warrant,
+) -> Diagnostic {
     match &found.kind {
-        ObligationKind::CallSite { callee } => call_site_diagnostic(found, callee, result),
-        ObligationKind::ReturnSite => return_site_diagnostic(found, result),
+        ObligationKind::CallSite { callee } => call_site_diagnostic(found, callee, result, warrant),
+        ObligationKind::ReturnSite => return_site_diagnostic(found, result, warrant),
         ObligationKind::Requires | ObligationKind::Ensures => declaration_diagnostic(found, result),
     }
 }
@@ -1248,11 +1544,28 @@ pub fn to_diagnostic(found: &FoundObligation, result: &DischargeResult) -> Diagn
 /// A return site's diagnostic quotes the *substituted* postcondition, so the
 /// returned expression appears in place of `result` and the reader sees the
 /// claim that actually failed. Mirrors [`call_site_diagnostic`], including
-/// naming what was known at that point on a `Runtime` outcome.
-fn return_site_diagnostic(found: &FoundObligation, result: &DischargeResult) -> Diagnostic {
+/// naming what was known at that point on a `Runtime` outcome, and (#69)
+/// naming what's enforced rather than proven when `warrant` says so.
+fn return_site_diagnostic(
+    found: &FoundObligation,
+    result: &DischargeResult,
+    warrant: &Warrant,
+) -> Diagnostic {
     let name = &found.fn_name;
-    match result {
-        DischargeResult::Proven { layer } => Diagnostic::new(
+    match (result, warrant) {
+        (DischargeResult::Proven { layer }, Warrant::Enforcement { premises }) => Diagnostic::new(
+            Level::Note,
+            format!(
+                "`{name}` postcondition `{}` is entailed at {} by this return, but the proof \
+                 rests on {}'s runtime enforcement rather than a static guarantee alone",
+                found.predicate_text(),
+                layer_str(*layer),
+                premises.join(", "),
+            ),
+            found.span,
+        )
+        .with_label("enforced, not proven"),
+        (DischargeResult::Proven { layer }, _) => Diagnostic::new(
             Level::Note,
             format!(
                 "`{name}` postcondition `{}` established at {} by this return",
@@ -1262,7 +1575,19 @@ fn return_site_diagnostic(found: &FoundObligation, result: &DischargeResult) -> 
             found.span,
         )
         .with_label("proven"),
-        DischargeResult::Runtime => {
+        (DischargeResult::Runtime, Warrant::Enforcement { premises }) => Diagnostic::new(
+            Level::Note,
+            format!(
+                "`{name}` postcondition `{}` is not established statically by this return, but \
+                 {} enforces it at runtime -- treated as an enforced premise, not a proof, \
+                 wherever it is relied upon",
+                found.predicate_text(),
+                premises.join(", "),
+            ),
+            found.span,
+        )
+        .with_label("enforced, not proven"),
+        (DischargeResult::Runtime, _) => {
             let known = found.hypotheses_text();
             let known = if known.is_empty() {
                 "nothing is known here".to_string()
@@ -1280,7 +1605,7 @@ fn return_site_diagnostic(found: &FoundObligation, result: &DischargeResult) -> 
             )
             .with_label("unverified")
         }
-        DischargeResult::Violated { counterexample } => Diagnostic::new(
+        (DischargeResult::Violated { counterexample }, _) => Diagnostic::new(
             Level::Error,
             format!(
                 "`{name}` postcondition `{}` cannot hold for this return value: {counterexample}",
@@ -1333,15 +1658,29 @@ fn declaration_diagnostic(found: &FoundObligation, result: &DischargeResult) -> 
 /// obligation couldn't be closed, what was actually known at that point --
 /// an empty Γ is by far the most common reason a call site falls to a
 /// runtime check, and saying so is more useful than naming the layers that
-/// failed.
+/// failed. (#69) `warrant` names what's enforced rather than proven, when
+/// it applies.
 fn call_site_diagnostic(
     found: &FoundObligation,
     callee: &str,
     result: &DischargeResult,
+    warrant: &Warrant,
 ) -> Diagnostic {
     let caller = &found.fn_name;
-    match result {
-        DischargeResult::Proven { layer } => Diagnostic::new(
+    match (result, warrant) {
+        (DischargeResult::Proven { layer }, Warrant::Enforcement { premises }) => Diagnostic::new(
+            Level::Note,
+            format!(
+                "`{callee}` precondition `{}` is entailed at {} for this call, but the proof \
+                 rests on {}'s runtime enforcement rather than a static guarantee alone",
+                found.predicate_text(),
+                layer_str(*layer),
+                premises.join(", "),
+            ),
+            found.span,
+        )
+        .with_label("enforced, not proven"),
+        (DischargeResult::Proven { layer }, _) => Diagnostic::new(
             Level::Note,
             format!(
                 "`{callee}` precondition `{}` proven at {} for this call",
@@ -1351,7 +1690,19 @@ fn call_site_diagnostic(
             found.span,
         )
         .with_label("proven"),
-        DischargeResult::Runtime => {
+        (DischargeResult::Runtime, Warrant::Enforcement { premises }) => Diagnostic::new(
+            Level::Note,
+            format!(
+                "`{callee}` precondition `{}` is not entailed in `{caller}`, but {} enforces it \
+                 at runtime -- treated as an enforced premise, not a proof, wherever it is \
+                 relied upon",
+                found.predicate_text(),
+                premises.join(", "),
+            ),
+            found.span,
+        )
+        .with_label("enforced, not proven"),
+        (DischargeResult::Runtime, _) => {
             let known = found.hypotheses_text();
             let known = if known.is_empty() {
                 "nothing is known about the arguments here".to_string()
@@ -1369,7 +1720,7 @@ fn call_site_diagnostic(
             )
             .with_label("unverified")
         }
-        DischargeResult::Violated { counterexample } => Diagnostic::new(
+        (DischargeResult::Violated { counterexample }, _) => Diagnostic::new(
             Level::Error,
             format!(
                 "`{callee}` precondition `{}` can never hold for this call from `{caller}`: \
@@ -1401,7 +1752,7 @@ pub fn check_source(source: &str) -> Result<Vec<Diagnostic>, CheckError> {
     let found = find_obligations(source)?;
     Ok(found
         .iter()
-        .map(|f| to_diagnostic(f, &f.discharge()))
+        .map(|f| to_diagnostic(f, &f.discharge(), &f.warrant()))
         .collect())
 }
 

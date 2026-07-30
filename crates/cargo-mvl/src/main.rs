@@ -298,7 +298,7 @@ fn run_assurance(files: &[PathBuf]) -> ExitCode {
     report.prove = Some(ProveSection {
         obligations: obligations
             .iter()
-            .map(|(o, r)| ObligationRecord::new(o, r))
+            .map(|(o, r, w)| ObligationRecord::new(o, r, w))
             .collect(),
     });
     report.test = test_section;

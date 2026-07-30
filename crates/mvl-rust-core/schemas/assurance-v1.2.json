@@ -1,0 +1,475 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AssuranceReport",
+  "description": "Top-level assurance report: one JSON document aggregating every\n subcommand that ran against `target`.",
+  "type": "object",
+  "properties": {
+    "assurance": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AssuranceSection"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "check": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CheckSection"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "coverage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CoverageSection"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "mcdc": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/McdcSection"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "prove": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ProveSection"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "target": {
+      "$ref": "#/$defs/Target"
+    },
+    "test": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TestSection"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "version": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "version",
+    "target"
+  ],
+  "$defs": {
+    "AssuranceLeaf": {
+      "description": "One leaf of the assurance argument tree: a discharged obligation plus\n the reasoning (`warrant`) connecting it to the top-level `claim`.\n\n **Provisional.** #22 flagged that `warrant`'s semantics (a free-text\n justification? a typed enum keyed to the obligation's discharge layer?\n something else?) and `argument_tree`'s structure (a strict tree vs a\n DAG; how `cargo mvl assurance` actually builds it from the independent\n `prove`/`test`/`mcdc`/`coverage` sections) aren't resolved yet. This\n type is a structural placeholder, not a settled design — expect it to\n change once #22 lands.",
+      "type": "object",
+      "properties": {
+        "obligation_id": {
+          "type": "string"
+        },
+        "provenance": {
+          "type": "string"
+        },
+        "warrant": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "warrant",
+        "obligation_id",
+        "provenance"
+      ]
+    },
+    "AssuranceSection": {
+      "description": "`cargo mvl assurance`'s aggregated output — see [`AssuranceLeaf`]'s doc\n comment for what's still unresolved here.",
+      "type": "object",
+      "properties": {
+        "argument_tree": {
+          "description": "Untyped for now — see #22; the tree/DAG structure isn't decided."
+        },
+        "claim": {
+          "type": "string"
+        },
+        "leaves": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AssuranceLeaf"
+          }
+        }
+      },
+      "required": [
+        "claim",
+        "argument_tree"
+      ]
+    },
+    "CheckSection": {
+      "description": "`cargo mvl check`'s output: Gate-mode diagnostics (`rust-limit`,\n `rust-total`, ...) plus any obligations checked along the way. No tool\n currently populates `obligations` here (that's `prove`'s job) — kept\n per spec Requirement 13's schema shape for future Gate-mode tools that\n might model checks as obligations too.",
+      "type": "object",
+      "properties": {
+        "diagnostics": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/DiagnosticRecord"
+          }
+        },
+        "obligations": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ObligationRecord"
+          }
+        }
+      }
+    },
+    "CoverageSection": {
+      "description": "`cargo mvl coverage`'s output (`cargo llvm-cov`, #15). Nothing produces\n this yet.",
+      "type": "object",
+      "properties": {
+        "branches": {
+          "$ref": "#/$defs/CoverageStat"
+        },
+        "lines": {
+          "$ref": "#/$defs/CoverageStat"
+        }
+      },
+      "required": [
+        "lines",
+        "branches"
+      ]
+    },
+    "CoverageStat": {
+      "description": "Covered/total counts for one coverage dimension (lines or branches).",
+      "type": "object",
+      "properties": {
+        "covered": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "total": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "covered",
+        "total"
+      ]
+    },
+    "DiagnosticRecord": {
+      "description": "A single diagnostic in wire form — a plain-data projection of\n [`crate::diagnostics::Diagnostic`], which carries a `proc_macro2::Span`\n that isn't itself serializable. `provenance` is a rendered\n `file:line:col` string, mirroring [`crate::solver::Obligation`]'s\n `provenance` field convention.",
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "level": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "provenance": {
+          "type": "string"
+        },
+        "suggestion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "level",
+        "message",
+        "provenance"
+      ]
+    },
+    "Layer": {
+      "description": "The layer that discharged an obligation: trivial syntactic check,\n interval arithmetic, bounded-quantifier expansion, Fourier–Motzkin\n elimination, full SMT, or a runtime outcome when no static layer could\n close it. The variant names are wire-compatible with upstream's stats keys\n and so keep the `L4`/`cooper` spelling; see the module doc for why the\n technique names differ (#55). Serializes to the string values used by the\n assurance-JSON schema (spec Requirement 13) -- `JsonSchema` derived\n here since [`crate::assurance::schema::ObligationRecord`]\n embeds this type directly.",
+      "type": "string",
+      "enum": [
+        "L1",
+        "L2",
+        "L3",
+        "L4",
+        "L5",
+        "runtime"
+      ]
+    },
+    "McdcCondition": {
+      "description": "One MC/DC condition's coverage status (`cargo mvl mcdc`, #15, via\n `cargo llvm-cov --mcdc`).",
+      "type": "object",
+      "properties": {
+        "covered": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "covered"
+      ]
+    },
+    "McdcSection": {
+      "description": "`cargo mvl mcdc`'s output. Nothing produces this yet — tracked by #15.",
+      "type": "object",
+      "properties": {
+        "conditions": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/McdcCondition"
+          }
+        },
+        "coverage_pct": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "coverage_pct"
+      ]
+    },
+    "ObligationClass": {
+      "description": "Which program point an obligation came from, and so **which question was\n asked of the solver** (#56).\n\n This is the discriminator the assurance report was missing. A declaration\n site asks *is this predicate satisfiable* — coherence — while a call or\n return site asks *does Γ entail it* — a real entailment proof. Both\n previously landed in the report with the same shape and the same `layer`,\n so a consumer reading `prove.obligations[]` as evidence could not tell\n `\"x > 0 is satisfiable\"` from `\"Γ entails h's precondition here\"`. On the\n shipped compliant demo the first kind was 7 of 16 records.\n\n Per ADR-0005 §2 the two are deliberately different checks rather than one\n being a weaker approximation of the other — a self-contradictory\n `requires` is a real defect worth reporting. The defect was only ever in\n presenting them identically.\n\n Deliberately coarser than `rust_refine::checks::ObligationKind`, which\n also carries the callee name: this is the wire-facing classification, and\n the callee is already in the obligation's id.",
+      "oneOf": [
+        {
+          "description": "A `#[mvl::requires]`/`#[mvl::ensures]` on a function, checked for\n internal coherence. Nothing is known about arguments here, so the\n question is satisfiability, **not** whether the predicate holds.",
+          "type": "string",
+          "const": "declaration"
+        },
+        {
+          "description": "A call whose callee's `requires` must be entailed by the caller's Γ.",
+          "type": "string",
+          "const": "call-site"
+        },
+        {
+          "description": "A return point whose returned expression must establish the\n function's `ensures` (#42).",
+          "type": "string",
+          "const": "return-site"
+        }
+      ]
+    },
+    "ObligationRecord": {
+      "description": "One refinement obligation's outcome, flattened into a single wire\n record — combines [`crate::solver::Obligation`]'s fields with its\n [`crate::solver::DischargeResult`] rather than nesting them, matching\n spec Requirement 13's `{ id, predicate, kind, layer, provenance,\n counterexample? }` shape.\n\n **Was `ProvenObligationRecord` until #56**, which was wrong twice over:\n the list holds coherence checks and undischarged residuals alongside real\n proofs, so \"proven\" described only a subset of what lands here. Reading\n `kind` and `layer` together is what separates the three:\n\n | `kind` | `layer` | what the record actually claims |\n |---|---|---|\n | `declaration` | `L1`–`L5` | the predicate is *satisfiable* — coherence, close to vacuous as evidence |\n | `call-site`/`return-site` | `L1`–`L5` | Γ entails it — a real entailment proof |\n | any | `runtime` | **not discharged**; a runtime check is owed (ADR-0006 §5) |\n\n So a bare `obligations.len()` is not an evidence count. Anything\n summarising this list should split on\n [`ObligationClass::is_entailment`] and exclude `Layer::Runtime` rather\n than totalling it.\n\n A fourth column, `warrant` (#69), cuts across the three above: `kind`\n says which question was asked, `layer` says whether static reasoning\n closed it, and `warrant` says what actually backs the reported outcome\n — a real proof, an enforced-but-unproven premise, or neither. See\n [`Warrant`]'s own doc comment for why this axis didn't exist before #69\n and why upstream `mvl-lang/mvl` never needed it.",
+      "type": "object",
+      "properties": {
+        "counterexample": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "description": "Which question was asked — see [`ObligationClass`]. The field whose\n absence let coherence pass for proof.",
+          "$ref": "#/$defs/ObligationClass"
+        },
+        "layer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Layer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "predicate": {
+          "type": "string"
+        },
+        "provenance": {
+          "type": "string"
+        },
+        "warrant": {
+          "description": "What backs this outcome — see [`Warrant`]. Required, not optional:\n a consumer reading `layer: L2` alone cannot tell a real proof from\n one resting on an enforced-not-proven premise (#69, spec 007\n Requirement 6), and an absent field a consumer might default to\n `Proof` is exactly the silent-upgrade failure mode Requirement 6\n exists to prevent.",
+          "$ref": "#/$defs/Warrant"
+        }
+      },
+      "required": [
+        "id",
+        "predicate",
+        "provenance",
+        "kind",
+        "warrant"
+      ]
+    },
+    "ProveSection": {
+      "description": "`cargo mvl prove`'s output: `rust-refine`'s obligation trace.",
+      "type": "object",
+      "properties": {
+        "obligations": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ObligationRecord"
+          }
+        }
+      }
+    },
+    "Target": {
+      "description": "Identifies what was checked: which crate, at which commit (if known),\n and when.",
+      "type": "object",
+      "properties": {
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "crate": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "crate",
+        "timestamp"
+      ]
+    },
+    "TestRecord": {
+      "description": "One test's outcome (`cargo mvl test`).",
+      "type": "object",
+      "properties": {
+        "duration_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "name": {
+          "type": "string"
+        },
+        "outcome": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "outcome",
+        "duration_ms"
+      ]
+    },
+    "TestSection": {
+      "description": "`cargo mvl test`'s output. Nothing produces this yet — #6's `test`\n subcommand is still a \"not yet implemented\" stub pending this schema\n and #14's per-tool emission wiring.",
+      "type": "object",
+      "properties": {
+        "summary": {
+          "$ref": "#/$defs/TestSummary"
+        },
+        "tests": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TestRecord"
+          }
+        }
+      },
+      "required": [
+        "summary"
+      ]
+    },
+    "TestSummary": {
+      "description": "Aggregate pass/fail/ignored counts for a test run.",
+      "type": "object",
+      "properties": {
+        "failed": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "ignored": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "passed": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "passed",
+        "failed",
+        "ignored"
+      ]
+    },
+    "Warrant": {
+      "description": "What actually backs a reported outcome — the third axis alongside\n [`ObligationClass`] (\"which question was asked\") and [`Layer`]/\n [`DischargeResult`] (\"did static reasoning close it\") (#69, spec 007\n Requirement 6).\n\n Upstream `mvl-lang/mvl` never needed this distinction: it enforces\n *every* runtime-checkable `requires`/`ensures` unconditionally, with no\n opt-out, so every postcondition is always backed by a check nobody can\n disable and \"proven or enforced\" is a distinction without a difference\n for propagation purposes. This port introduced `#[mvl::unchecked]`\n (#53) specifically to resolve the `#[mvl::total]`/panic-freedom\n collision — a problem upstream doesn't have, since its `total` is\n termination-only (ADR-0003 §Consequences amendment). Once a function can\n nominally carry `#[mvl::ensures]` while opting out of the assert,\n \"was this actually enforced\" stops being universally true, and Γ\n propagation (ADR-0006 §5 condition 5) needs a way to say so.\n\n | `Warrant` | What it claims |\n |---|---|\n | `Proof` | A real static entailment/satisfiability proof, untainted by any enforced-not-proven premise |\n | `Enforcement` | Rests on at least one runtime-enforced (not statically proven) premise, named exactly — not a proof, but not silently unverified either |\n | `None` | Neither proven nor backed by enforcement — genuinely unverified |\n\n Computed only for entailment obligations (`ObligationClass::CallSite`/\n `ReturnSite`); a `Declaration`-kind coherence check has no Γ and no\n enforcement concept to rest on, so it is always `Proof` or `None`,\n never `Enforcement`. `DischargeResult::Violated` is always `None`\n regardless of enforcement — a demonstrated counterexample is a real\n defect to fix, and the safety net an assert provides doesn't excuse it.\n\n `premises` names the exact functions this outcome depends on, computed\n by `rust-refine` via leave-one-out re-discharge (`checks.rs`): each\n candidate enforced-not-proven Γ hypothesis is removed and the goal\n re-discharged; if the outcome still holds without it, it wasn't\n load-bearing. This is exact, not a conservative over-approximation —\n a hypothesis that happened to be in scope but wasn't actually needed for\n this particular proof is not listed.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "warrant": {
+              "type": "string",
+              "const": "proof"
+            }
+          },
+          "required": [
+            "warrant"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "premises": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "warrant": {
+              "type": "string",
+              "const": "enforcement"
+            }
+          },
+          "required": [
+            "warrant",
+            "premises"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "warrant": {
+              "type": "string",
+              "const": "none"
+            }
+          },
+          "required": [
+            "warrant"
+          ]
+        }
+      ]
+    }
+  }
+}
