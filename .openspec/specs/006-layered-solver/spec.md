@@ -201,13 +201,21 @@ Not independently tested with a real timeout — that would mean constructing a 
 
 **Tests:** `crates/mvl-rust-core/src/solver/smt.rs::nonlinear_entailment_proves`, `crates/rust-refine/tests/call_sites.rs::a_genuine_nonlinear_entailment_proves_at_l5_with_z3` (--features z3)
 
-#### Scenario: An unencodable clause does not panic, it falls through
+#### Scenario: An unencodable goal clause does not panic, it falls through
 
-- GIVEN a hypothesis or goal outside the encodable fragment (a function call, a string/bitwise/float operation the grammar cannot even express)
+- GIVEN a goal outside the encodable fragment (a function call, a string/bitwise/float operation the grammar cannot even express)
 - WHEN `L5` attempts to encode it
 - THEN encoding MUST return `None` rather than panicking, and the obligation MUST fall through as if `L5` had declined
 
 **Tests:** `crates/mvl-rust-core/src/solver/smt.rs::an_unencodable_clause_falls_through_rather_than_panicking`
+
+#### Scenario: An unencodable hypothesis is dropped, not fatal to the query
+
+- GIVEN a hypothesis outside the encodable fragment alongside others that are within it, and a goal the encodable hypotheses alone already entail
+- WHEN `L5` attempts to encode Γ
+- THEN the unencodable hypothesis MUST be dropped rather than failing the whole query — the same "fewer facts only make proving harder, never wrongly easier" reasoning Requirement 6 already applies to `L1`-`L4`'s hypothesis handling — and the goal MUST still prove on what remains
+
+**Tests:** `crates/mvl-rust-core/src/solver/smt.rs::an_unencodable_hypothesis_is_dropped_not_bailed_on`
 
 ---
 

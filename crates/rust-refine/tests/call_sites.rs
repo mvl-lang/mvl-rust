@@ -219,6 +219,26 @@ fn a_genuine_nonlinear_entailment_proves_at_l5_with_z3() {
     assert_proven_at(&result, Layer::L5);
 }
 
+/// #37, #72: a callee precondition with *two* clauses in the same
+/// obligation -- `m > 0` (linear, closed by `L4`'s `refutes_negation`) and
+/// `m * n > 4` (genuinely nonlinear, closed by `L5`) -- to exercise
+/// `entail_expr`'s two-phase split: L4 narrows `unresolved` down to just
+/// what it can't refute, and only that remainder is handed to Z3. Without
+/// the split (or if L5 were skipped) this would fall to `Runtime`, since
+/// `m * n > 4` alone is out of L4's reach; with `z3`, the whole
+/// obligation proves, reported at `L5` for the deepest layer used.
+#[test]
+#[cfg(feature = "z3")]
+fn l4_and_l5_jointly_close_a_two_clause_obligation() {
+    let result = only_call_site(
+        "#[mvl::requires(m > 0 && m * n > 4)]\n\
+         fn needs_positive_product(m: i32, n: i32) -> i32 { m }\n\
+         #[mvl::requires(a > 2 && b > 2)]\n\
+         fn combo(a: i32, b: i32) -> i32 { needs_positive_product(a - 1, b) }",
+    );
+    assert_proven_at(&result, Layer::L5);
+}
+
 // ── Γ's three sources of facts ────────────────────────────────────────────
 
 #[test]

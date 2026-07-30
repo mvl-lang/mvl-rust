@@ -43,11 +43,17 @@ use syn::Expr;
 /// query, `Γ ∧ ¬(g1 ∧ g2 ∧ … ∧ gn)` UNSAT, since conjunction distributes
 /// over entailment: `Γ ⊨ (A ∧ B)` iff `Γ ⊨ A` and `Γ ⊨ B`. `false` on `Sat`
 /// (not entailed), `Unknown`/timeout (undecided within budget), or if any
-/// hypothesis or goal falls outside the encodable fragment — comparisons
-/// and boolean connectives over integer `+`/`-`/`*` and literals/identifiers.
-/// Never a panic: an unencodable expression is treated the same as an
-/// undecided one, which is what lets the caller safely try this
-/// unconditionally rather than needing to detect "is this nonlinear" first.
+/// goal falls outside the encodable fragment — comparisons and boolean
+/// connectives over integer `+`/`-`/`*` and literals/identifiers. A
+/// hypothesis outside that fragment is dropped rather than failing the
+/// whole query — same "sound in both directions" reasoning
+/// `native.rs::entail_expr`'s own doc comment gives for L1-L4 (fewer facts
+/// only make `Γ ∧ ¬goal` easier to satisfy, i.e. harder to prove), so an
+/// unrelated unencodable clause elsewhere in Γ doesn't block a goal it has
+/// nothing to do with. Never a panic: an unencodable expression is treated
+/// the same as an undecided one, which is what lets the caller safely try
+/// this unconditionally rather than needing to detect "is this nonlinear"
+/// first.
 #[cfg(feature = "z3")]
 pub fn try_entail_all(hypotheses: &[&Expr], goals: &[&Expr]) -> bool {
     real::try_entail_all(hypotheses, goals)
@@ -83,9 +89,14 @@ mod real {
         let ctx = Context::new(&config);
         let mut vars: HashMap<String, Int> = HashMap::new();
 
-        let Some(hyp_asts) = encode_all(&ctx, &mut vars, hypotheses) else {
-            return false;
-        };
+        // Hypotheses that don't encode are dropped, not bailed on — same
+        // "sound in both directions" reasoning `native.rs` already applies
+        // to L1-L4 (fewer facts only make `Γ ∧ ¬goal` easier to satisfy,
+        // i.e. harder to prove), so an unrelated unencodable clause in Γ
+        // no longer blocks every goal in the same query. Goals get no such
+        // leniency: every goal clause must actually be proven, so one that
+        // can't even be encoded must fail the whole query.
+        let hyp_asts = encode_droppable(&ctx, &mut vars, hypotheses);
         let Some(goal_asts) = encode_all(&ctx, &mut vars, goals) else {
             return false;
         };
@@ -107,6 +118,19 @@ mod real {
         clauses: &[&Expr],
     ) -> Option<Vec<Bool<'ctx>>> {
         clauses.iter().map(|e| encode_bool(ctx, vars, e)).collect()
+    }
+
+    /// Like [`encode_all`], but for hypotheses: a clause outside the
+    /// encodable fragment is dropped rather than failing the whole set.
+    fn encode_droppable<'ctx>(
+        ctx: &'ctx Context,
+        vars: &mut HashMap<String, Int<'ctx>>,
+        clauses: &[&Expr],
+    ) -> Vec<Bool<'ctx>> {
+        clauses
+            .iter()
+            .filter_map(|e| encode_bool(ctx, vars, e))
+            .collect()
     }
 
     /// A variable is encoded as a Z3 `Int` unconditionally — this grammar has
@@ -244,6 +268,34 @@ mod real {
             // either side.
             let hyps = [expr("a > 0")];
             let goals = [expr("f(a) > 0")];
+            let hyp_refs: Vec<&Expr> = hyps.iter().collect();
+            let goal_refs: Vec<&Expr> = goals.iter().collect();
+            assert!(!try_entail_all(&hyp_refs, &goal_refs));
+        }
+
+        #[test]
+        fn an_unencodable_hypothesis_is_dropped_not_bailed_on() {
+            // `f(a) > 0` is outside the encodable fragment, but it has
+            // nothing to do with the goal below — dropping it (rather than
+            // failing the whole query, as an unencodable *goal* clause
+            // would) still proves what the encodable hypotheses alone
+            // already establish.
+            let hyps = [expr("a > 2 && b > 2"), expr("f(a) > 0")];
+            let goals = [expr("a * b > 4")];
+            let hyp_refs: Vec<&Expr> = hyps.iter().collect();
+            let goal_refs: Vec<&Expr> = goals.iter().collect();
+            assert!(try_entail_all(&hyp_refs, &goal_refs));
+        }
+
+        #[test]
+        fn every_goal_clause_must_hold_for_the_joint_query_to_prove() {
+            // Two goal clauses in one call: `a * b > 4` follows from the
+            // hypotheses, `a * b > 1000` does not. The joint query must
+            // fail even though the first clause alone would succeed --
+            // `try_entail_all` proves the conjunction of `goals`, not any
+            // one of them.
+            let hyps = [expr("a > 2 && b > 2")];
+            let goals = [expr("a * b > 4"), expr("a * b > 1000")];
             let hyp_refs: Vec<&Expr> = hyps.iter().collect();
             let goal_refs: Vec<&Expr> = goals.iter().collect();
             assert!(!try_entail_all(&hyp_refs, &goal_refs));
