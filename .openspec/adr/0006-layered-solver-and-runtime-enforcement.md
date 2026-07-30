@@ -119,6 +119,24 @@ a label. At 0.6% of obligations, closing the difference is not worth it now — 
 the *prose* must stop claiming path enumeration (ADR-0005 already corrects this;
 `solver/mod.rs`'s module doc still needs it).
 
+**Landed by #37, narrowed twice from this decision's own framing** — both
+narrowings verified against the current backend, not assumed. First: upstream's
+Z3 dispatch covers four encoding paths (string/bitwise/float/int); this grammar
+has no string, bitwise, or float surface at all, so only the `Int`/QF-NIA path
+has anything to encode — the other three are a follow-up gated on the grammar
+growing that surface. Second: of the two reproducers #37 verified as needing
+Z3, equality-goal entailment turned out to already close at L4 (`#43`'s
+equality-splitting, which postdates that verification) — only genuine
+nonlinearity (and L4's own complexity-guard bailouts, covered by the same
+mechanism for free) remains real. `L5` proves entailment; it does not disprove
+— a nonlinear obligation that is genuinely violated still falls to `Runtime`,
+matching upstream's own `unknown` outcome rather than gaining a new compile-time
+error path. Both blockers above were resolved exactly as anticipated: `L5` sits
+behind `entail_expr` (`crates/mvl-rust-core/src/solver/smt.rs`), and the encoder
+is its own recursive `syn::Expr` walk with no type information to lean on,
+declining (not panicking on) anything outside comparisons/booleans over
+integer `+`/`-`/`*`.
+
 ### 4. Enforcement: active proc macros, `assert!` always, with a per-function opt-out
 
 ADR-0001 §2 makes the attributes inert. That is what has to change for a residual

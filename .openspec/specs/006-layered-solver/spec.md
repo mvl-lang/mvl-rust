@@ -2,7 +2,7 @@
 
 **Domain:** Decision procedures
 **Version:** 0.1.0
-**Status:** Partially implemented (L1–L4 shipped; L5 absent)
+**Status:** Fully implemented (L1–L5; L5 feature-gated and narrowed in scope — see Requirement 8)
 **Date:** 2026-07-29
 **Decided by:** ADR-0006 §1–§3
 
@@ -18,7 +18,7 @@ The stack mirrors the reference implementation's, and the rationale is cost plus
 | L2 | Per-variable integer interval containment | yes, for its fragment |
 | L3 | Bounded-quantifier expansion (an attribution, not a procedure) | n/a |
 | L4 | Fourier–Motzkin elimination + single-variable divisibility | **no** — not even for QF-LIA |
-| L5 | Z3 SMT | **absent** |
+| L5 | Z3 SMT, `Int`/QF-NIA only, feature-gated (#37) | complete for QF-NIA within the 1s timeout; `unknown`/timeout/feature-off falls to `Runtime`, never a proof |
 
 ### Philosophy
 
@@ -115,9 +115,9 @@ Complexity guards MUST bail rather than run unbounded: more than 5 free variable
 - GIVEN a goal over `x * y` with both factors variable
 - WHEN L4 inspects it
 - THEN the layer MUST decline
-- AND the obligation MUST fall through rather than being reported either way
+- AND the obligation MUST fall through to `Runtime` **when L5 is unavailable or also declines** — L4's own decline is unconditional; what happens *next* is Requirement 8's
 
-**Tests:** `crates/rust-refine/tests/call_sites.rs::nonlinear_argument_falls_through_to_runtime`
+**Tests:** `crates/rust-refine/tests/call_sites.rs::nonlinear_argument_falls_through_to_runtime` (default features, no z3), `::a_genuine_nonlinear_entailment_proves_at_l5_with_z3` (--features z3 — the same fixture, now closed at L5)
 
 ### Requirement 5: A satisfiable Fourier–Motzkin verdict must not yield `Proven` [MUST]
 
@@ -169,7 +169,13 @@ The expansion MUST be capped on the **product** of quantifier widths, not each w
 
 The solver MUST delegate to an SMT solver when the native layers are exhausted. The layer MUST be feature-gated with no build dependency when disabled, MUST return a runtime outcome immediately when the feature is off, and MUST treat `unknown` or a timeout as a runtime outcome rather than a proof.
 
-**Implementation:** `crates/mvl-rust-core/src/solver/` — not yet implemented (#37)
+**Landed by #37, narrowed twice from the ticket's own original scope** (both re-scopes are in the issue's own comment history, re-verified rather than taken on faith):
+
+- **`Int`/QF-NIA only**, not the reference's four sorts (string/bitwise/float/int). `crate::attrs::Predicate`'s grammar has no string, bitwise, or float surface at all — three of the reference's four encoding paths (`impl_z3_str`+`regex_z3.rs`, `impl_z3_bv`, `impl_z3_real`) have nothing to encode against and are a follow-up gated on the grammar growing that surface, not on this requirement.
+- **Proof direction only.** `L5` answers "does Γ entail every still-unresolved goal clause" (`Γ ∧ ¬goal` UNSAT), never "is the goal violated". Real MVL's own model-extraction / counterexample-vs-witness classification for the `Violated` direction is out of scope — `L1`–`L4` already own disproof, and a nonlinear counterexample is not yet a demonstrated need.
+- **One of the two motivating reproducers the issue verified turned out stale before implementation started.** Equality-goal entailment (`x == 4 && y == x + 1 ⇒ y == 5`) was cited as needing Z3; re-verified against the current backend, it now closes at `L4` via equality-splitting (`#43`, which postdates the issue's own research). The reproducer that held up: genuine nonlinearity (`a > 2 && b > 2 ⇒ a * b > 4`), which `linterm_from_expr` refuses by construction regardless of system size. `L4`'s own complexity-guard bailouts (Requirement 4's five-variable/coefficient/constraint-count caps) are covered by the same mechanism, with no dedicated logic — Z3 doesn't need to know *why* `L1`–`L4` gave up.
+
+**Implementation:** `crates/mvl-rust-core/src/solver/smt.rs`, wired into `crates/mvl-rust-core/src/solver/native.rs::entail_expr`
 
 #### Scenario: The feature being disabled is not a failure
 
@@ -177,17 +183,49 @@ The solver MUST delegate to an SMT solver when the native layers are exhausted. 
 - WHEN an obligation reaches L5
 - THEN a runtime outcome MUST be returned immediately without panicking
 
+**Tests:** `crates/rust-refine/tests/call_sites.rs::nonlinear_argument_falls_through_to_runtime` (default features)
+
 #### Scenario: A timeout is not a proof
 
 - GIVEN Z3 cannot decide an obligation within the timeout
 - WHEN the query returns
 - THEN the outcome MUST be a runtime check, never `Proven`
 
+Not independently tested with a real timeout — that would mean constructing a query slow enough to hit the 1s budget deterministically, which is exactly the kind of flaky, machine-dependent test worth avoiding. The guarantee is structural: `Config::set_timeout_msec` is set unconditionally before every query, and the `SatResult` match only returns `Proven` on `Unsat`; `Sat` and `Unknown` (which is what a timeout produces) both fall through identically.
+
+#### Scenario: A genuine nonlinear entailment proves at L5
+
+- GIVEN `#[mvl::requires(n > 1)] fn double(n) ...` called from a caller whose Γ has `x > 1 && y > 1` and whose argument is `x * y`
+- WHEN the `z3` feature is enabled and the obligation is discharged
+- THEN the outcome MUST be `Proven { layer: Layer::L5 }`
+
+**Tests:** `crates/mvl-rust-core/src/solver/smt.rs::nonlinear_entailment_proves`, `crates/rust-refine/tests/call_sites.rs::a_genuine_nonlinear_entailment_proves_at_l5_with_z3` (--features z3)
+
+#### Scenario: An unencodable goal clause does not panic, it falls through
+
+- GIVEN a goal outside the encodable fragment (a function call, a string/bitwise/float operation the grammar cannot even express)
+- WHEN `L5` attempts to encode it
+- THEN encoding MUST return `None` rather than panicking, and the obligation MUST fall through as if `L5` had declined
+
+**Tests:** `crates/mvl-rust-core/src/solver/smt.rs::an_unencodable_clause_falls_through_rather_than_panicking`
+
+#### Scenario: An unencodable hypothesis is dropped, not fatal to the query
+
+- GIVEN a hypothesis outside the encodable fragment alongside others that are within it, and a goal the encodable hypotheses alone already entail
+- WHEN `L5` attempts to encode Γ
+- THEN the unencodable hypothesis MUST be dropped rather than failing the whole query — the same "fewer facts only make proving harder, never wrongly easier" reasoning Requirement 6 already applies to `L1`-`L4`'s hypothesis handling — and the goal MUST still prove on what remains
+
+**Tests:** `crates/mvl-rust-core/src/solver/smt.rs::an_unencodable_hypothesis_is_dropped_not_bailed_on`
+
 ---
 
 ## Known Limitations
 
-- **L5 does not exist.** No dependency, no feature flag, no encoding; the `L5` layer value is never constructed. #37. Two blockers beyond that ticket: the `SolverBackend` trait's obligation type carries a re-parsed string predicate with no Γ field, so L5 must sit behind the entailment function rather than the trait; and predicates are arbitrary expressions, so the encoder needs its own type and overflow story.
+- **`L5` sits behind `discharge_entailment`, not the `SolverBackend` trait.** The trait's obligation type carries a re-parsed string predicate with no Γ field, so `L5` needed the same Γ-shaped interface `L4` already uses (`discharge_entailment(&[Expr], &Predicate)`, #38) rather than a reframing of the trait.
+- **`L5` covers entailment only, not the declaration-site coherence question** (`discharge_predicate`). Real MVL's own motivating cases for Z3 are all call-site hypothesis chains; a coherence-only nonlinear satisfiability question was never the reproducer this landed for, and extending it there is unscoped follow-up, not a gap in this requirement.
+- **String/bitwise/float encoding paths don't exist**, because the grammar has nothing for them to encode. `crate::attrs::Predicate` is comparison/boolean expressions plus bounded quantifiers over integers only — the moment (if ever) that grammar grows string, bitwise, or float surface, this is where that work resumes, mirroring real MVL's `impl_z3_str`/`impl_z3_bv`/`impl_z3_real`.
+- **`L5` proves, it does not disprove.** A `Sat` result means "not entailed", not "definitely violated" — real MVL's model-extraction / counterexample-vs-symbolic-witness classification for that direction is unimplemented. A nonlinear obligation that is genuinely violated still falls to `Runtime`, the same as before this requirement landed, rather than becoming a compile-time error.
+- **Local development against a homebrew-installed Z3 needs two env vars `z3-sys`'s build script doesn't discover on its own**: `Z3_SYS_Z3_HEADER=$(brew --prefix z3)/include/z3.h` (bindgen doesn't consult `pkg-config` for the header) and `RUSTFLAGS="-L $(brew --prefix z3)/lib"` (the linker needs an explicit search path). Neither is needed in CI, where `apt`-installed `libz3-dev` lands in standard system paths bindgen and the linker already search.
 - **Requirement 5 is satisfied since #49**, at a cost in precision. `Satisfiable` from Fourier–Motzkin no longer yields `Proven`, so an integer-unsatisfiable predicate falls to a runtime check rather than being reported proven. The cost: `2 * x == 6` *is* exactly decidable over ℤ by the divisibility check (`2 | 6` ⟹ `x = 3`), but `check_satisfiability` collapses that exact verdict and a merely-rational one into a single `Satisfiable`, so it fell out with the unsound case. Distinguishing them would recover it.
 - **L4 cannot handle a conjunctive goal in the reference implementation**, because `¬(A ∧ B)` is a disjunction. Requirement 6's per-clause split is this implementation's answer; the reference has no equivalent.
 - **L3 here is not L3 there.** The reference's L3 is symbolic path enumeration over pure function bodies. This implementation has no path enumeration at all. Deferred on the 0.6% hit rate; the prose must stop claiming otherwise (#55).
@@ -206,6 +244,6 @@ The solver MUST delegate to an SMT solver when the native layers are exhausted. 
 | **Intent** | #7 (native dispatcher), #31 (L3), #35 (L4), #43/#44 (equality goals and the call-free gate), #37 (L5), #45 (purity signal), #49 (FM soundness) |
 | **Specification** | this document; spec 005 (where obligations come from), spec 007 (residual enforcement) |
 | **Decision** | ADR-0006 §1–§3; ADR-0005 §4 (negation and dropped hypotheses) |
-| **Program** | `crates/mvl-rust-core/src/solver/native.rs`, `crates/mvl-rust-core/src/solver/mod.rs` |
-| **Evidence** | `crates/mvl-rust-core/tests/entailment.rs` (36 tests), `crates/mvl-rust-core/src/solver/native.rs::tests`, `crates/rust-refine/tests/call_sites.rs` (six ported upstream L5 fixtures closing at L4 with no SMT solver) |
+| **Program** | `crates/mvl-rust-core/src/solver/native.rs`, `crates/mvl-rust-core/src/solver/mod.rs`, `crates/mvl-rust-core/src/solver/smt.rs` (L5, feature-gated, #37) |
+| **Evidence** | `crates/mvl-rust-core/tests/entailment.rs` (36 tests), `crates/mvl-rust-core/src/solver/native.rs::tests`, `crates/rust-refine/tests/call_sites.rs` (six ported upstream L5 fixtures closing at L4 with no SMT solver, plus the L5-with-`z3`-feature scenario), `crates/mvl-rust-core/src/solver/smt.rs::real::tests` (#37) |
 | **Upstream reference** | `mvl-lang/mvl` spec `018-refinement-solver`; [`mvl-lang/mvl`#2022](https://github.com/mvl-lang/mvl/issues/2022) (L4 naming) |

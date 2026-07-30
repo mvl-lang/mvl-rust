@@ -181,10 +181,18 @@ fn literal_argument_violating_the_precondition_is_an_error() {
 }
 
 /// `10_nonlinear_runtime.mvl`: non-linear arithmetic falls through to a
-/// runtime check rather than being wrongly claimed either way. Real MVL
-/// reaches the same outcome via Z3 returning `unknown`; we reach it by
-/// `linterm_from_expr` refusing variable × variable.
+/// runtime check rather than being wrongly claimed either way, *without*
+/// `L5`. Real MVL reaches the same outcome via Z3 returning `unknown`
+/// (no SMT dispatch of its own on this port's default build); this
+/// backend reaches it by `linterm_from_expr` refusing variable × variable.
+///
+/// With the `z3` feature on, this exact scenario is no longer out of
+/// reach -- QF-NIA proves `x > 1 && y > 1 => x * y > 0` trivially -- so
+/// this test is default-features-only; see
+/// `a_genuine_nonlinear_entailment_proves_at_l5_with_z3` below for the
+/// `z3`-feature counterpart (#37).
 #[test]
+#[cfg(not(feature = "z3"))]
 fn nonlinear_argument_falls_through_to_runtime() {
     let result = only_call_site(
         "#[mvl::requires(n > 0)]\n\
@@ -193,6 +201,42 @@ fn nonlinear_argument_falls_through_to_runtime() {
          fn product(x: i32, y: i32) -> i32 { require_positive(x * y) }",
     );
     assert_eq!(result, DischargeResult::Runtime);
+}
+
+/// #37: the same fixture, run only under `--features z3`. `L1`-`L4` cannot
+/// represent `x * y > 0` (variable × variable is outside the linear
+/// fragment by construction), but it is trivial for QF-NIA, and `L5`
+/// closes it once Z3 is available.
+#[test]
+#[cfg(feature = "z3")]
+fn a_genuine_nonlinear_entailment_proves_at_l5_with_z3() {
+    let result = only_call_site(
+        "#[mvl::requires(n > 0)]\n\
+         fn require_positive(n: i32) -> i32 { n }\n\
+         #[mvl::requires(x > 1 && y > 1)]\n\
+         fn product(x: i32, y: i32) -> i32 { require_positive(x * y) }",
+    );
+    assert_proven_at(&result, Layer::L5);
+}
+
+/// #37, #72: a callee precondition with *two* clauses in the same
+/// obligation -- `m > 0` (linear, closed by `L4`'s `refutes_negation`) and
+/// `m * n > 4` (genuinely nonlinear, closed by `L5`) -- to exercise
+/// `entail_expr`'s two-phase split: L4 narrows `unresolved` down to just
+/// what it can't refute, and only that remainder is handed to Z3. Without
+/// the split (or if L5 were skipped) this would fall to `Runtime`, since
+/// `m * n > 4` alone is out of L4's reach; with `z3`, the whole
+/// obligation proves, reported at `L5` for the deepest layer used.
+#[test]
+#[cfg(feature = "z3")]
+fn l4_and_l5_jointly_close_a_two_clause_obligation() {
+    let result = only_call_site(
+        "#[mvl::requires(m > 0 && m * n > 4)]\n\
+         fn needs_positive_product(m: i32, n: i32) -> i32 { m }\n\
+         #[mvl::requires(a > 2 && b > 2)]\n\
+         fn combo(a: i32, b: i32) -> i32 { needs_positive_product(a - 1, b) }",
+    );
+    assert_proven_at(&result, Layer::L5);
 }
 
 // ── Γ's three sources of facts ────────────────────────────────────────────

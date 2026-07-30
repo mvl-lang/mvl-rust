@@ -1,5 +1,5 @@
 .PHONY: help build test check fmt fmt-check clippy examples examples-verbose clean \
-	test-core test-limit test-total test-refine test-effect test-ifc test-cargo-mvl \
+	test-core test-limit test-total test-refine test-effect test-ifc test-cargo-mvl test-z3 \
 	coverage assurance assurance-gate compile verify evidence traceability all
 
 help:
@@ -13,6 +13,7 @@ help:
 	@echo "  test-effect        test rust-effect only"
 	@echo "  test-ifc           test rust-ifc only"
 	@echo "  test-cargo-mvl     test cargo-mvl only"
+	@echo "  test-z3            test with L5/Z3 dispatch enabled (#37) -- requires Z3 installed"
 	@echo "  fmt                cargo fmt (workspace + example crates)"
 	@echo "  fmt-check          cargo fmt --check (workspace + example crates)"
 	@echo "  clippy             cargo clippy --workspace --all-targets"
@@ -58,6 +59,13 @@ test-ifc:
 
 test-cargo-mvl:
 	cargo test -p cargo-mvl
+
+# #37: L5/Z3 dispatch, feature-gated and default-off -- requires Z3
+# installed (e.g. `brew install z3` / `apt install libz3-dev`). Not part of
+# `test`/`check`/`all` on purpose: those must keep passing with no Z3 on
+# the machine at all.
+test-z3:
+	cargo test --workspace --features rust-refine/z3,cargo-mvl/z3
 
 fmt:
 	cargo fmt

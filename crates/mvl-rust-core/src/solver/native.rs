@@ -50,7 +50,7 @@ use syn::{BinOp, Expr, ExprLit, ExprUnary, Ident, Lit, UnOp};
 
 use crate::attrs::Predicate;
 
-use super::{DischargeResult, Layer, Obligation, SolverBackend};
+use super::{smt, DischargeResult, Layer, Obligation, SolverBackend};
 
 /// A range wider than this many elements (`hi - lo + 1`) isn't expanded
 /// and falls straight to `Runtime` instead — same constant and rationale
@@ -552,11 +552,27 @@ fn entail_expr(hypotheses: &[Expr], goal: &Expr) -> DischargeResult {
     }
 
     // L4: `Γ ∧ ¬clause` must be UNSAT for every clause L1/L2 left open.
-    let all_entailed = unresolved
+    // Partitioned in one pass (each `refutes_negation` call runs its own
+    // Fourier-Motzkin elimination, not worth paying for twice) rather than
+    // an `.all()` followed by a second `.filter()` over the same clauses.
+    let still_unresolved: Vec<&Expr> = unresolved
         .iter()
-        .all(|clause| refutes_negation(&hyp_constraints, clause));
-    if all_entailed {
+        .copied()
+        .filter(|clause| !refutes_negation(&hyp_constraints, clause))
+        .collect();
+    if still_unresolved.is_empty() {
         return DischargeResult::Proven { layer: Layer::L4 };
+    }
+
+    // L5 (#37): whatever L4 couldn't refute, retried through Z3. Handed
+    // the *raw* hypotheses -- not `hyp_constraints`, which already dropped
+    // anything outside the linear fragment, and the whole reason L5
+    // exists is the fragment L4 cannot represent (genuine nonlinearity) or
+    // gave up on (its own complexity guards). A no-op returning `false`
+    // when the `z3` feature is off, so this changes nothing about the
+    // default build or its outcomes.
+    if smt::try_entail_all(&hyp_clauses, &still_unresolved) {
+        return DischargeResult::Proven { layer: Layer::L5 };
     }
 
     // The interval check above only sees Γ contradict itself one variable
