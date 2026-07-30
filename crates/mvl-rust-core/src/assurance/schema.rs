@@ -7,7 +7,7 @@
 //! The `assurance` section (claim/argument_tree/leaves) is explicitly
 //! **provisional** — see [`AssuranceLeaf`]'s doc comment.
 
-use crate::solver::Layer;
+use crate::solver::{Layer, ObligationClass};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -90,7 +90,7 @@ pub struct DiagnosticRecord {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct CheckSection {
     #[serde(default)]
-    pub obligations: Vec<ProvenObligationRecord>,
+    pub obligations: Vec<ObligationRecord>,
     #[serde(default)]
     pub diagnostics: Vec<DiagnosticRecord>,
 }
@@ -98,20 +98,39 @@ pub struct CheckSection {
 /// One refinement obligation's outcome, flattened into a single wire
 /// record — combines [`crate::solver::Obligation`]'s fields with its
 /// [`crate::solver::DischargeResult`] rather than nesting them, matching
-/// spec Requirement 13's `{ id, predicate, layer, provenance,
+/// spec Requirement 13's `{ id, predicate, kind, layer, provenance,
 /// counterexample? }` shape.
+///
+/// **Was `ProvenObligationRecord` until #56**, which was wrong twice over:
+/// the list holds coherence checks and undischarged residuals alongside real
+/// proofs, so "proven" described only a subset of what lands here. Reading
+/// `kind` and `layer` together is what separates the three:
+///
+/// | `kind` | `layer` | what the record actually claims |
+/// |---|---|---|
+/// | `declaration` | `L1`–`L5` | the predicate is *satisfiable* — coherence, close to vacuous as evidence |
+/// | `call-site`/`return-site` | `L1`–`L5` | Γ entails it — a real entailment proof |
+/// | any | `runtime` | **not discharged**; a runtime check is owed (ADR-0006 §5) |
+///
+/// So a bare `obligations.len()` is not an evidence count. Anything
+/// summarising this list should split on
+/// [`ObligationClass::is_entailment`] and exclude `Layer::Runtime` rather
+/// than totalling it.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ProvenObligationRecord {
+pub struct ObligationRecord {
     pub id: String,
     pub predicate: String,
     pub provenance: String,
+    /// Which question was asked — see [`ObligationClass`]. The field whose
+    /// absence let coherence pass for proof.
+    pub kind: ObligationClass,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub layer: Option<Layer>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub counterexample: Option<String>,
 }
 
-impl ProvenObligationRecord {
+impl ObligationRecord {
     /// Builds a wire record from an obligation and its discharge outcome.
     pub fn new(
         obligation: &crate::solver::Obligation,
@@ -123,13 +142,25 @@ impl ProvenObligationRecord {
             DischargeResult::Runtime => (Some(Layer::Runtime), None),
             DischargeResult::Violated { counterexample } => (None, Some(counterexample.clone())),
         };
-        ProvenObligationRecord {
+        ObligationRecord {
             id: obligation.id.clone(),
             predicate: obligation.predicate.clone(),
             provenance: obligation.provenance.clone(),
+            kind: obligation.kind,
             layer,
             counterexample,
         }
+    }
+
+    /// Whether this record is a real entailment proof: the right question
+    /// asked *and* actually discharged statically.
+    ///
+    /// Both halves matter. A `call-site` record with `layer: runtime` asked
+    /// the right question and did not answer it, and ADR-0006 §5 is explicit
+    /// that injecting the check "buys soundness, not the right to keep
+    /// calling it a proof".
+    pub fn is_proof(&self) -> bool {
+        self.kind.is_entailment() && matches!(self.layer, Some(layer) if layer != Layer::Runtime)
     }
 }
 
@@ -137,7 +168,7 @@ impl ProvenObligationRecord {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ProveSection {
     #[serde(default)]
-    pub obligations: Vec<ProvenObligationRecord>,
+    pub obligations: Vec<ObligationRecord>,
 }
 
 /// One test's outcome (`cargo mvl test`).

@@ -4,13 +4,14 @@
 //! future backend and the assurance-JSON schema (spec Requirement 13)
 //! will both depend on.
 
-use mvl_rust_core::solver::{DischargeResult, Layer, Obligation};
+use mvl_rust_core::solver::{DischargeResult, Layer, Obligation, ObligationClass};
 
 fn sample_obligation() -> Obligation {
     Obligation {
         id: "ob1".into(),
         predicate: "x >= 0".into(),
         provenance: "src/lib.rs:1:1".into(),
+        kind: ObligationClass::CallSite,
     }
 }
 

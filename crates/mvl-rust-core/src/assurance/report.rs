@@ -66,13 +66,13 @@ pub fn build_prove_report(
     timestamp: impl Into<String>,
     obligations: &[(Obligation, DischargeResult)],
 ) -> AssuranceReport {
-    use super::schema::ProvenObligationRecord;
+    use super::schema::ObligationRecord;
 
     let mut report = AssuranceReport::new(tool_name, timestamp);
     report.prove = Some(ProveSection {
         obligations: obligations
             .iter()
-            .map(|(obligation, result)| ProvenObligationRecord::new(obligation, result))
+            .map(|(obligation, result)| ObligationRecord::new(obligation, result))
             .collect(),
     });
     report
@@ -126,9 +126,10 @@ mod tests {
     #[test]
     fn build_prove_report_populates_prove_section_only() {
         let obligation = Obligation {
-            id: "f::requires".to_string(),
+            id: "f::requires#0".to_string(),
             predicate: "x >= 0".to_string(),
             provenance: "src/lib.rs:1:1".to_string(),
+            kind: crate::solver::ObligationClass::Declaration,
         };
         let result = DischargeResult::Proven {
             layer: crate::solver::Layer::L2,
@@ -143,7 +144,7 @@ mod tests {
         assert_eq!(report.target.crate_name, "rust-refine");
         let prove = report.prove.expect("prove section should be populated");
         assert_eq!(prove.obligations.len(), 1);
-        assert_eq!(prove.obligations[0].id, "f::requires");
+        assert_eq!(prove.obligations[0].id, "f::requires#0");
         assert!(report.check.is_none());
         assert!(report.test.is_none());
     }

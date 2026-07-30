@@ -74,7 +74,7 @@ use std::collections::HashMap;
 use mvl_rust_core::attrs::{MvlAttr, Predicate};
 use mvl_rust_core::diagnostics::{Diagnostic, Level};
 use mvl_rust_core::solver::native::{discharge_entailment, discharge_predicate, substitute_exprs};
-use mvl_rust_core::solver::{DischargeResult, Layer};
+use mvl_rust_core::solver::{DischargeResult, Layer, ObligationClass};
 use proc_macro2::Span;
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
@@ -160,6 +160,22 @@ impl FoundObligation {
     /// way to tell "the only one" from "the first of several".
     pub fn id(&self) -> String {
         format!("{}#{}", self.id_stem(), self.occurrence)
+    }
+
+    /// This obligation's wire-facing classification (#56) — which question
+    /// the solver was asked, so the report can stop presenting a coherence
+    /// check and an entailment proof identically.
+    ///
+    /// Both declaration kinds collapse to
+    /// [`ObligationClass::Declaration`]: `requires` and `ensures` differ in
+    /// *which* predicate is checked, not in the question asked of it, and
+    /// which one it was is already in the id.
+    pub fn class(&self) -> ObligationClass {
+        match &self.kind {
+            ObligationKind::Requires | ObligationKind::Ensures => ObligationClass::Declaration,
+            ObligationKind::CallSite { .. } => ObligationClass::CallSite,
+            ObligationKind::ReturnSite => ObligationClass::ReturnSite,
+        }
     }
 
     /// The id without its occurrence suffix — the part shared by colliding

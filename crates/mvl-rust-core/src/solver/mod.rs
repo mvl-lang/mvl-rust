@@ -47,7 +47,7 @@ use serde::{Deserialize, Serialize};
 /// and so keep the `L4`/`cooper` spelling; see the module doc for why the
 /// technique names differ (#55). Serializes to the string values used by the
 /// assurance-JSON schema (spec Requirement 13) -- `JsonSchema` derived
-/// here since [`crate::assurance::schema::ProvenObligationRecord`]
+/// here since [`crate::assurance::schema::ObligationRecord`]
 /// embeds this type directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum Layer {
@@ -65,12 +65,76 @@ pub enum Layer {
     Runtime,
 }
 
+/// Which program point an obligation came from, and so **which question was
+/// asked of the solver** (#56).
+///
+/// This is the discriminator the assurance report was missing. A declaration
+/// site asks *is this predicate satisfiable* — coherence — while a call or
+/// return site asks *does Γ entail it* — a real entailment proof. Both
+/// previously landed in the report with the same shape and the same `layer`,
+/// so a consumer reading `prove.obligations[]` as evidence could not tell
+/// `"x > 0 is satisfiable"` from `"Γ entails h's precondition here"`. On the
+/// shipped compliant demo the first kind was 7 of 16 records.
+///
+/// Per ADR-0005 §2 the two are deliberately different checks rather than one
+/// being a weaker approximation of the other — a self-contradictory
+/// `requires` is a real defect worth reporting. The defect was only ever in
+/// presenting them identically.
+///
+/// Deliberately coarser than `rust_refine::checks::ObligationKind`, which
+/// also carries the callee name: this is the wire-facing classification, and
+/// the callee is already in the obligation's id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum ObligationClass {
+    /// A `#[mvl::requires]`/`#[mvl::ensures]` on a function, checked for
+    /// internal coherence. Nothing is known about arguments here, so the
+    /// question is satisfiability, **not** whether the predicate holds.
+    #[serde(rename = "declaration")]
+    Declaration,
+    /// A call whose callee's `requires` must be entailed by the caller's Γ.
+    #[serde(rename = "call-site")]
+    CallSite,
+    /// A return point whose returned expression must establish the
+    /// function's `ensures` (#42).
+    #[serde(rename = "return-site")]
+    ReturnSite,
+}
+
+impl ObligationClass {
+    /// Whether discharging this obligation constitutes an **entailment
+    /// proof** — the claim a certification audience is reading the report
+    /// for — as opposed to a coherence check.
+    ///
+    /// The distinction a bare count of `prove.obligations[]` erases, so
+    /// anything summarising the report should split on this rather than
+    /// totalling the list.
+    pub fn is_entailment(&self) -> bool {
+        matches!(
+            self,
+            ObligationClass::CallSite | ObligationClass::ReturnSite
+        )
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ObligationClass::Declaration => "declaration",
+            ObligationClass::CallSite => "call-site",
+            ObligationClass::ReturnSite => "return-site",
+        }
+    }
+}
+
 /// A single refinement obligation to discharge.
+///
+/// `kind` and `provenance` are carried for the report rather than for the
+/// solver, which ignores both — this type is the obligation's identity and
+/// origin record, not just solver input.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Obligation {
     pub id: String,
     pub predicate: String,
     pub provenance: String,
+    pub kind: ObligationClass,
 }
 
 /// Outcome of attempting to discharge an [`Obligation`].

@@ -24,6 +24,7 @@ pub fn prove_source(
                 id: f.id(),
                 predicate: f.predicate_text(),
                 provenance: format!("{origin}:{}:{}", start.line, start.column + 1),
+                kind: f.class(),
             };
             (obligation, result)
         })

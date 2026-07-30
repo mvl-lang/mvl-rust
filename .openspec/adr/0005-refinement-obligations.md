@@ -179,12 +179,15 @@ becoming an unnoticed hole.
 
 ## Consequences
 
-- **Declaration-site `Proven` is a satisfiability claim, reported identically to
-  an entailment proof.** `discharge_predicate` answers "is this coherent", yet
-  the outcome enters the assurance JSON as a proven obligation with a layer,
-  wire-indistinguishable from a real proof — `ProvenObligationRecord` has no
-  `kind` field. On the compliant demo, 7 of 16 reported obligations are of this
-  kind. Anything consuming `prove.obligations[]` as evidence over-reads it.
+- **Declaration-site `Proven` is a satisfiability claim** — *reported*
+  identically to an entailment proof until #56. `discharge_predicate` answers
+  "is this coherent", and the outcome entered the assurance JSON as a proven
+  obligation with a layer, wire-indistinguishable from a real proof. On the
+  compliant demo 7 of 16 reported obligations were of this kind, so anything
+  consuming `prove.obligations[]` as evidence over-read it by more than double.
+  Fixed by `ObligationClass` on the record (schema `1.1`): the underlying
+  distinction stands as §2 intends, and the report now states it. The demo reads
+  7 real entailment proofs of 16 records.
 - **The two entry points share `classify_clause`**, so a rule added for one
   affects the other. #38 could add obligations without altering any existing
   outcome; that is no longer true in general — #43 added a rule there.

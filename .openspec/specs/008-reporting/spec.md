@@ -100,7 +100,11 @@ An obligation record MUST carry enough information to distinguish a declaration-
 
 Rationale: coherence asks "is this predicate satisfiable" (spec 005 Requirement 1), which is a materially weaker claim than "Γ entails this goal". Reporting them with the same shape and the same layer field inflates the apparent evidence count — on the shipped compliant demo, seven of sixteen reported obligations are coherence checks.
 
-**Implementation:** `crates/mvl-rust-core/src/assurance/schema.rs` — not yet implemented (#56)
+**Implementation:** `crates/mvl-rust-core/src/solver/mod.rs::ObligationClass`, `crates/mvl-rust-core/src/assurance/schema.rs::ObligationRecord`
+
+Satisfied by a `kind` discriminator (`declaration` / `call-site` / `return-site`) rather than by splitting `obligations[]` into separate collections. Both were on the table in #56; the discriminator is the smaller change and keeps one addressable list, and `ObligationClass::is_entailment` gives consumers the split without the wire duplication.
+
+On the compliant demo the counts are now visible rather than merged: 7 declaration, 7 call-site, 2 return-site — and 5 of the 16 undischarged, leaving **7 real entailment proofs of 16 records**.
 
 #### Scenario: A coherence check is not counted as a proof
 
@@ -108,11 +112,23 @@ Rationale: coherence asks "is this predicate satisfiable" (spec 005 Requirement 
 - WHEN the assurance record is emitted
 - THEN a consumer MUST be able to tell that no entailment was proven
 
+**Tests:** `crates/rust-refine/tests/obligation_kinds.rs::a_discharged_coherence_check_is_not_a_proof`, `crates/rust-refine/tests/obligation_kinds.rs::only_call_and_return_sites_count_as_entailment`
+
+#### Scenario: Each program point reports its own kind
+
+- GIVEN a file with a declaration, a call site, and a return site
+- WHEN obligations are found
+- THEN each MUST report the class matching its program point, on the wire under a stable name
+
+**Tests:** `crates/rust-refine/tests/obligation_kinds.rs::each_program_point_reports_its_own_class`, `crates/rust-refine/tests/obligation_kinds.rs::the_class_is_on_the_wire_under_a_stable_name`
+
 ### Requirement 4: Undischarged obligations must not be recorded as proven [MUST]
 
 An obligation whose outcome is a runtime check MUST NOT be serialised into a collection named or typed for proven obligations.
 
-**Implementation:** `crates/mvl-rust-core/src/assurance/schema.rs` — not yet implemented (#56)
+**Implementation:** `crates/mvl-rust-core/src/assurance/schema.rs::ObligationRecord::is_proof`
+
+Met by removing the misnomer rather than by moving the records: the type was `ProvenObligationRecord`, which described only a subset of what it held. There is now no collection named or typed for proven obligations — `ObligationRecord` carries `kind` and `layer`, and `is_proof()` requires an entailment question *and* a non-`runtime` layer. Per ADR-0006 §5, injecting a check "buys soundness, not the right to keep calling it a proof".
 
 #### Scenario: A residual is visibly residual
 
@@ -120,19 +136,33 @@ An obligation whose outcome is a runtime check MUST NOT be serialised into a col
 - WHEN the assurance record is emitted
 - THEN a consumer reading the proven collection MUST NOT find it there
 
+**Tests:** `crates/rust-refine/tests/obligation_kinds.rs::a_residual_is_not_a_proof_even_at_a_call_site`
+
 ### Requirement 5: Obligations must be individually addressable [MUST]
 
 Every obligation MUST carry an identifier unique within its enclosing function, so that a report leaf can be traced back to exactly one obligation.
 
 Rationale: two calls to the same callee, two clauses on one function, and two return points currently collide. That makes report leaves non-addressable, which is the one property an evidence trail needs, and it blocks any keyed discharge cache.
 
-**Implementation:** `crates/rust-refine/src/checks.rs` — not yet implemented (#51)
+**Implementation:** `crates/rust-refine/src/checks.rs::FoundObligation::id`
+
+An occurrence index within the function, in visit order, suffixed uniformly (including `#0`). Chosen over a span because a span changes on any edit *above* it, which would invalidate a keyed discharge cache for every obligation below an inserted line — and ADR-0006 §4's injection design wants this id as that key.
 
 #### Scenario: Two calls to one callee are separately addressable
 
 - GIVEN a function calling the same callee twice
 - WHEN the assurance record is emitted
 - THEN the two obligations MUST carry distinct identifiers
+
+**Tests:** `crates/rust-refine/tests/obligation_ids.rs::every_obligation_in_a_file_has_a_distinct_id`, `crates/rust-refine/tests/obligation_ids.rs::each_colliding_shape_is_numbered_independently`
+
+#### Scenario: An identifier survives an edit elsewhere in the file
+
+- GIVEN two functions each carrying one obligation
+- WHEN an unrelated function is inserted between them
+- THEN neither obligation's identifier MUST change
+
+**Tests:** `crates/rust-refine/tests/obligation_ids.rs::an_edit_elsewhere_in_the_file_does_not_renumber_an_obligation`, `crates/rust-refine/tests/obligation_ids.rs::numbering_is_scoped_to_the_function_not_the_file`
 
 ### Requirement 6: `cargo mvl` aggregates the five tools in a fixed order [MUST]
 

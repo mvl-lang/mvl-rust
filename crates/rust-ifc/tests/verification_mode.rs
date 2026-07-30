@@ -3,6 +3,7 @@
 //! library function, so these genuinely exercise the CLI flag parsing.
 
 use mvl_rust_core::assurance::schema::AssuranceReport;
+use mvl_rust_core::assurance::version::ASSURANCE_SCHEMA_VERSION;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -45,7 +46,9 @@ fn emits_valid_verification_json_for_compliant_source() {
     );
     let report = run_verification_mode(&path);
 
-    assert_eq!(report.version, "1.0");
+    // Against the const, not a literal: this asserts the emitter stamps the
+    // version it was built with, not which version that is (#56).
+    assert_eq!(report.version, ASSURANCE_SCHEMA_VERSION);
     assert_eq!(report.target.crate_name, "rust-ifc");
     let check = report.check.expect("check section must be populated");
     assert!(check.diagnostics.is_empty());
