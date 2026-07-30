@@ -18,3 +18,8 @@ proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"
 thiserror = "2"
 serde_json = "1"
+
+[features]
+# Passthrough (#37) -- `cargo test -p rust-refine --features z3` reaches
+# mvl-rust-core's L5 dispatch without needing --manifest-path gymnastics.
+z3 = ["mvl-rust-core/z3"]

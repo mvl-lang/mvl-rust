@@ -57,6 +57,21 @@ jobs:
         if: matrix.rust == 'stable'
         run: make examples
 
+  verification-z3:
+    # #37: L5/Z3 is feature-gated and default-off precisely so its absence
+    # here wouldn't matter -- this job exists to prove the *presence* case
+    # still builds, links, and passes, not to gate every PR on Z3 being
+    # installed. Not a dependency of `assurance`, for the same reason.
+    name: verification (z3 feature)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: install libz3-dev
+        run: sudo apt-get update && sudo apt-get install -y libz3-dev
+      - run: cargo build --workspace --all-targets --features rust-refine/z3,cargo-mvl/z3
+      - run: cargo test --workspace --features rust-refine/z3,cargo-mvl/z3
+
   assurance:
     name: assurance gate (traceability + evidence)
     runs-on: ubuntu-latest

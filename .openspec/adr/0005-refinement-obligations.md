@@ -61,9 +61,10 @@ arithmetic) natively, with everything else falling through to a runtime check.
 > and `L4` as Fourier–Motzkin elimination (#35). Note `L4` is **not** the Cooper
 > quantifier elimination upstream's own docs name, an upstream naming inaccuracy
 > tracked as [`mvl-lang/mvl`#2022](https://github.com/mvl-lang/mvl/issues/2022);
-> ADR-0006 settles how this workspace labels it. `L5` (SMT) remains deferred to
-> #37. The layer stack's completion and the runtime-check story are ADR-0006's
-> subject, not this ADR's.
+> ADR-0006 settles how this workspace labels it. `L5` (feature-gated Z3, `Int`/
+> QF-NIA only) landed in #37, narrower in scope than originally framed — see
+> ADR-0006 §3's amendment. The layer stack's completion and the runtime-check
+> story are ADR-0006's subject, not this ADR's.
 
 ### 2. Three program points, two questions, one backend
 
@@ -222,8 +223,8 @@ becoming an unnoticed hole.
   (`rust-refine` v0.1), #38 (call-site obligations — originally ADR-0002),
   #42 (return-site obligations), #31 (`L3`), #35 (`L4`), #43/#44 (equality goals
   and the call-free gate)
-- `mvl-lang/mvl-rust`#37 (`L5`/Z3 — deferred, see ADR-0006), #45 (purity signal),
-  #47 (Γ soundness invariant), #48 (return-point doc invariant)
+- `mvl-lang/mvl-rust`#37 (`L5`/Z3 — landed, narrowed in scope, see ADR-0006 §3),
+  #45 (purity signal), #47 (Γ soundness invariant), #48 (return-point doc invariant)
 - [`mvl-lang/mvl`#2007](https://github.com/mvl-lang/mvl/issues/2007) (superseded
   request that upstream expose a solver crate — closed under ADR-0001 §4),
   [`mvl-lang/mvl`#2022](https://github.com/mvl-lang/mvl/issues/2022) (`L4`

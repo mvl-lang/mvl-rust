@@ -19,3 +19,8 @@ rust-refine = { path = "../rust-refine", version = "0.1.2" }
 rust-effect = { path = "../rust-effect", version = "0.1.2" }
 rust-ifc = { path = "../rust-ifc", version = "0.1.2" }
 serde_json = "1"
+
+[features]
+# Passthrough (#37) -- lets the end-user-facing `cargo mvl` binary opt into
+# L5/Z3 dispatch: `cargo build -p cargo-mvl --features z3`.
+z3 = ["mvl-rust-core/z3", "rust-refine/z3"]

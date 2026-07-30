@@ -36,6 +36,7 @@
 //! `DischargeResult::Runtime`) that `rust-refine` (#8) uses.
 
 pub mod native;
+mod smt;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
