@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use cargo_mvl::check::{self, ToolOutcome};
 use mvl_rust_core::assurance::report::{build_prove_report, diagnostic_to_record};
 use mvl_rust_core::assurance::schema::{
-    AssuranceReport, CheckSection, DiagnosticRecord, ProveSection, ProvenObligationRecord,
+    AssuranceReport, CheckSection, DiagnosticRecord, ObligationRecord, ProveSection,
 };
 use mvl_rust_core::diagnostics::Level;
 
@@ -298,7 +298,7 @@ fn run_assurance(files: &[PathBuf]) -> ExitCode {
     report.prove = Some(ProveSection {
         obligations: obligations
             .iter()
-            .map(|(o, r)| ProvenObligationRecord::new(o, r))
+            .map(|(o, r)| ObligationRecord::new(o, r))
             .collect(),
     });
     report.test = test_section;

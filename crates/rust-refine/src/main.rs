@@ -102,6 +102,7 @@ fn run_verification_mode(args: &[String]) -> ExitCode {
                         id: f.id(),
                         predicate: f.predicate_text(),
                         provenance: format!("{arg}:{}:{}", start.line, start.column + 1),
+                        kind: f.class(),
                     };
                     results.push((obligation, discharge_result));
                 }

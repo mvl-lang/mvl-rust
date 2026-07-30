@@ -108,7 +108,7 @@ These were already correct, and renaming them would have made the vocabulary wor
 - **A non-compiling workspace now fails the gate before any ratio is read.** A green traceability number over code that will not build is worse than no number, because it looks like progress.
 - **"Assurance" now has exactly one meaning in this workspace**, and the ISPE E→S ratio is scoped as a traceability sub-metric rather than owning the word.
 - **The same collision exists upstream** in `mvl-lang/mvl` — `mvl assurance` CLI, `make assurance`, `tools/assurance.py`, spec `023-assurance`. Applying this vocabulary there too is preferable to letting the two implementations diverge on what the word means; not attempted here.
-- **`ProvenObligationRecord` is still misnamed** — it holds non-proven outcomes. Out of scope here; tracked as #56.
+- **`ProvenObligationRecord` was still misnamed** — it held non-proven outcomes. Was out of scope here; fixed in #56, which renamed it `ObligationRecord` and added the `kind` discriminator that separates coherence, entailment, and residual.
 
 ## Links
 

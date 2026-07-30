@@ -200,8 +200,13 @@ injection:
 **Injection buys soundness, not the right to keep calling it a proof.** An
 obligation closed against a runtime-enforced premise must not print `proven at
 L4`. Provenance has to carry the distinction — including in the assurance JSON,
-where residuals currently serialise into a struct named
-`ProvenObligationRecord`.
+where residuals used to serialise into a struct named
+`ProvenObligationRecord`. #56 removed that misnomer: the type is
+`ObligationRecord`, and `is_proof()` requires an entailment question *and* a
+non-`runtime` layer, so a residual cannot read as proven. The taint this section
+asks for — marking an obligation closed *against a runtime-enforced premise* —
+is still owed, and is a different thing from the residual itself: it belongs
+with #53's enforcement work.
 
 ## Consequences
 

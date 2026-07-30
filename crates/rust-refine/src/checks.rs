@@ -74,7 +74,7 @@ use std::collections::HashMap;
 use mvl_rust_core::attrs::{MvlAttr, Predicate};
 use mvl_rust_core::diagnostics::{Diagnostic, Level};
 use mvl_rust_core::solver::native::{discharge_entailment, discharge_predicate, substitute_exprs};
-use mvl_rust_core::solver::{DischargeResult, Layer};
+use mvl_rust_core::solver::{DischargeResult, Layer, ObligationClass};
 use proc_macro2::Span;
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
@@ -136,10 +136,51 @@ pub struct FoundObligation {
     pub predicate: Predicate,
     pub hypotheses: Vec<Expr>,
     pub span: Span,
+    /// Which occurrence this is among the obligations in `fn_name` sharing
+    /// its [`Self::id_stem`] — 0-based, in visit order. Assigned by
+    /// [`number_occurrences`] after the walk, not at the push sites; see
+    /// there for why.
+    pub occurrence: usize,
 }
 
 impl FoundObligation {
+    /// This obligation's address within the report (#51).
+    ///
+    /// The occurrence suffix is what makes it an address rather than a
+    /// description. Without it two `requires` clauses on one function, two
+    /// calls to the same callee, or two return points all collide, and a
+    /// certification reviewer following [`AssuranceLeaf::obligation_id`]
+    /// back from a leaf cannot tell which obligation it meant.
+    ///
+    /// [`AssuranceLeaf::obligation_id`]: mvl_rust_core::assurance::schema::AssuranceLeaf::obligation_id
+    ///
+    /// The suffix is present **uniformly**, including on `#0`. Omitting it
+    /// for the single-occurrence case would read as a distinction that
+    /// isn't there: `caller::requires` beside `caller::requires#1` gives no
+    /// way to tell "the only one" from "the first of several".
     pub fn id(&self) -> String {
+        format!("{}#{}", self.id_stem(), self.occurrence)
+    }
+
+    /// This obligation's wire-facing classification (#56) — which question
+    /// the solver was asked, so the report can stop presenting a coherence
+    /// check and an entailment proof identically.
+    ///
+    /// Both declaration kinds collapse to
+    /// [`ObligationClass::Declaration`]: `requires` and `ensures` differ in
+    /// *which* predicate is checked, not in the question asked of it, and
+    /// which one it was is already in the id.
+    pub fn class(&self) -> ObligationClass {
+        match &self.kind {
+            ObligationKind::Requires | ObligationKind::Ensures => ObligationClass::Declaration,
+            ObligationKind::CallSite { .. } => ObligationClass::CallSite,
+            ObligationKind::ReturnSite => ObligationClass::ReturnSite,
+        }
+    }
+
+    /// The id without its occurrence suffix — the part shared by colliding
+    /// obligations, and so the key [`number_occurrences`] groups on.
+    fn id_stem(&self) -> String {
         match &self.kind {
             ObligationKind::CallSite { callee } => {
                 format!("{}::calls::{callee}::requires", self.fn_name)
@@ -257,6 +298,8 @@ impl<'ast> Visit<'ast> for DeclarationFinder<'_> {
                 predicate,
                 hypotheses: Vec::new(),
                 span: attr.span(),
+                // Assigned by `number_occurrences` once the walk is over.
+                occurrence: 0,
             });
         }
         visit::visit_item_fn(self, node);
@@ -427,6 +470,8 @@ impl CallSiteScan<'_> {
                 predicate: substitute_exprs(ensures, &bindings),
                 hypotheses: self.gamma.clone(),
                 span,
+                // Assigned by `number_occurrences` once the walk is over.
+                occurrence: 0,
             });
         }
     }
@@ -468,6 +513,8 @@ impl CallSiteScan<'_> {
                 predicate: substitute_exprs(requires, &bindings),
                 hypotheses: self.gamma.clone(),
                 span: node.span(),
+                // Assigned by `number_occurrences` once the walk is over.
+                occurrence: 0,
             });
         }
     }
@@ -1118,6 +1165,27 @@ fn return_site_closure(
     closed
 }
 
+/// Assigns each obligation its occurrence index within its function (#51).
+///
+/// Done as a pass over the finished vector rather than at the three push
+/// sites, for two reasons. Visit order is only definitively known once the
+/// walk is over — the declaration finder and the call-site scan contribute
+/// to the same vector in separate passes, so a counter held by either one
+/// would number only its own half. And a single site cannot be got wrong in
+/// three places.
+///
+/// Grouping is on the id stem, so the counters are per-`(function, stem)`:
+/// a function's two `requires` clauses number 0 and 1 independently of its
+/// two calls to the same callee, which also number 0 and 1.
+fn number_occurrences(found: &mut [FoundObligation]) {
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for obligation in found.iter_mut() {
+        let counter = seen.entry(obligation.id_stem()).or_insert(0);
+        obligation.occurrence = *counter;
+        *counter += 1;
+    }
+}
+
 pub fn find_obligations(source: &str) -> Result<Vec<FoundObligation>, CheckError> {
     let file: syn::File = syn::parse_str(source).map_err(CheckError::Parse)?;
 
@@ -1160,6 +1228,7 @@ pub fn find_obligations(source: &str) -> Result<Vec<FoundObligation>, CheckError
         }
     }
 
+    number_occurrences(&mut found);
     Ok(found)
 }
 

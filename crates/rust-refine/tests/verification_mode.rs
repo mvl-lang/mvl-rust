@@ -4,6 +4,7 @@
 //! genuinely exercise the CLI flag parsing.
 
 use mvl_rust_core::assurance::schema::AssuranceReport;
+use mvl_rust_core::assurance::version::ASSURANCE_SCHEMA_VERSION;
 use mvl_rust_core::solver::Layer;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -45,7 +46,10 @@ fn emits_valid_verification_json_for_source_with_no_obligations() {
     let path = write_fixture("no_obligations.rs", "fn f(x: i32) -> i32 { x }");
     let report = run_verification_mode(&path);
 
-    assert_eq!(report.version, "1.0");
+    // Against the const, not a literal: what this test cares about is that
+    // the emitter stamps the version it was built with, not which version
+    // that is. A literal here just breaks on every bump (it did on #56's).
+    assert_eq!(report.version, ASSURANCE_SCHEMA_VERSION);
     assert_eq!(report.target.crate_name, "rust-refine");
     let prove = report.prove.expect("prove section must be populated");
     assert!(prove.obligations.is_empty());
@@ -62,7 +66,7 @@ fn emits_a_proven_obligation_at_l2_for_a_satisfiable_interval_bound() {
 
     let prove = report.prove.expect("prove section must be populated");
     assert_eq!(prove.obligations.len(), 1);
-    assert_eq!(prove.obligations[0].id, "f::requires");
+    assert_eq!(prove.obligations[0].id, "f::requires#0");
     assert_eq!(prove.obligations[0].layer, Some(Layer::L2));
     assert!(prove.obligations[0].counterexample.is_none());
 }
