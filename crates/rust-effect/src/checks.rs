@@ -171,6 +171,37 @@ mod tests {
     }
 
     #[test]
+    fn an_explicit_purity_claim_is_not_verified_against_unresolvable_calls() {
+        // The trust boundary, pinned (ADR-0008 §3). Both functions declare
+        // purity and neither is pure -- each returns a different value on
+        // successive calls -- but effects reach them through method and
+        // cross-file calls, which this checker cannot resolve and is silent
+        // about by design (`call_to_unresolvable_function_is_silently_skipped`
+        // above is the same boundary seen from the other side).
+        //
+        // So `#[mvl::effect()]` is an *unverified assertion*, not an
+        // established fact. This matters beyond effects: anything treating it
+        // as a purity licence inherits the hole. L1 reflexivity trusting it
+        // would make `(wall_clock()) == wall_clock()` provable, dropping a
+        // check that can genuinely fail -- the #44 regression arriving through
+        // the explicit annotation rather than through absence. #45.
+        let diagnostics = check_source(
+            "#[mvl::effect()] fn wall_clock() -> i64 { \
+                 std::time::SystemTime::now().elapsed().unwrap().as_secs() as i64 \
+             } \
+             #[mvl::effect()] fn counter(c: &std::cell::Cell<i64>) -> i64 { \
+                 c.set(c.get() + 1); c.get() \
+             }",
+        )
+        .unwrap();
+        assert!(
+            diagnostics.is_empty(),
+            "documents the gap rather than endorsing it: a purity claim this \
+             checker cannot check is accepted in silence"
+        );
+    }
+
+    #[test]
     fn self_recursive_call_is_always_fine() {
         let diagnostics =
             check_source("#[mvl::effect(Console)] fn f(n: i32) { if n > 0 { f(n - 1); } }")
