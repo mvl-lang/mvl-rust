@@ -6,6 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project did not tag per-PR releases before `0.1.3`; the `[0.1.2]` entry
 below backfills everything merged while the workspace sat at that version.
 
+## [Unreleased]
+
+### Docs
+
+- Per-crate docs.rs polish: every crate gets a `README.md` and a
+  runnable doctest against its real API; new prose concept guides
+  under `docs/` (overview, integration recipes for Kani/Creusot/Prusti,
+  FAQ) written to drop into `mvl-lang.github.io` as a subsite (#73,
+  closes #11).
+
 ## [0.1.3] - 2026-07-30
 
 ### Added

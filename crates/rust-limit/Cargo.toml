@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Qualified-subset lint pass for mvl-rust: rejects Rust constructs outside MVL's verifiable subset."
+readme = "README.md"
 
 [[bin]]
 name = "cargo-mvl-limit"

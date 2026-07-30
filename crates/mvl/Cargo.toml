@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Attributes and IFC types so mvl-rust annotations resolve on stable rustc. Verification logic lives entirely in the separate cargo mvl-* scanners (see mvl-rust-core, rust-limit) -- this crate exists only to make annotated code compile and to carry real IFC labels at runtime."
+readme = "README.md"
 
 [dependencies]
 mvl-macros = { path = "../mvl-macros" }

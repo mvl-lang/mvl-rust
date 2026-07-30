@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "#[mvl::label]/#[mvl::relabel(...)] IFC enforcement for mvl-rust: declassification/classification only via a declared relabel."
+readme = "README.md"
 
 [[bin]]
 name = "cargo-mvl-ifc"

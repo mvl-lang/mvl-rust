@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "#[mvl::total] verifier for mvl-rust: panic-freedom and terminating recursion."
+readme = "README.md"
 
 [[bin]]
 name = "cargo-mvl-total"

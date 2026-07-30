@@ -58,6 +58,9 @@
 //! let trusted: String = mvl::trust(raw, "LOG-PATH-001");
 //! assert_eq!(trusted, "from the environment");
 //! ```
+//!
+//! See [`docs/overview.md`](https://github.com/mvl-lang/mvl-rust/blob/main/docs/overview.md)
+//! for which checker enforces which attribute above.
 
 pub use mvl_macros::{decreases, effect, ensures, label, relabel, requires, total, unchecked};
 
