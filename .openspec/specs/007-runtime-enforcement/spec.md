@@ -2,7 +2,7 @@
 
 **Domain:** Enforcement / soundness of Γ
 **Version:** 0.1.0
-**Status:** Partially implemented — Requirements 1–2 landed in #47; 3–6 await #53
+**Status:** Partially implemented — Requirements 1–2 landed in #47; 3–5 landed in #53; 6 (and Requirement 2's "or enforced" clause) await #69
 **Date:** 2026-07-29
 **Decided by:** ADR-0006 §4–§5
 
@@ -77,7 +77,7 @@ The check MUST use an unconditional assertion, not a debug-only one, and MUST NO
 
 Wrapping the whole body — rather than only the trailing expression — MUST cover explicit `return` paths.
 
-**Implementation:** `crates/mvl-macros/src/lib.rs` — not yet implemented (#53)
+**Implementation:** `crates/mvl-macros/src/inject.rs::inject_requires`, `::inject_ensures`
 
 #### Scenario: An explicit return is checked
 
@@ -86,43 +86,73 @@ Wrapping the whole body — rather than only the trailing expression — MUST co
 - THEN the postcondition MUST be checked on the `return x` path
 - AND the program MUST abort rather than return a value violating the contract
 
+**Tests:** `crates/mvl/tests/enforcement.rs::a_violating_explicit_return_aborts`, `crates/mvl-macros/src/inject.rs::tests::explicit_return_is_instrumented`
+
+**Known gap: the `?` operator is not an instrumented return point.** `?`'s early return is invisible to `syn` — there is no `Expr::Return` node to rewrite, only an `Expr::Try` wrapping the fallible expression. A function that returns early via `foo()?` produces a value `ensures` never checks. This is not a new soundness hole: `rust-refine`'s own static checker (`crates/rust-refine/src/checks.rs::visit_expr_return`) has the same blind spot, so Γ never assumed that path was covered either. It is, however, a real runtime-enforcement gap, tracked rather than silently left — see Known Limitations below.
+
+**Tests:** `crates/mvl/tests/enforcement.rs::a_violating_early_return_via_try_operator_does_not_abort` (pins the current gap so a future change to this behavior is deliberate, not silent)
+
 #### Scenario: Enforcement is not elided in release
 
 - GIVEN a crate built in release mode
 - WHEN a contract predicate is violated at runtime
 - THEN the check MUST still fire
 
-### Requirement 4: Predicates that cannot be evaluated at runtime must be excluded from both enforcement and Γ [MUST]
+Not re-verified by actually building in release mode — that would mean spawning a real `cargo build --release`, which belongs with an integration-style check rather than a unit test. The guarantee is structural instead: `inject.rs` emits a bare `assert!` with no `cfg(debug_assertions)` gate anywhere in the module, which the tests below pin directly. A profile-conditional check would surface as a change to what those tests assert, not as a test passing in one profile and failing in another.
 
-A predicate that cannot be evaluated in the callee's post-state — a bounded quantifier, ghost state, or a reference to a pre-state value that was not captured — MUST NOT be expanded into a runtime check.
+**Tests:** `crates/mvl-macros/src/inject.rs::tests::requires_uses_assert_not_debug_assert`, `::ensures_uses_assert_not_debug_assert`
 
-Such a predicate MUST also be excluded from Γ, since Requirement 2's permission depends on enforcement existing.
+### Requirement 4: Every predicate the grammar can express must be runtime-evaluable, and none may be silently excluded [MUST]
 
-**Implementation:** `crates/mvl-macros/src/lib.rs` — not yet implemented (#53)
+**Revised by #53.** This requirement originally assumed a bounded quantifier cannot be evaluated at runtime and must be excluded from both enforcement and Γ, mirroring upstream's `is_runtime_checkable`. That assumption does not hold for this grammar, and #53 found this out by implementing the exclusion's alternative rather than the exclusion itself.
 
-#### Scenario: A quantified postcondition is neither checked nor assumed
+`Predicate::Forall`/`Exists` bounds are **literal integers**, checked at parse time (`crates/mvl-rust-core/src/attrs/predicate.rs`) — there is nothing to evaluate to get them, so they can be emitted directly into a runtime loop: `forall i in [lo..hi] . body` lowers to `(lo..=hi).all(|i| body)`, `exists` to `.any(...)`. Verified against the real compliant demo's `require_dense_fleet`, whose `requires` is exactly this shape over a same-file call.
+
+There is also no ghost-state or pre-state (`old(...)`) construct anywhere in the `Predicate` grammar — confirmed by inspection, not merely assumed — so the second half of the original concern names a case that cannot arise from any predicate this parser produces. Should the grammar later grow one, *that* addition would need this requirement re-opened; today it has nothing to apply to.
+
+The consequence: **every predicate in the grammar is runtime-evaluable**, so Requirement 2's "or enforced" permission is not conditioned on a partition between checkable and unchecked predicate shapes — there is only one shape, and it is always checkable.
+
+**Implementation:** `crates/mvl-macros/src/inject.rs::predicate_to_bool`
+
+#### Scenario: A quantified postcondition is checked, not assumed away
 
 - GIVEN `#[mvl::ensures(forall i in [0..10] . result > i)]`
 - WHEN the attribute expands
-- THEN no runtime check MUST be emitted for it
-- AND the postcondition MUST NOT be propagated into any caller's Γ
+- THEN a runtime check MUST be emitted covering every value in the range
+- AND a violation at any value in the range MUST cause the check to fail
+
+**Tests:** `crates/mvl/tests/enforcement.rs::quantified_postcondition_is_checked_at_runtime`, `crates/mvl/tests/enforcement.rs::quantified_postcondition_catches_a_single_bad_value`
 
 ### Requirement 5: A function may opt out of enforcement, and opting out excludes it from Γ [MUST]
 
 The tool MUST provide a per-function opt-out from runtime enforcement.
 
-Rationale: an injected assertion makes a `#[mvl::total]` function panicking, and spec 003's totality checker asserts it is not. The two tools would otherwise make contradictory claims about the same function, and only by allow-list accident would the contradiction go unreported.
+**The `#[mvl::total]` collision this requirement was written to resolve did not need the opt-out, and #53 found that out by building the opt-out anyway and then not needing it for the case that motivated it.** The rationale below describes the *original* framing; the paragraph after it describes what actually shipped and why the two differ.
 
-A function that opts out MUST be excluded from Requirement 2's propagation permission — it fails the condition that every function whose postcondition can enter Γ is enforced.
+Original rationale: an injected assertion makes a `#[mvl::total]` function panicking, and spec 003's totality checker asserts it is not. The two tools would otherwise make contradictory claims about the same function, and only by allow-list accident would the contradiction go unreported.
 
-**Implementation:** `crates/mvl-macros/src/lib.rs` — not yet implemented (#53)
+**What #53 actually did:** ADR-0003 §2's amendment redefines `#[mvl::total]`'s panic-freedom claim as scoped to *accidental* crash sources — `.unwrap()`, raw indexing, a bare `panic!` — and a contract assert is a documented check, not one of those. So a `#[mvl::total]` function carrying `#[mvl::requires]`/`#[mvl::ensures]` is not a contradiction to resolve per-function; it never conflicts, for any such function, with no opt-out needed. `rust-total`'s panic-freedom checker takes no action on either attribute, pinned by `requires_and_ensures_on_a_total_function_are_not_flagged` (`rust-total`).
 
-#### Scenario: A total function with a residual obligation does not silently become panicking
+The opt-out attribute (`#[mvl::unchecked]`) still exists, and is still worth having — but for a narrower reason than the original rationale: an author who wants a *specific* function's `requires`/`ensures` to keep the pre-#53, fully pass-through behavior (no enforcement at all, regardless of `#[mvl::total]`), rather than for resolving a conflict that turned out not to exist.
 
-- GIVEN a `#[mvl::total]` function carrying an `#[mvl::ensures]` whose obligation is undischarged
+**Implementation:** `crates/mvl-macros/src/lib.rs::unchecked`
+
+#### Scenario: A total function's contract does not conflict with its panic-freedom claim
+
+- GIVEN a `#[mvl::total]` function carrying `#[mvl::requires]`/`#[mvl::ensures]`, with no `#[mvl::unchecked]`
 - WHEN both tools run
-- THEN either the function MUST opt out of enforcement, or the conflict MUST be reported
-- AND `#[mvl::total]` MUST NOT be reported as satisfied for a body containing an injected assertion
+- THEN `rust-total` MUST NOT flag the function for the assert its contract attributes inject
+- AND `#[mvl::total]`'s panic-freedom claim MUST be understood as scoped to accidental crash sources, not contract checks
+
+**Tests:** `crates/rust-total/tests/totality.rs::requires_and_ensures_on_a_total_function_are_not_flagged`, `crates/mvl/tests/enforcement.rs::a_total_function_with_a_satisfied_contract_runs_normally`, `::a_total_function_still_enforces_its_contract`
+
+#### Scenario: An opted-out function is not enforced, in either attribute order
+
+- GIVEN a function carrying `#[mvl::unchecked]` above or below `#[mvl::ensures]`
+- WHEN the attributes expand
+- THEN no runtime check MUST be emitted for that function's `requires`/`ensures`, regardless of which order the attributes were written in
+
+**Tests:** `crates/mvl/tests/enforcement.rs::unchecked_suppresses_enforcement_regardless_of_attribute_order`
 
 ### Requirement 6: A proof resting on an enforced premise must not be reported as a proof [MUST]
 
@@ -140,13 +170,14 @@ Where an obligation is discharged against a premise that is runtime-enforced rat
 
 ## Known Limitations
 
-- **Nothing here is implemented.** All 7 scenarios are unevidenced and count fully against scenario coverage. They are not excluded: a requirement written into a spec is an obligation, and letting a marker remove it from the denominator would mean declaring intent improved the score.
+- **7 of 8 scenarios are now evidenced (#53).** The one that isn't — Requirement 6's, "an enforced premise taints the outcome it supports" — has nothing to evidence yet: `rust-refine`'s propagation gate (`checks.rs`) requires *static* discharge, so no enforced-but-residual premise is ever used to close another obligation today, and there is no taint to test the absence of. It stays unlinked rather than marked done, and counts against scenario coverage until the follow-up ticket lands.
 - **Requirement 3 changes the runtime behaviour of existing annotated code.** It contradicts the facade crate's documented "unaffected by whether this crate is even a dependency", breaks the passthrough test by design, and amends ADR-0001 §2.
 - **Enforcement becomes dependent on the `mvl` crate being a dependency.** Dropping it produces an unresolved-attribute compile error — fail-loud, therefore acceptable.
 - **An abort replaces a silent wrong answer.** For the target domains that is the right trade, but it is a stated decision. There is no profile in which a check Γ depends on may be elided.
 - **Declaration-site obligations have no runtime analogue.** Coherence asks whether a predicate is satisfiable; there is no program point to assert at. Those stay static-only, which is adequate — a self-contradictory `requires` is already an error.
 - **Requirements 1 and 2 recover soundness without any injection**, by declining to propagate what is not established, at a cost in precision. They are sequenced first for that reason.
 - **The reference implementation's own enforcement has at least seven holes** — explicit `return` paths, inline parameter refinements, return-type refinements, trait-impl methods, instrumented builds, one backend entirely, and predicates that fail to lower. Requirement 3 is therefore implementing an intent, not porting a mechanism, and can exceed it.
+- **The `?` operator is an uninstrumented return point.** `ensures` covers the tail expression and every explicit `return`, but a `?`-driven early return produces a value with no check. Consistent with `rust-refine`'s own static checker (also blind to `?`), so no unsound Γ claim results — but it is a real, silent enforcement gap for any function using `?`. Pinned by `crates/mvl/tests/enforcement.rs::a_violating_early_return_via_try_operator_does_not_abort` rather than left to drift unnoticed. Closing it is future work, not scoped to #53/#69.
 
 ---
 
@@ -154,8 +185,8 @@ Where an obligation is discharged against a premise that is runtime-enforced rat
 
 | Layer | Artefact |
 |---|---|
-| **Intent** | #47 (Γ invariant and the honesty fixes — Reqs 1–2), #53 (proc-macro enforcement — Reqs 3–6), #48 (return-point doc invariant) |
+| **Intent** | #47 (Γ invariant and the honesty fixes — Reqs 1–2), #53 (proc-macro enforcement — Reqs 3–5), #69 (relaxed propagation + taint — Req 2's enforced clause, Req 6), #48 (return-point doc invariant) |
 | **Specification** | this document; spec 005 (the Γ it protects), spec 006 (what produces residuals), spec 008 (how outcomes are reported) |
-| **Decision** | ADR-0006 §4 (mechanism, and why source rewriting was rejected), §5 (the invariant and its five conditions); ADR-0001 §2 (amended by Req 3); ADR-0003 (the totality collision Req 5 resolves) |
-| **Program** | `crates/mvl-macros/src/lib.rs` (currently inert pass-throughs), `crates/rust-refine/src/checks.rs` |
-| **Evidence** | none yet — this spec's scenarios are the acceptance criteria for #47 and #53 |
+| **Decision** | ADR-0006 §4 (mechanism, and why source rewriting was rejected), §5 (the invariant and its five conditions); ADR-0001 §2 (amended by Req 3); ADR-0003 §2 (the totality collision Req 5's shipped resolution rests on) |
+| **Program** | `crates/mvl-macros/src/lib.rs`, `crates/mvl-macros/src/inject.rs` (Reqs 3–5); `crates/rust-refine/src/checks.rs`, `crates/mvl-rust-core/src/assurance/schema.rs` (Req 2's enforced clause + Req 6, #69) |
+| **Evidence** | `crates/mvl-macros/src/inject.rs::tests`, `crates/mvl/tests/enforcement.rs`, `crates/rust-total/tests/totality.rs` (Reqs 3–5); Req 6 has none yet, pending #69 |

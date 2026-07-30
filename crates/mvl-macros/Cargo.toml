@@ -9,3 +9,9 @@ description = "Internal proc-macro crate: no-op pass-through attributes re-expor
 
 [lib]
 proc-macro = true
+
+[dependencies]
+mvl-rust-core = { path = "../mvl-rust-core", version = "0.1.2" }
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "visit-mut", "parsing", "printing", "extra-traits"] }

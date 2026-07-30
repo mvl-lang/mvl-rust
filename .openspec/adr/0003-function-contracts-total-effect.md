@@ -60,6 +60,32 @@ the false-positive rate is tolerable. **The dividing line is the false-positive
 rate, not a principle**, and it is worth recording as such: a tool that cries
 wolf on every addition is not a stricter tool, it is an ignored one.
 
+**Amendment (#53): `#[mvl::total]`'s panic-freedom claim was always scoped to
+*accidental* crash sources, and a contract assert is not one.** Since #53,
+`#[mvl::requires]`/`#[mvl::ensures]` expand to a real `assert!` (ADR-0006 §4),
+so a `#[mvl::total]` function carrying one is not literally panic-free — an
+assert can fire. The resolution: `total`'s panic-freedom check (§2 above) names
+`.unwrap()`, raw indexing, division/modulo, a bare `panic!` — unhandled,
+*accidental* failure modes. A contract assert is the opposite: an intentional,
+documented check whose failure reports a broken promise. It was never in the
+category `total` was checking for.
+
+This covers `requires` cleanly — a firing precondition means the *caller*
+stepped outside the domain the function expects. It is less clean for
+`ensures`, where a firing postcondition means the function's *own body*
+failed to establish what it declared — the function's bug, not its caller's.
+The exemption still applies, because the relevant line was never "whose
+fault it is" — it is "accidental crash source" versus "documented contract
+check", and an `ensures` assert is the latter regardless of who is
+responsible for it firing.
+
+`rust-total`'s panic-freedom check takes no action on `requires`/`ensures` —
+not because it cannot see the injected assert (it scans source, never macro
+output, so it could not see it regardless), but because the two attributes
+are not in conflict once `total`'s claim is read this way. `#[mvl::unchecked]`
+(`mvl-macros`) is the escape hatch for an author who wants `total`'s earlier,
+unconditional reading for a specific function.
+
 **Termination** (`checks/termination.rs`). Requires `#[mvl::decreases(measure)]`
 on any `#[mvl::total]` function that directly calls itself.
 

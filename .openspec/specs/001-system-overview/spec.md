@@ -163,17 +163,25 @@ Annotated code MUST compile and run identically whether or not any verification 
 
 The facade crate MUST be a convenience rather than a requirement for compilation.
 
-> **Amended by spec 007 Requirement 3.** Once contract attributes enforce their predicates at runtime, this requirement no longer holds for `requires`/`ensures` — enforcement is the deliberate exception, and the tools remain out-of-band.
+> **Amended by #53 (spec 007 Requirement 3).** `requires`/`ensures` now expand to a real runtime `assert!` — a deliberate exception to this requirement, not a violation of it. Two things stay true regardless: whether any of the five *verification tools* has ever run remains irrelevant to what the annotated code does (the macro's expansion doesn't consult them), and the four attributes below still fit this requirement exactly as written. Enforcement's own behaviour is spec 007's, not this one's.
 
 **Implementation:** `crates/mvl-macros/src/lib.rs`
 
-#### Scenario: Annotations do not alter behaviour
+#### Scenario: Annotations with no runtime obligation do not alter behaviour
 
-- GIVEN a function annotated with `#[mvl::requires]` and `#[mvl::ensures]`
+- GIVEN a function annotated with `#[mvl::total]`, `#[mvl::decreases]`, `#[mvl::effect]`, `#[mvl::label]`, or `#[mvl::relabel]`
 - WHEN the program runs
 - THEN its observable behaviour MUST be identical to the unannotated function
 
-**Tests:** `crates/mvl/tests/passthrough.rs::attributes_are_pass_through_and_dont_alter_behavior`
+**Tests:** `crates/mvl/tests/passthrough.rs::total_effect_label_and_relabel_are_still_pass_through`, `::decreases_example_is_a_real_recursive_function`, `::tainted_string_requires_explicit_trust_to_declassify`, `::custom_phi_label_round_trips_through_ingest_and_release`
+
+#### Scenario: Whether a verification tool has run is irrelevant to enforcement
+
+- GIVEN a function annotated with `#[mvl::requires]`/`#[mvl::ensures]`
+- WHEN the program runs, whether or not `rust-refine` (or any of the other four tools) has ever been invoked against this source
+- THEN the injected assertion's behaviour MUST be identical either way
+
+Not independently tested — the enforcement tests in `crates/mvl/tests/enforcement.rs` never invoke any of the five tools at all, so their passing already demonstrates the tools' absence from the causal chain. A test that also ran `rust-refine` first and compared would show the same result by construction, since the macro consults nothing the tool produces.
 
 ### Requirement 3: One dispatcher, five tools, no shared analysis state [MUST]
 

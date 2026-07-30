@@ -1,3 +1,9 @@
+//! Since #53, `#[mvl::requires]`/`#[mvl::ensures]` are **not** pass-throughs
+//! — they expand to a real `assert!` (`crates/mvl/tests/enforcement.rs`
+//! covers them). Everything in this file is what remains genuinely inert:
+//! `total`, `effect`, `label`, `relabel` still discard their argument tokens
+//! and leave the annotated item unchanged, exactly as before.
+
 #[mvl::total]
 fn total_fn() -> i32 {
     1
@@ -5,12 +11,6 @@ fn total_fn() -> i32 {
 
 #[mvl::effect(Console)]
 fn effect_fn() {}
-
-#[mvl::requires(x > 0)]
-#[mvl::ensures(result > 0)]
-fn contract_fn(x: i32) -> i32 {
-    x
-}
 
 #[mvl::label]
 struct SmokeTestLabel;
@@ -21,10 +21,9 @@ fn smoke_test_ingest(x: i32) -> mvl::Labeled<SmokeTestLabel, i32> {
 }
 
 #[test]
-fn attributes_are_pass_through_and_dont_alter_behavior() {
+fn total_effect_label_and_relabel_are_still_pass_through() {
     assert_eq!(total_fn(), 1);
     effect_fn();
-    assert_eq!(contract_fn(5), 5);
     assert_eq!(smoke_test_ingest(5).into_inner(), 5);
 }
 

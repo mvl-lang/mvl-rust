@@ -10,6 +10,38 @@
 //! this can't tell floats from integers) — kept in scope anyway since
 //! `/`/`%` are far less common in ordinary code than `+`/`-`/`*`, so the
 //! false-positive rate is much lower.
+//!
+//! # `#[mvl::requires]`/`#[mvl::ensures]` are deliberately not flagged (#53)
+//!
+//! Since #53 those attributes expand to a real `assert!`, which panics on
+//! failure — a `#[mvl::total]` function carrying one is not literally
+//! panic-free, and this checker never sees the assert to begin with: it scans
+//! the author's *source*, not the macro-expanded body, so there is no
+//! `assert!` token here to flag even in principle (the same boundary that
+//! makes any macro invocation invisible to this family of tools, ADR-0002 #4).
+//!
+//! The resolution is **not** to add `assert` to [`PANICKING_MACROS`] were it
+//! ever visible — it is to read `#[mvl::total]`'s panic-freedom claim as
+//! scoped to *accidental* crash sources (ADR-0003 §2): `.unwrap()`, raw
+//! indexing, a bare `panic!`. A contract assert is not one of those. It is an
+//! intentional, documented check whose failure reports a broken promise
+//! rather than an unhandled case, and `total` was never claiming to guard
+//! against that category.
+//!
+//! That reasoning covers `requires` cleanly — a firing precondition means the
+//! *caller* stepped outside the domain the function was told to expect. It is
+//! less clean for `ensures`: a firing postcondition means the function's *own
+//! body* failed to establish what it declared, which is the function's bug,
+//! not its caller's. Exempting it anyway is still correct, because the
+//! relevant distinction for `total` was never "whose fault" — it is
+//! "accidental crash source" versus "documented contract check". An `ensures`
+//! assert is squarely the latter regardless of who is responsible for it
+//! firing, so it stays exempt on the same grounds `requires` does.
+//!
+//! So this checker takes no action on `requires`/`ensures` at all, and that
+//! silence is the decision, not an oversight this module failed to implement.
+//! `#[mvl::unchecked]` (`mvl-macros`) is the escape hatch for a function whose
+//! author wants `total`'s original, unconditional reading instead.
 
 use mvl_rust_core::diagnostics::{Diagnostic, Level};
 use syn::spanned::Spanned;
