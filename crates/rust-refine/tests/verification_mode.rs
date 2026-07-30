@@ -62,7 +62,7 @@ fn emits_a_proven_obligation_at_l2_for_a_satisfiable_interval_bound() {
 
     let prove = report.prove.expect("prove section must be populated");
     assert_eq!(prove.obligations.len(), 1);
-    assert_eq!(prove.obligations[0].id, "f::requires");
+    assert_eq!(prove.obligations[0].id, "f::requires#0");
     assert_eq!(prove.obligations[0].layer, Some(Layer::L2));
     assert!(prove.obligations[0].counterexample.is_none());
 }
