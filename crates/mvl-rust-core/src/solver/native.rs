@@ -678,7 +678,7 @@ fn refutes_negation(hypotheses: &[Constraint], clause: &Expr) -> bool {
 
 /// Substitutes each named variable with an arbitrary expression — the
 /// call-site substitution step (`pred[params := args]`). A quantifier that
-/// binds one of the names shadows it, as in [`substitute`].
+/// binds one of the names shadows it, as in `substitute`.
 pub fn substitute_exprs(pred: &Predicate, bindings: &HashMap<String, Expr>) -> Predicate {
     match pred {
         Predicate::Expr(expr) => {

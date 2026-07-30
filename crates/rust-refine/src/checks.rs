@@ -138,7 +138,7 @@ pub struct FoundObligation {
     /// Parallel to `hypotheses`, same length, same index (#69): `Some(callee)`
     /// when that hypothesis is `callee`'s postcondition, propagated via the
     /// *enforced* (not statically proven) half of the relaxed `closed` gate
-    /// — see [`return_site_closure`]. `None` for every other kind of
+    /// — see `return_site_closure`. `None` for every other kind of
     /// hypothesis (the function's own `requires`, branch narrowing, a
     /// propagated postcondition from a *proven*-closed callee) — these are
     /// genuinely established facts, not resting on a runtime check.
@@ -151,8 +151,8 @@ pub struct FoundObligation {
     pub enforced: bool,
     pub span: Span,
     /// Which occurrence this is among the obligations in `fn_name` sharing
-    /// its [`Self::id_stem`] — 0-based, in visit order. Assigned by
-    /// [`number_occurrences`] after the walk, not at the push sites; see
+    /// its `id_stem` — 0-based, in visit order. Assigned by
+    /// `number_occurrences` after the walk, not at the push sites; see
     /// there for why.
     pub occurrence: usize,
 }
@@ -193,7 +193,7 @@ impl FoundObligation {
     }
 
     /// The id without its occurrence suffix — the part shared by colliding
-    /// obligations, and so the key [`number_occurrences`] groups on.
+    /// obligations, and so the key `number_occurrences` groups on.
     fn id_stem(&self) -> String {
         match &self.kind {
             ObligationKind::CallSite { callee } => {
@@ -253,7 +253,7 @@ impl FoundObligation {
     ///   when `self.enforced` — the direct case: no static proof at this
     ///   site, but a real `assert!` exists for it regardless (the callee's
     ///   `requires`, or this function's own `ensures`).
-    /// - `Proven` is re-checked in [`Self::warrant_for_proof`], which is
+    /// - `Proven` is re-checked in `warrant_for_proof`, which is
     ///   where the exactness guarantee (and its one documented limit) live.
     pub fn warrant(&self) -> Warrant {
         if !self.class().is_entailment() {
@@ -563,7 +563,7 @@ struct CallSiteScan<'a> {
     /// [`ClosureKind::Proven`] (cleanly) or [`ClosureKind::Enforced`]
     /// (tainted -- see [`Self::propagate_postcondition`]). `None` marks the
     /// pre-pass that builds that map, where nothing propagates at all --
-    /// see [`return_site_closure`].
+    /// see `return_site_closure`.
     closed: Option<&'a HashMap<String, ClosureKind>>,
     found: &'a mut Vec<FoundObligation>,
 }

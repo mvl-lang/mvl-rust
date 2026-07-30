@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "#[mvl::effect(list)] propagation checking for mvl-rust: same-file, flat effect-set enforcement across function calls."
+readme = "README.md"
 
 [[bin]]
 name = "cargo-mvl-effect"

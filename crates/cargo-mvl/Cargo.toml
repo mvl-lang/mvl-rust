@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "cargo subcommand aggregating all installed mvl-rust tools (check, prove, test, mcdc, coverage, assurance)."
+readme = "README.md"
 
 [[bin]]
 name = "cargo-mvl"

@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Shared infrastructure for mvl-rust: attribute grammar, AST walker, diagnostics, solver bindings."
+readme = "README.md"
 
 [dependencies]
 syn = { version = "2", features = ["full", "extra-traits", "visit", "visit-mut"] }

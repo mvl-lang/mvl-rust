@@ -4,8 +4,8 @@
 //! proc-macro items; `mvl` needs to also export ordinary types (`Tainted`,
 //! `Secret`) and functions (`trust`), so those live in `mvl` itself, which
 //! re-exports these attributes alongside them — the same split
-//! `tokio`/`tokio-macros` uses. Don't depend on this crate directly; depend
-//! on `mvl`.
+//! `tokio`/`tokio-macros` uses. **Don't depend on this crate directly;
+//! depend on [`mvl`](https://docs.rs/mvl).**
 //!
 //! Attributes attach only at the function-item level, never to individual
 //! parameters — Rust's grammar disallows attribute *macros* (as opposed to
@@ -19,7 +19,7 @@
 //! **`requires` and `ensures` are active** (#53): they inject a runtime
 //! `assert!`. Annotated code no longer compiles to the same thing as
 //! unannotated code, and **this amends ADR-0001 §2**, which made every
-//! attribute inert. See [`inject`] for the mechanism and ADR-0006 §4–§5 for
+//! attribute inert. See the `inject` module for the mechanism and ADR-0006 §4–§5 for
 //! why enforcement — rather than reporting alone — is what makes Γ sound.
 //!
 //! **Everything else stays a pass-through.** `total`, `decreases`, `effect`,

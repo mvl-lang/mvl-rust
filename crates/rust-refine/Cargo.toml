@@ -5,7 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "#[mvl::requires]/#[mvl::ensures] refinement obligations for mvl-rust, discharged via the native L1/L2 solver backend."
+description = "#[mvl::requires]/#[mvl::ensures] refinement obligations for mvl-rust, discharged via a layered solver (native L1-L4, optional Z3-backed L5)."
+readme = "README.md"
 
 [[bin]]
 name = "cargo-mvl-refine"
