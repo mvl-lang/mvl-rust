@@ -8,6 +8,8 @@ below backfills everything merged while the workspace sat at that version.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-08-07
+
 ### Fixed
 
 - `mvl-rust-core`'s schema-stability test can now tell a wire-shape change
