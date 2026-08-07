@@ -167,6 +167,40 @@ diagnostic is preferable to a wrong one**, because both tools emit only
   narrows this by rejecting `dyn Trait` and unreviewed macros, but does not
   close it — cross-file calls remain legal and invisible.
 
+### Relationship to MVL's `total fn`
+
+`#[mvl::total]` and mvl's `total fn` are different predicates, in both
+directions — neither is a superset of the other, despite the shared name:
+
+| | mvl — `total fn` | mvl-rust — `#[mvl::total]` |
+|---|---|---|
+| Default | implicitly total, opt out via `partial` | unscanned, opt in via attribute |
+| `total` means | terminates | terminates **and** panic-free |
+| Panic-freedom | not checked here — Req 10's job, via refinements | checked: `.unwrap()`, `.expect()`, `panic!`, `todo!`, indexing, `/`, `%` |
+| Recursion proof | syntactic measures + structural-subterm set, SMT-proved for loops | presence of `#[mvl::decreases]` only, not proved |
+| Escape hatch | `partial` | `#[mvl::unchecked]` |
+
+Concretely: `total fn divzero(a: Int, b: Int) -> Int { a / b }` is accepted by
+mvl (division-by-zero is a runtime panic, outside `total`'s termination-only
+scope) and rejected by mvl-rust (`panic_freedom.rs` flags `/`). A
+`#[mvl::decreases(n)]` naming a measure that does not decrease is accepted by
+mvl-rust (presence-only, §2 above) and rejected by mvl (SMT-proved).
+
+Both positions have prior art and neither is "wrong": mvl's split — termination
+separate from runtime-error freedom — follows SPARK, Dafny, Idris and Lean 4.
+mvl-rust's bundling follows Turner's original 2004 formulation (all primitives
+total), which is the more defensible retrofit onto Rust, where `/` genuinely
+traps. The point recorded here is narrower than picking a winner: the two
+attributes are not interchangeable, and a claim that a function is `total`
+does not mean the same thing when read across the two projects. See spec 003
+Known Limitations for the mvl-rust-facing statement of this.
+
+This ADR does not decide whether the two should converge (e.g. by splitting
+`#[mvl::total]` into separate termination and panic-freedom attributes,
+using the already-parsed-but-unclaimed `#[mvl::partial]` to supply a
+tri-state) — that is a design question for a future ADR, not a documentation
+fix.
+
 ## Links
 
 - `mvl-lang/mvl-rust`#6 (`rust-total`), #9 (`rust-effect`, v1 scope decision)

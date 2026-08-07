@@ -1,15 +1,20 @@
 # rust-total
 
 `#[mvl::total]` verifier for [mvl-rust](https://github.com/mvl-lang/mvl-rust):
-panic-freedom and terminating recursion (spec Requirement 2). Only functions
-carrying `#[mvl::total]` are scanned; everything else is untouched.
+a syntactic panic-risk scan, plus a `decreases`-attribute presence check on
+direct recursion (spec 003 Requirements 1 and 3). Only functions carrying
+`#[mvl::total]` are scanned; everything else is untouched. This is weaker
+than the name suggests — see
+[Known Limitations](https://github.com/mvl-lang/mvl-rust/blob/main/.openspec/specs/003-function-contracts/spec.md#known-limitations)
+for what is and isn't proved, including how this differs from MVL's own
+`total fn`.
 
 ## Attributes
 
 | Attribute | Meaning |
 |---|---|
-| `#[mvl::total]` | Promises the function is panic-free and (if recursive) terminates. |
-| `#[mvl::decreases(measure)]` | Names the expression that must strictly decrease on every recursive call — required on recursive `#[mvl::total]` functions. |
+| `#[mvl::total]` | Claims the function is panic-free and (if recursive) terminates. The tool checks for syntactically obvious panic constructs and, on direct recursion, that a `decreases` attribute is present — it does not prove either property. |
+| `#[mvl::decreases(measure)]` | Names the expression intended to strictly decrease on every recursive call — required on recursive `#[mvl::total]` functions. Presence is checked, not that the measure actually decreases. |
 
 ## Quick example
 
