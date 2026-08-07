@@ -11,8 +11,10 @@
 Two tools use the attribute carrier in its simplest form: an attribute on a function declares a property, and the tool checks that function's body against it. No hypothesis context, no solver, no cross-procedural state.
 
 ```
-#[mvl::total]               → rust-total:  this body cannot panic and terminates
-#[mvl::decreases(measure)]  → rust-total:  measure for a recursive total function
+#[mvl::total]               → rust-total:  claims this body cannot panic and terminates
+                                            (checked, not proved — see Known Limitations)
+#[mvl::decreases(measure)]  → rust-total:  names the measure for a recursive total function
+                                            (presence checked, not that it decreases)
 #[mvl::effect(Log, Clock)]  → rust-effect: this body performs at most these effects
 ```
 
@@ -146,6 +148,7 @@ Call resolution MUST be same-file free functions only. A call to anything else M
 ## Known Limitations
 
 - **`#[mvl::total]` is weaker than its name.** It means "contains no *syntactically obvious* panic construct and, if directly recursive, carries a `decreases` attribute". It does not mean panic-free and it does not mean terminating. Any downstream assurance claim reading `total` as a guarantee is over-reading it.
+- **`#[mvl::total]` is not the same predicate as mvl's `total fn`, in either direction.** mvl's `total` is termination-only and opt-out (`partial` is the escape hatch); panic-freedom is a separate requirement (Req 10) checked via refinements. mvl-rust's `total` bundles panic-freedom checking into the same attribute and is opt-in (unannotated functions are unscanned), and its recursion check is presence-only rather than a proved measure. Concretely: `total fn divzero(a: Int, b: Int) -> Int { a / b }` is accepted by mvl (division-by-zero is a runtime panic, not a totality violation) and rejected by mvl-rust; a `#[mvl::decreases(n)]` naming a non-decreasing measure is accepted by mvl-rust (presence-only) and rejected by mvl (SMT-proved). Neither position is wrong — mvl's split follows SPARK/Dafny/Idris/Lean 4 in separating termination from runtime-error freedom, mvl-rust's bundling follows Turner's original 2004 formulation adapted to a language where `/` can trap — but the two attributes are not interchangeable and `total` does not mean the same thing when read across the two projects. ADR-0003 §"Relationship to MVL's `total fn`".
 - **Requirement 2's division rule produces false positives on float code**, by construction. Accepted on frequency grounds; fixing it needs types.
 - **Effects cannot serve as a purity signal for the solver.** Requirement 4's conflation of *absent* with *declared-empty* means the two are indistinguishable, which is why #45 cannot use `rust-effect` as the purity oracle spec 006's reflexivity rule needs. A tri-state signal would change this decision, not extend it.
 - **Nor can an explicit `#[mvl::effect()]`** — Requirement 4's claim is verified only against same-file resolvable calls, so a function annotated pure that reaches an effect through a method or cross-file call is accepted in silence. It is an unverified assertion rather than an established fact, and nothing currently marks it as one. ADR-0008 §3–§4; pinned by `an_explicit_purity_claim_is_not_verified_against_unresolvable_calls`.

@@ -1,7 +1,8 @@
 # rust-total-demo
 
-Demonstrates `rust-total`'s panic-freedom and termination checks (spec
-Requirement 2) against a compliant crate and a violating crate.
+Demonstrates `rust-total`'s panic-risk scan and `decreases`-attribute
+presence check (spec 003 Requirements 1 and 3) against a compliant crate
+and a violating crate.
 
 - `compliant/` — `factorial` (recursive, with a correct
   `#[mvl::decreases(n)]`) and an exhaustive `match` over a `TrafficLight`

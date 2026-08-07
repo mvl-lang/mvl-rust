@@ -31,7 +31,7 @@ fn non_total_functions_are_not_scanned_at_all() {
     );
 }
 
-// ── spec Requirement 2 scenarios ────────────────────────────────────────
+// ── termination-trigger (`decreases`) scenarios ─────────────────────────
 
 #[test]
 fn wildcard_arm_panic_is_rejected() {

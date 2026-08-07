@@ -15,6 +15,17 @@ below backfills everything merged while the workspace sat at that version.
   under `docs/` (overview, integration recipes for Kani/Creusot/Prusti,
   FAQ) written to drop into `mvl-lang.github.io` as a subsite (#73,
   closes #11).
+- Qualified `#[mvl::total]`'s "panic-freedom and terminating recursion"
+  claim across `README.md`, `crates/rust-total`'s README/lib.rs/Cargo.toml,
+  spec 003's Overview, the `rust-total-demo` example README, and the
+  `docs/` prose guides (`overview.md`, `integration/kani.md`) — none of
+  them now overclaim what the checks actually establish. Fixed the
+  ambiguous "spec Requirement 2" citations
+  (wrong number for the termination check, and confusable with MVL's own
+  Requirement 2) in `rust-total`'s docs and tests. Documented that
+  `#[mvl::total]` and MVL's `total fn` are different predicates in both
+  directions, in spec 003's Known Limitations and a new ADR-0003 section
+  (closes #74, closes #75).
 
 ## [0.1.3] - 2026-07-30
 

@@ -3,7 +3,7 @@
 //!
 //! v1 checks *presence* only — it does not attempt to prove the measure
 //! actually decreases on each recursive call (a real interval-analysis
-//! proof, per spec Requirement 2, is deferred future work). Only direct
+//! proof, per spec 003 Requirement 3, is deferred future work). Only direct
 //! self-recursion is detected; mutual recursion between two functions is
 //! out of scope for v1.
 

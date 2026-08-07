@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "#[mvl::total] verifier for mvl-rust: panic-freedom and terminating recursion."
+description = "#[mvl::total] verifier for mvl-rust: syntactic panic-risk scan plus decreases-attribute presence check."
 readme = "README.md"
 
 [[bin]]
