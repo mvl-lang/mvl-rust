@@ -8,6 +8,19 @@ below backfills everything merged while the workspace sat at that version.
 
 ## [Unreleased]
 
+### Fixed
+
+- `mvl-rust-core`'s schema-stability test can now tell a wire-shape change
+  from a doc-comment-only edit: `committed_schema_matches_the_derived_schema`
+  compares the derived and committed schemas twice — once with `description`
+  fields stripped (a mismatch means a real shape change, bump
+  `ASSURANCE_SCHEMA_VERSION`) and once as-is (a mismatch here, only reached
+  once the shape check passes, means only doc-comment text drifted —
+  regenerate via `bless_committed_schema`, do not bump). Previously the two
+  were conflated in one assertion, so any doc-comment edit on a type
+  reachable from `AssuranceReport` failed the test with advice to consider
+  bumping the version (closes #64).
+
 ### Docs
 
 - Per-crate docs.rs polish: every crate gets a `README.md` and a
