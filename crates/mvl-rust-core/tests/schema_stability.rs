@@ -1,10 +1,16 @@
 //! Two things, per issue #13's acceptance criteria:
 //!
 //! 1. The committed `schemas/assurance-v<ASSURANCE_SCHEMA_VERSION>.json` must match what
-//!    `schemars` derives from `AssuranceReport` right now — if they
-//!    differ, the schema shape changed without deliberately regenerating
-//!    the committed file (and, per `assurance/version.rs`'s doc comment,
-//!    without bumping `ASSURANCE_SCHEMA_VERSION`).
+//!    `schemars` derives from `AssuranceReport` right now. This is checked
+//!    in two separate steps (#64), because `schemars` embeds Rust doc
+//!    comments as `description` fields, so a doc-comment edit alone would
+//!    otherwise be indistinguishable from a real shape change:
+//!    - **Shape** — compared with `description` stripped recursively. A
+//!      mismatch here is a real change (field added, removed, or
+//!      retyped) and `ASSURANCE_SCHEMA_VERSION` must bump.
+//!    - **Description** — compared as-is, only once shape has already
+//!      matched. A mismatch here is doc-comment drift only: regenerate
+//!      the committed file, but do NOT bump the version.
 //! 2. "Rust types + JSON Schema in sync (verified via a test that
 //!    round-trips)" — a real, fully-populated sample report serializes to
 //!    JSON and deserializes back to the same value.
@@ -33,6 +39,27 @@ fn committed_schema_path() -> std::path::PathBuf {
         .join(format!("assurance-v{ASSURANCE_SCHEMA_VERSION}.json"))
 }
 
+/// Removes `description` keys at every level of a JSON value, in place.
+/// `schemars` embeds Rust doc comments as `description`, so stripping this
+/// recursively is what separates the wire *shape* from doc-comment text
+/// when comparing two schemas (#64).
+fn strip_descriptions(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            map.remove("description");
+            for v in map.values_mut() {
+                strip_descriptions(v);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for v in items {
+                strip_descriptions(v);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[test]
 fn committed_schema_matches_the_derived_schema() {
     let derived = schemars::schema_for!(AssuranceReport);
@@ -43,18 +70,81 @@ fn committed_schema_matches_the_derived_schema() {
         .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
     let committed_value: serde_json::Value = serde_json::from_str(&committed_text).unwrap();
 
+    let mut derived_shape = derived_value.clone();
+    let mut committed_shape = committed_value.clone();
+    strip_descriptions(&mut derived_shape);
+    strip_descriptions(&mut committed_shape);
+
+    assert_eq!(
+        derived_shape,
+        committed_shape,
+        "{} is out of date with AssuranceReport's current *shape* (field added, removed, \
+         or retyped) -- description text is not the difference here.\n\
+         Regenerate it with: cargo test -p mvl-rust-core --test schema_stability -- \\\n\
+         \x20  --ignored bless_committed_schema\n\
+         Then bump ASSURANCE_SCHEMA_VERSION: this is a real shape change.",
+        path.display()
+    );
+
     assert_eq!(
         derived_value,
         committed_value,
-        "{} is out of date with AssuranceReport's current shape.\n\
+        "{} has stale `description` text -- `schemars` embeds Rust doc comments there, \
+         and the shape check above already confirmed the wire shape itself is unchanged.\n\
          Regenerate it with: cargo test -p mvl-rust-core --test schema_stability -- \\\n\
          \x20  --ignored bless_committed_schema\n\
-         Then decide whether ASSURANCE_SCHEMA_VERSION needs bumping: only a *shape* change \
-         does (field added, removed, or retyped). A doc-comment edit also lands here, because \
-         `schemars` embeds doc comments as `description` -- regenerate, but do NOT bump, or \
-         you falsely signal a break to consumers pinned to the current version. See #64.",
+         Do NOT bump ASSURANCE_SCHEMA_VERSION -- that would falsely signal a break to \
+         consumers pinned to the current version. See #64.",
         path.display()
     );
+}
+
+#[test]
+fn strip_descriptions_removes_description_at_every_level() {
+    let mut value = serde_json::json!({
+        "description": "top-level",
+        "properties": {
+            "a": { "description": "nested", "type": "string" },
+            "b": { "items": [{ "description": "in an array" }] }
+        }
+    });
+    strip_descriptions(&mut value);
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "properties": {
+                "a": { "type": "string" },
+                "b": { "items": [{}] }
+            }
+        })
+    );
+}
+
+/// This is the property #64 asks for: two schemas whose only difference is
+/// doc-comment text must compare equal once descriptions are stripped, even
+/// though they are not equal as raw values.
+#[test]
+fn a_description_only_diff_disappears_after_stripping_but_not_before() {
+    let mut a = serde_json::json!({ "description": "old wording", "type": "object" });
+    let mut b = serde_json::json!({ "description": "new wording", "type": "object" });
+    assert_ne!(a, b, "fixture should differ before stripping");
+
+    strip_descriptions(&mut a);
+    strip_descriptions(&mut b);
+    assert_eq!(a, b, "description-only diff must vanish after stripping");
+}
+
+/// The dual of the above: a genuine shape change (a field retyped) must
+/// still be visible after stripping descriptions, so it can't be mistaken
+/// for a doc-comment edit.
+#[test]
+fn a_shape_diff_survives_stripping() {
+    let mut a = serde_json::json!({ "description": "same wording", "type": "string" });
+    let mut b = serde_json::json!({ "description": "same wording", "type": "integer" });
+
+    strip_descriptions(&mut a);
+    strip_descriptions(&mut b);
+    assert_ne!(a, b, "a real shape change must not be stripped away");
 }
 
 /// Regenerates the committed schema for the *current*
