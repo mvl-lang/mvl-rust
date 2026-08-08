@@ -1,0 +1,8 @@
+[package]
+name = "rust-limit-idioms-demo-contracted"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+mvl = { path = "../../../crates/mvl" }
