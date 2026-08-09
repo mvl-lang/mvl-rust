@@ -131,6 +131,39 @@ ADR-0003. Proving descent across a mutual-recursion cycle needs a shared
 measure argument between two signatures — a bigger step than tightening the
 single-function case, and not part of this ADR.
 
+### 5. A shadowed measure is rejected outright
+
+Found by manual probing after §2's redesign, not a hypothetical: with no
+name resolution, the entailment goal `<argument> < <measure>` is built from
+bare identifier text, so a function that rebinds the measure's name before
+recursing —
+
+```rust
+#[mvl::total]
+#[mvl::decreases(n)]
+fn shadowed(n: u64) -> u64 {
+    let n = n + 100;
+    if n == 0 { 0 } else { shadowed(n - 1) }
+}
+```
+
+— builds the exact same goal `(n - 1) < n` an honestly-decreasing function
+would, and the solver correctly proves it. It proves it about the wrong
+`n`: the recursive call's argument is `(original n + 100) - 1`, strictly
+*larger* than `original n`, and the function never terminates. This was
+accepted with zero diagnostics before this section's guard existed — a real
+false acceptance, not a hypothetical one, and the same class of hole would
+have existed in this ADR's original hardcoded-shape-matcher draft too (it
+matched the call argument's identifier by the same bare-text comparison).
+
+The tool now rejects `decreases` outright if the measure identifier is
+rebound anywhere in the function body — a `let`, a closure parameter, a
+match arm, a for-loop pattern, anything. This is deliberately conservative:
+an unrelated, harmless reuse of the same name elsewhere in the body is
+rejected too, since there is no way to tell it apart from a load-bearing
+shadow without name resolution. ADR-0001 §5's rule applies exactly here:
+false rejection is the safe direction for a gate.
+
 ## Consequences
 
 - **This is a breaking change**, by design. Any `#[mvl::decreases(measure)]`

@@ -190,6 +190,31 @@ fn non_parameter_measure_is_rejected() {
 }
 
 #[test]
+fn a_shadowed_measure_is_rejected_even_though_it_looks_decreasing() {
+    // A real bug found by manual probing, not a hypothetical: before this
+    // guard existed, this function was accepted with zero diagnostics.
+    // `n` is rebound to `n + 100` before the recursive call, so the `n` in
+    // `shadowed(n - 1)` refers to the *shadowed local* (original `n` + 99),
+    // not the parameter -- the function never terminates (each call's
+    // argument is strictly larger than the last). With no name resolution,
+    // the check cannot tell this from an honestly-decreasing `n - 1`, since
+    // both build the identical goal `(n - 1) < n` on the bare identifier
+    // text. Rejecting any shadow of the measure is the sound response.
+    let source = r#"
+        #[mvl::total]
+        #[mvl::decreases(n)]
+        fn shadowed(n: u64) -> u64 {
+            let n = n + 100;
+            if n == 0 { 0 } else { shadowed(n - 1) }
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1, "got {diagnostics:?}");
+    assert!(diagnostics[0].message.contains("shadowed"));
+    assert!(diagnostics[0].message.contains("rebound"));
+}
+
+#[test]
 fn non_recursive_total_function_needs_no_decreases() {
     let source = r#"
         #[mvl::total]

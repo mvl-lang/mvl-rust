@@ -121,6 +121,15 @@ The tool MUST require `#[mvl::decreases(measure)]` on any `#[mvl::total]` functi
 
 **Tests:** `crates/rust-total/tests/totality.rs::non_parameter_measure_is_rejected`
 
+#### Scenario: A measure shadowed in the function body is rejected
+
+- GIVEN a `#[mvl::total]` recursive function carrying `#[mvl::decreases(n)]`
+- AND `n` is rebound somewhere in the function body (a `let`, a closure parameter, a match arm, a for-loop pattern)
+- WHEN the termination check runs
+- THEN a `Level::Error` diagnostic MUST be reported, regardless of whether the recursive call's argument would otherwise discharge as `Proven`
+
+**Tests:** `crates/rust-total/tests/totality.rs::a_shadowed_measure_is_rejected_even_though_it_looks_decreasing`
+
 ### Requirement 4: A caller must declare every effect its callees declare [MUST]
 
 The tool MUST reject a call from a function whose declared effect set does not include every effect declared by the callee. Absence of `#[mvl::effect(…)]` MUST be treated identically to an explicit `#[mvl::effect()]` — the empty set — so that not declaring an effect is a positive claim of purity.

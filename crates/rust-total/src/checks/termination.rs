@@ -29,6 +29,17 @@
 //! ADR-0006), an unproven call is rejected rather than silently trusted.
 //! Only direct self-recursion is detected; mutual recursion between two
 //! functions is out of scope for v1.
+//!
+//! `measure` MUST also not be rebound anywhere in the function body (a
+//! `let`, a closure parameter, a match arm, ...). With no name resolution,
+//! the check cannot tell a load-bearing shadow from a harmless one --
+//! `fn f(n: u64) { let n = n + 100; if n == 0 {0} else {f(n - 1)} }` builds
+//! the same goal `(n - 1) < n` this check would prove for the honest case,
+//! but the `n` in the recursive call means the *shadowed local*, and the
+//! function actually never terminates. Confirmed empirically before adding
+//! this guard: it was accepted with zero diagnostics. Rejecting any
+//! shadow of `measure` is conservative (a harmless, unrelated reuse of the
+//! same name is rejected too) but sound, per ADR-0001 §5.
 
 use mvl_rust_core::attrs::Predicate;
 use mvl_rust_core::diagnostics::{Diagnostic, Level};
@@ -37,7 +48,7 @@ use mvl_rust_core::solver::DischargeResult;
 use quote::quote;
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
-use syn::{Expr, ExprCall, FnArg, Ident, ItemFn, Pat};
+use syn::{Expr, ExprCall, FnArg, Ident, ItemFn, Pat, PatIdent};
 
 struct RecursiveCallCollector<'a> {
     fn_name: &'a Ident,
@@ -67,6 +78,41 @@ fn find_recursive_calls<'ast>(item_fn: &'ast ItemFn, fn_name: &'ast Ident) -> Ve
     };
     collector.visit_block(&item_fn.block);
     collector.calls
+}
+
+struct ShadowDetector<'a> {
+    measure: &'a Ident,
+    shadowed: bool,
+}
+
+impl<'ast> Visit<'ast> for ShadowDetector<'_> {
+    fn visit_pat_ident(&mut self, node: &'ast PatIdent) {
+        if node.ident == *self.measure {
+            self.shadowed = true;
+        }
+        visit::visit_pat_ident(self, node);
+    }
+}
+
+/// Whether `measure` is rebound anywhere in `item_fn`'s body -- a `let`, a
+/// closure parameter, a match arm, a for-loop pattern, anything that
+/// introduces a new binding with the same name. `rust-total` has no name
+/// resolution (ADR-0001), so it cannot tell a load-bearing shadow (the
+/// recursive call's `measure` token now means the *shadowed* local, not
+/// the parameter the entailment goal is supposed to be about) from a
+/// harmless, unrelated reuse of the same identifier. Flagging both is the
+/// "false rejection is the safe direction for a gate" call (ADR-0001 §5):
+/// the alternative is a real false *acceptance* -- confirmed empirically,
+/// `fn f(n: u64) { let n = n + 100; if n == 0 {0} else {f(n - 1)} }` never
+/// terminates (each call's `n` is strictly larger than the last) and was
+/// accepted with zero diagnostics before this check existed.
+fn measure_is_shadowed(item_fn: &ItemFn, measure: &Ident) -> bool {
+    let mut detector = ShadowDetector {
+        measure,
+        shadowed: false,
+    };
+    detector.visit_block(&item_fn.block);
+    detector.shadowed
 }
 
 /// Parameter names in declaration order. `None` in place of any parameter
@@ -123,6 +169,11 @@ pub fn check(
         return;
     };
 
+    if measure_is_shadowed(item_fn, measure_ident) {
+        diagnostics.push(shadowed_measure_diagnostic(fn_name, measure_ident));
+        return;
+    }
+
     for call in recursive_calls {
         let Some(arg) = call.args.iter().nth(param_index) else {
             diagnostics.push(unproven_diagnostic(fn_name, measure_ident, call, None));
@@ -176,6 +227,20 @@ fn non_parameter_measure_diagnostic(fn_name: &Ident, measure: &Expr) -> Diagnost
     )
     .with_label("not a bare parameter identifier")
     .with_suggestion("use a single parameter name as the measure, e.g. #[mvl::decreases(n)]")
+}
+
+fn shadowed_measure_diagnostic(fn_name: &Ident, measure_ident: &Ident) -> Diagnostic {
+    Diagnostic::new(
+        Level::Error,
+        format!(
+            "`#[mvl::decreases({measure_ident})]` on `{fn_name}` cannot be verified: `{measure_ident}` is rebound somewhere in the function body"
+        ),
+        fn_name.span(),
+    )
+    .with_label("measure identifier shadowed in the body")
+    .with_suggestion(format!(
+        "rename the shadowing binding so `{measure_ident}` unambiguously refers to the parameter at every recursive call"
+    ))
 }
 
 fn unproven_diagnostic(
