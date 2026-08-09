@@ -13,7 +13,7 @@ name = "cargo-mvl-limit"
 path = "src/main.rs"
 
 [dependencies]
-mvl-rust-core = { path = "../mvl-rust-core", version = "0.1.4" }
+mvl-rust-core = { path = "../mvl-rust-core", version = "0.2.0" }
 syn = { version = "2", features = ["full", "extra-traits", "visit"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 thiserror = "2"

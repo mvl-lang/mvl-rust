@@ -8,6 +8,22 @@ below backfills everything merged while the workspace sat at that version.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-09
+
+### Added
+
+- ADR-0009: `#[mvl::decreases(measure)]` now proves descent instead of checking presence. `measure` must be a bare parameter identifier; every direct recursive call's argument for it is discharged as the entailment obligation `<argument> < <measure>` through `mvl_rust_core::solver::native` — the same native `L1`–`L4` linear-arithmetic backend `rust-refine` uses for `requires`/`ensures`. The function's own `#[mvl::requires(...)]` clauses are supplied as hypotheses, so a symbolic decrement can be proved (e.g. `decreases(fuel)` with a call passing `fuel - k`, given `requires(k > 0)`), not just a literal constant.
+- A `decreases` measure that is rebound anywhere in the function body (a `let`, closure parameter, match arm, for-loop pattern) is now rejected outright — found by manual edge-case probing after the above: with no name resolution, a shadowed measure could be "proven" to decrease while the function actually never terminates.
+- `examples/rust-total-demo` now covers every `decreases` case, good and bad: literal descent, symbolic descent via `requires`, a missing measure, a non-decreasing measure, a shadowed measure, an unbounded symbolic decrement, and division (which terminates at runtime but is never provable). Gained its own scoped `Makefile`.
+
+### Fixed
+
+- Spec 003 and ADR-0003 no longer describe `#[mvl::partial]` as "parsed and unclaimed" — it was removed entirely (not claimed) when #54 closed, and referencing it as a live, if-inert attribute was stale documentation.
+
+### Changed
+
+- This is a deliberate breaking change to `#[mvl::decreases]`'s acceptance criteria (ADR-0009 Consequences): any measure that previously passed on presence alone and isn't provable under the native solver's linear-arithmetic fragment — most visibly, anything division/modulo-based — now fails.
+
 ## [0.1.5] - 2026-08-09
 
 ### Added
