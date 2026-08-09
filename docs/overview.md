@@ -10,7 +10,7 @@ add the ones that check something you actually want checked.
 | I want to guarantee... | Tool | Attribute | Nothing to add? |
 |---|---|---|---|
 | My code stays in the subset the other tools can verify at all | [`rust-limit`](https://docs.rs/rust-limit) | — (whole-file) | Runs on every function, no opt-in |
-| This function has no obvious panic risk, and (if recursive) carries a decreases measure — checked, not proved; see [Known Limitations](https://github.com/mvl-lang/mvl-rust/blob/main/.openspec/specs/003-function-contracts/spec.md#known-limitations) | [`rust-total`](https://docs.rs/rust-total) | `#[mvl::total]`, `#[mvl::decreases(measure)]` | |
+| This function has no obvious panic risk, and (if recursive) carries a decreases measure whose descent is proved by the native linear-arithmetic solver `rust-refine` also uses — see [Known Limitations](https://github.com/mvl-lang/mvl-rust/blob/main/.openspec/specs/003-function-contracts/spec.md#known-limitations) | [`rust-total`](https://docs.rs/rust-total) | `#[mvl::total]`, `#[mvl::decreases(measure)]` | |
 | A precondition/postcondition holds — proved at compile time where possible, enforced at runtime otherwise | [`rust-refine`](https://docs.rs/rust-refine) | `#[mvl::requires(pred)]`, `#[mvl::ensures(pred)]` | |
 | A caller can't forget to declare an effect its callees perform | [`rust-effect`](https://docs.rs/rust-effect) | `#[mvl::effect(list)]` | |
 | Tainted/secret data is only declassified through a declared transition | [`rust-ifc`](https://docs.rs/rust-ifc) | `#[mvl::label]`, `#[mvl::relabel(...)]` | |

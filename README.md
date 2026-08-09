@@ -19,7 +19,7 @@ Two facets, one workspace:
 | Crate | `cargo mvl` subcommand | Checks | Attribute(s) |
 |---|---|---|---|
 | [`rust-limit`](crates/rust-limit) | `limit` | Code stays inside the Rust subset the other tools can verify (no `unsafe`, no `dyn Trait`, ...) | — (whole-file) |
-| [`rust-total`](crates/rust-total) | `total` | Syntactic panic-risk scan, plus a `decreases`-attribute presence check on direct recursion — see [Known Limitations](.openspec/specs/003-function-contracts/spec.md#known-limitations) | `#[mvl::total]`, `#[mvl::decreases(measure)]` |
+| [`rust-total`](crates/rust-total) | `total` | Syntactic panic-risk scan, plus a `decreases`-measure provability check on direct recursion — see [Known Limitations](.openspec/specs/003-function-contracts/spec.md#known-limitations) | `#[mvl::total]`, `#[mvl::decreases(measure)]` |
 | [`rust-refine`](crates/rust-refine) | `refine` | Preconditions/postconditions hold, proved at compile time where possible | `#[mvl::requires(pred)]`, `#[mvl::ensures(pred)]` |
 | [`rust-effect`](crates/rust-effect) | `effect` | A caller declares every effect its callees declare | `#[mvl::effect(list)]` |
 | [`rust-ifc`](crates/rust-ifc) | `ifc` | Labeled data is only declassified through a declared transition | `#[mvl::label]`, `#[mvl::relabel(from, to, audit)]` |

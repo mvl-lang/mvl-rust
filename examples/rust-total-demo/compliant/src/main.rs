@@ -1,6 +1,7 @@
 //! Demonstrates code that stays within rust-total's checks: no panics, and
-//! the one recursive `#[mvl::total]` function carries a
-//! `#[mvl::decreases(measure)]` that strictly decreases.
+//! every recursive `#[mvl::total]` function carries a
+//! `#[mvl::decreases(measure)]` whose descent the native solver proves
+//! (ADR-0009).
 
 #[mvl::total]
 #[mvl::decreases(n)]
@@ -9,6 +10,22 @@ fn factorial(n: u64) -> u64 {
         1
     } else {
         n * factorial(n - 1)
+    }
+}
+
+// ADR-0009 §2: `fuel - k` is a *symbolic* decrement, not a literal -- only
+// provable because `#[mvl::requires(k > 0)]` gives the solver a hypothesis
+// to prove `(fuel - k) < fuel` from (Fourier-Motzkin, L4). This is the
+// case a fixed shape list could never recognize: nothing about `k` is
+// known syntactically, only through the declared precondition.
+#[mvl::total]
+#[mvl::decreases(fuel)]
+#[mvl::requires(k > 0)]
+fn countdown(fuel: u64, k: u64) -> u64 {
+    if fuel == 0 {
+        0
+    } else {
+        countdown(fuel - k, k)
     }
 }
 
@@ -29,6 +46,7 @@ fn next(light: &TrafficLight) -> TrafficLight {
 
 fn main() {
     println!("5! = {}", factorial(5));
+    println!("countdown(9, 3) = {}", countdown(9, 3));
 
     let mut light = TrafficLight::Red;
     for _ in 0..3 {

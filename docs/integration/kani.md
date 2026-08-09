@@ -21,7 +21,7 @@ solver.
   solver (or, with the optional `z3` feature, QF-NIA) can represent. Kani
   can check properties `rust-refine` can't touch at all (memory safety,
   bit-precise overflow, `unsafe` code) but does so by bounded model
-  checking, which costs real CI time and needs an explicit unwind bound.
+  checking, which costs real CI time and needs an explicit unwind bound
 - **`rust-limit` and Kani pull in opposite directions on `unsafe`.**
   `rust-limit` rejects `unsafe` outright, because the rest of `mvl-rust`'s
   proofs assume it's absent. Kani's proofs are most valuable exactly where
@@ -34,8 +34,11 @@ solver.
 - Use `mvl-rust` (`rust-total`, `rust-refine`) on the ordinary-Rust business
   logic: `rust-refine`'s pre/postconditions over integer arithmetic are
   proved natively and cheaply on every build, and `rust-total` adds a cheap
-  syntactic panic-risk scan and decreases-attribute presence check on top —
-  the latter is checked, not proved (see `rust-total`'s Known Limitations).
+  syntactic panic-risk scan plus a decreases-measure provability check on
+  top, reusing that same native solver — provable for subtraction, never for
+  division/modulo (outside the solver's linear-arithmetic system entirely),
+  not a general termination proof (see `rust-total`'s Known Limitations,
+  ADR-0009).
 - Reserve Kani harnesses for the `unsafe` core, FFI boundaries, or anywhere
   you need a genuine bounded-model-checking guarantee (memory safety,
   bit-level correctness) that no attribute-based static check can give you.

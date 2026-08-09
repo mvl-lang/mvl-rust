@@ -11,11 +11,11 @@
 mod panic_freedom;
 mod termination;
 
-use mvl_rust_core::attrs::MvlAttr;
+use mvl_rust_core::attrs::{MvlAttr, Predicate};
 use mvl_rust_core::diagnostics::Diagnostic;
 use std::path::Path;
 use syn::visit::{self, Visit};
-use syn::{Attribute, ItemFn};
+use syn::{Attribute, Expr, ItemFn};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -51,17 +51,28 @@ pub fn check_source(source: &str) -> Result<Vec<Diagnostic>, CheckError> {
     Ok(diagnostics)
 }
 
-fn total_and_decreases(attrs: &[Attribute]) -> (bool, bool) {
+/// `requires` collects only the `Predicate::Expr` clauses -- a quantified
+/// `requires` (`forall`/`exists`) isn't a plain `syn::Expr` hypothesis
+/// `discharge_entailment` can take, so it's skipped here rather than
+/// threaded through as something it isn't. That only narrows what
+/// `decreases` can prove; it never widens it incorrectly.
+fn total_decreases_and_requires(attrs: &[Attribute]) -> (bool, Option<Expr>, Vec<Expr>) {
     let mut is_total = false;
-    let mut has_decreases = false;
+    let mut decreases = None;
+    let mut requires = Vec::new();
     for attr in attrs {
         match MvlAttr::try_from_attribute(attr) {
             Some(Ok(MvlAttr::Total(_))) => is_total = true,
-            Some(Ok(MvlAttr::Decreases(_))) => has_decreases = true,
+            Some(Ok(MvlAttr::Decreases(attr))) => decreases = Some(attr.measure),
+            Some(Ok(MvlAttr::Requires(attr))) => {
+                if let Predicate::Expr(expr) = attr.predicate {
+                    requires.push(expr);
+                }
+            }
             _ => {}
         }
     }
-    (is_total, has_decreases)
+    (is_total, decreases, requires)
 }
 
 struct TotalFnFinder<'d> {
@@ -70,10 +81,10 @@ struct TotalFnFinder<'d> {
 
 impl<'ast> Visit<'ast> for TotalFnFinder<'_> {
     fn visit_item_fn(&mut self, node: &'ast ItemFn) {
-        let (is_total, has_decreases) = total_and_decreases(&node.attrs);
+        let (is_total, decreases, requires) = total_decreases_and_requires(&node.attrs);
         if is_total {
             panic_freedom::check(node, self.diagnostics);
-            termination::check(node, has_decreases, self.diagnostics);
+            termination::check(node, decreases.as_ref(), &requires, self.diagnostics);
         }
         visit::visit_item_fn(self, node);
     }

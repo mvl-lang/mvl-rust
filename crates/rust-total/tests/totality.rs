@@ -87,6 +87,134 @@ fn missing_decreases_on_recursive_total_function_is_rejected() {
 }
 
 #[test]
+fn non_decreasing_measure_is_rejected() {
+    // ADR-0009: presence is no longer enough. `n` is passed unchanged, so
+    // the measure never decreases, and the tool must now say so instead of
+    // accepting it on presence alone.
+    let source = r#"
+        #[mvl::total]
+        #[mvl::decreases(n)]
+        fn loops_forever(n: u64) -> u64 {
+            if n == 0 { 0 } else { loops_forever(n) }
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].message.contains("loops_forever"));
+    assert!(diagnostics[0]
+        .message
+        .contains("does not provably decrease"));
+}
+
+#[test]
+fn division_is_never_provably_decreasing() {
+    // Division/modulo is outside the native solver's linear-arithmetic
+    // fragment entirely (ADR-0009): `discharge_entailment` returns
+    // `Runtime` for `(n / 2) < n` regardless of hypotheses, confirmed
+    // empirically against a `n > 0` hypothesis too. With no runtime
+    // enforcement fallback for `decreases`, that's a rejection -- alongside
+    // panic_freedom's pre-existing, unrelated division-by-zero diagnostic
+    // (spec 003 Requirement 1).
+    let source = r#"
+        #[mvl::total]
+        #[mvl::decreases(n)]
+        fn halve(n: u64) -> u64 {
+            if n == 0 { 0 } else { halve(n / 2) }
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 2, "got {diagnostics:?}");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("division/modulo")));
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("does not provably decrease")));
+}
+
+#[test]
+fn a_symbolic_decrement_is_proved_given_a_requires_hypothesis() {
+    // The solver-backed check generalizes beyond literal constants: given
+    // `#[mvl::requires(k > 0)]`, `fuel - k` is proved to decrease `fuel` at
+    // L4 (Fourier-Motzkin), even though `k` is not itself a literal.
+    let source = r#"
+        #[mvl::total]
+        #[mvl::decreases(fuel)]
+        #[mvl::requires(k > 0)]
+        fn countdown(fuel: u64, k: u64) -> u64 {
+            if fuel == 0 { 0 } else { countdown(fuel - k, k) }
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert!(
+        diagnostics.is_empty(),
+        "expected no diagnostics, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn a_symbolic_decrement_without_a_positivity_hypothesis_is_rejected() {
+    // Same shape as the previous test, minus the `requires(k > 0)` -- with
+    // no hypothesis bounding `k`, the solver cannot rule out `k <= 0`
+    // (which would not decrease `fuel`), so the call is rejected.
+    let source = r#"
+        #[mvl::total]
+        #[mvl::decreases(fuel)]
+        fn countdown(fuel: u64, k: u64) -> u64 {
+            if fuel == 0 { 0 } else { countdown(fuel - k, k) }
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0]
+        .message
+        .contains("does not provably decrease"));
+}
+
+#[test]
+fn non_parameter_measure_is_rejected() {
+    // ADR-0009 §1: the measure must be a bare parameter identifier. A
+    // computed expression isn't analyzable by a syn-only, no-type-info
+    // check, so it's rejected rather than silently accepted.
+    let source = r#"
+        #[mvl::total]
+        #[mvl::decreases(n - 1)]
+        fn factorial(n: u64) -> u64 {
+            if n == 0 { 1 } else { n * factorial(n - 1) }
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].message.contains("factorial"));
+    assert!(diagnostics[0].message.contains("bare parameter"));
+}
+
+#[test]
+fn a_shadowed_measure_is_rejected_even_though_it_looks_decreasing() {
+    // A real bug found by manual probing, not a hypothetical: before this
+    // guard existed, this function was accepted with zero diagnostics.
+    // `n` is rebound to `n + 100` before the recursive call, so the `n` in
+    // `shadowed(n - 1)` refers to the *shadowed local* (original `n` + 99),
+    // not the parameter -- the function never terminates (each call's
+    // argument is strictly larger than the last). With no name resolution,
+    // the check cannot tell this from an honestly-decreasing `n - 1`, since
+    // both build the identical goal `(n - 1) < n` on the bare identifier
+    // text. Rejecting any shadow of the measure is the sound response.
+    let source = r#"
+        #[mvl::total]
+        #[mvl::decreases(n)]
+        fn shadowed(n: u64) -> u64 {
+            let n = n + 100;
+            if n == 0 { 0 } else { shadowed(n - 1) }
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1, "got {diagnostics:?}");
+    assert!(diagnostics[0].message.contains("shadowed"));
+    assert!(diagnostics[0].message.contains("rebound"));
+}
+
+#[test]
 fn non_recursive_total_function_needs_no_decreases() {
     let source = r#"
         #[mvl::total]
