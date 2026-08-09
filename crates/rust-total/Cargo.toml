@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "#[mvl::total] verifier for mvl-rust: syntactic panic-risk scan plus decreases-attribute presence check."
+description = "#[mvl::total] verifier for mvl-rust: syntactic panic-risk scan plus decreases-measure provability check."
 readme = "README.md"
 
 [[bin]]
@@ -16,5 +16,6 @@ path = "src/main.rs"
 mvl-rust-core = { path = "../mvl-rust-core", version = "0.1.4" }
 syn = { version = "2", features = ["full", "extra-traits", "visit"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
 thiserror = "2"
 serde_json = "1"

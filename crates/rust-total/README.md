@@ -14,7 +14,7 @@ for what is and isn't proved, including how this differs from MVL's own
 | Attribute | Meaning |
 |---|---|
 | `#[mvl::total]` | Claims the function is panic-free and (if recursive) terminates. The tool checks for syntactically obvious panic constructs and, on direct recursion, that a `decreases` measure is present and provably decreases — it does not prove panic-freedom. |
-| `#[mvl::decreases(measure)]` | Required on recursive `#[mvl::total]` functions. `measure` must be a bare parameter identifier, and every direct recursive call must pass a recognized strictly-decreasing argument for it (`measure - <positive literal>` or `measure / <literal >= 2>`) — anything else is rejected (ADR-0009). |
+| `#[mvl::decreases(measure)]` | Required on recursive `#[mvl::total]` functions. `measure` must be a bare parameter identifier; every direct recursive call's argument for it must discharge `<argument> < <measure>` as `Proven` through the native linear-arithmetic solver `rust-refine` also uses (subtraction of a literal or a `requires`-bounded amount qualifies; division/modulo never does) — anything unproven is rejected (ADR-0009). |
 
 ## Quick example
 

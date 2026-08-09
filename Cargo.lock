@@ -344,6 +344,7 @@ version = "0.1.5"
 dependencies = [
  "mvl-rust-core",
  "proc-macro2",
+ "quote",
  "serde_json",
  "syn 2.0.119",
  "thiserror",

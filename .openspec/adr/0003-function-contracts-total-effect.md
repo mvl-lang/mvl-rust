@@ -179,16 +179,17 @@ directions — neither is a superset of the other, despite the shared name:
 | Default | implicitly total, opt out via `partial` | unscanned, opt in via attribute |
 | `total` means | terminates | terminates **and** panic-free |
 | Panic-freedom | not checked here — Req 10's job, via refinements | checked: `.unwrap()`, `.expect()`, `panic!`, `todo!`, indexing, `/`, `%` |
-| Recursion proof | syntactic measures + structural-subterm set, SMT-proved for loops | parameter identifier, provable descent for a small recognized shape set (ADR-0009) |
+| Recursion proof | syntactic measures + structural-subterm set, SMT-proved for loops | parameter identifier, descent proved via the native `L1`–`L4` solver (ADR-0009) |
 | Escape hatch | `partial` | `#[mvl::unchecked]` |
 
 Concretely: `total fn divzero(a: Int, b: Int) -> Int { a / b }` is accepted by
 mvl (division-by-zero is a runtime panic, outside `total`'s termination-only
 scope) and rejected by mvl-rust (`panic_freedom.rs` flags `/`). A
 `#[mvl::decreases(n)]` naming a measure that does not decrease is rejected by
-both projects as of ADR-0009 — mvl-rust's recognized shape set is much
-smaller than mvl's SMT-proved one, so mvl-rust still rejects some measures
-mvl could prove decreasing, but neither project accepts a measure it cannot
+both projects as of ADR-0009 — mvl-rust's native solver has no divisibility
+atom, so it can't represent division/modulo at all where mvl's SMT solver
+can, and mvl-rust still rejects some measures mvl could prove decreasing, but
+neither project accepts a measure it cannot
 show decreases anymore.
 
 Both positions have prior art and neither is "wrong": mvl's split — termination

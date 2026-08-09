@@ -107,11 +107,14 @@ fn non_decreasing_measure_is_rejected() {
 }
 
 #[test]
-fn divide_by_literal_at_least_two_is_a_recognized_decrease() {
-    // `n / 2` is a recognized decreasing shape (ADR-0009 §2), so termination
-    // adds no diagnostic of its own -- the one diagnostic present is
-    // panic_freedom's pre-existing, unrelated division-by-zero risk (spec
-    // 003 Requirement 1), not a termination complaint.
+fn division_is_never_provably_decreasing() {
+    // Division/modulo is outside the native solver's linear-arithmetic
+    // fragment entirely (ADR-0009): `discharge_entailment` returns
+    // `Runtime` for `(n / 2) < n` regardless of hypotheses, confirmed
+    // empirically against a `n > 0` hypothesis too. With no runtime
+    // enforcement fallback for `decreases`, that's a rejection -- alongside
+    // panic_freedom's pre-existing, unrelated division-by-zero diagnostic
+    // (spec 003 Requirement 1).
     let source = r#"
         #[mvl::total]
         #[mvl::decreases(n)]
@@ -120,8 +123,52 @@ fn divide_by_literal_at_least_two_is_a_recognized_decrease() {
         }
     "#;
     let diagnostics = check_source(source).unwrap();
-    assert_eq!(diagnostics.len(), 1, "got {diagnostics:?}");
-    assert!(diagnostics[0].message.contains("division/modulo"));
+    assert_eq!(diagnostics.len(), 2, "got {diagnostics:?}");
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("division/modulo")));
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.message.contains("does not provably decrease")));
+}
+
+#[test]
+fn a_symbolic_decrement_is_proved_given_a_requires_hypothesis() {
+    // The solver-backed check generalizes beyond literal constants: given
+    // `#[mvl::requires(k > 0)]`, `fuel - k` is proved to decrease `fuel` at
+    // L4 (Fourier-Motzkin), even though `k` is not itself a literal.
+    let source = r#"
+        #[mvl::total]
+        #[mvl::decreases(fuel)]
+        #[mvl::requires(k > 0)]
+        fn countdown(fuel: u64, k: u64) -> u64 {
+            if fuel == 0 { 0 } else { countdown(fuel - k, k) }
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert!(
+        diagnostics.is_empty(),
+        "expected no diagnostics, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn a_symbolic_decrement_without_a_positivity_hypothesis_is_rejected() {
+    // Same shape as the previous test, minus the `requires(k > 0)` -- with
+    // no hypothesis bounding `k`, the solver cannot rule out `k <= 0`
+    // (which would not decrease `fuel`), so the call is rejected.
+    let source = r#"
+        #[mvl::total]
+        #[mvl::decreases(fuel)]
+        fn countdown(fuel: u64, k: u64) -> u64 {
+            if fuel == 0 { 0 } else { countdown(fuel - k, k) }
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0]
+        .message
+        .contains("does not provably decrease"));
 }
 
 #[test]
