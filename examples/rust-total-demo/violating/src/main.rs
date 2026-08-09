@@ -7,6 +7,14 @@
 //! is already a hard `rustc` compile error on its own — `rust-total`
 //! doesn't need to add anything there, so it isn't demonstrated here (it
 //! would just fail `cargo build`, not `cargo mvl-total`).
+//!
+//! `cargo-mvl-total`'s diagnostics come from a static scan of the source
+//! text, not execution, so `main` doesn't need to call every function
+//! below to demonstrate its rejection. Several genuinely never terminate
+//! at runtime (that's the point being demonstrated) and are marked
+//! `#[allow(dead_code)]` instead of called, so this crate still builds and
+//! runs cleanly rather than hanging or stack-overflowing if someone
+//! actually executes it.
 
 #[mvl::total]
 fn factorial(n: u64) -> u64 {
@@ -20,7 +28,9 @@ fn factorial(n: u64) -> u64 {
 
 // ADR-0009: presence is no longer enough. `n` is passed unchanged on the
 // recursive call, so the measure never decreases -- ADR-0009 rejects this
-// rather than accepting it on presence alone.
+// rather than accepting it on presence alone. Genuinely never terminates
+// if called (n >= 10 never becomes true), so it isn't -- see module doc.
+#[allow(dead_code)]
 #[mvl::total]
 #[mvl::decreases(n)]
 fn count_up(n: u64) -> u64 {
@@ -28,6 +38,55 @@ fn count_up(n: u64) -> u64 {
         n
     } else {
         count_up(n)
+    }
+}
+
+// ADR-0009 §5: `n` is rebound before the recursive call, so the `n` in
+// `shadowed_measure(n - 1)` means the *shadowed local* (original n + 100),
+// not the parameter -- the function never terminates (each call's argument
+// is strictly larger than the last), which is exactly why a shadowed
+// measure is rejected outright regardless of how the recursive call reads.
+#[allow(dead_code)]
+#[mvl::total]
+#[mvl::decreases(n)]
+fn shadowed_measure(n: u64) -> u64 {
+    let n = n + 100;
+    if n == 0 {
+        0
+    } else {
+        shadowed_measure(n - 1)
+    }
+}
+
+// ADR-0009 §2: `fuel - k` is a symbolic decrement -- provable given a
+// `#[mvl::requires(k > 0)]` bound (see the compliant crate's `countdown`),
+// but not without one: the solver cannot rule out `k <= 0`, under which
+// `fuel - k` would not decrease `fuel` (or would underflow). Never
+// terminates for e.g. k == 0, so it isn't called -- see module doc.
+#[allow(dead_code)]
+#[mvl::total]
+#[mvl::decreases(fuel)]
+fn unbounded_countdown(fuel: u64, k: u64) -> u64 {
+    if fuel == 0 {
+        0
+    } else {
+        unbounded_countdown(fuel - k, k)
+    }
+}
+
+// ADR-0009 §2: division is outside the native solver's linear-arithmetic
+// system entirely -- `(n / 2) < n` is `Runtime` (unprovable) regardless of
+// hypotheses, confirmed empirically even against `n > 0`. Unlike the other
+// rejected-but-uncallable functions above, this one actually terminates at
+// runtime (integer division reaches 0), so it's safe to call -- the point
+// is that `rust-total` can't *prove* it does.
+#[mvl::total]
+#[mvl::decreases(n)]
+fn halve(n: u64) -> u64 {
+    if n == 0 {
+        0
+    } else {
+        halve(n / 2)
     }
 }
 
@@ -48,7 +107,7 @@ fn must_have(x: Option<i32>) -> i32 {
 
 fn main() {
     println!("{}", factorial(5));
-    println!("{}", count_up(0));
+    println!("{}", halve(100));
     println!("{}", first(vec![1, 2, 3]));
     println!("{}", half(10, 2));
     println!("{}", must_have(Some(5)));
