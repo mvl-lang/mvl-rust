@@ -27,6 +27,10 @@ fn boxed_any(x: i32) -> Box<dyn Any> {
     Box::new(x)
 }
 
+// `f32::from_bits` would dodge rustc's own `unnecessary_transmutes` lint,
+// but it would also stop demonstrating rule 5 -- the point here is the
+// `transmute` construct itself, not this call's most efficient spelling.
+#[allow(unknown_lints, unnecessary_transmutes)]
 fn bit_pattern(x: u32) -> f32 {
     unsafe {
         // `unsafe` block, plus `transmute`: both outside the qualified subset
