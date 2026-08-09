@@ -147,7 +147,10 @@ diagnostic is preferable to a wrong one**, because both tools emit only
 - **`#[mvl::partial]` is parsed and unclaimed** (ADR-0001). The natural reading is
   "the dual of `total`", i.e. an explicit opt-out. Nothing implements it. Either
   `rust-total` claims it as an explicit-partiality marker or it should be
-  removed.
+  removed. **Resolved by #54** (`f19026e`): removed, not claimed. `MvlAttr` has
+  no `Partial` variant and `mvl`'s proc-macro re-export list doesn't include
+  it — `#[mvl::partial]` fails to compile today rather than silently doing
+  nothing.
 - **`rust-total` and ADR-0006 collide.** If `#[mvl::requires]`/`#[mvl::ensures]`
   become active proc macros that inject `assert!`, a `#[mvl::total]` function
   carrying a residual refinement obligation *becomes panicking*. `assert` is not
@@ -204,9 +207,11 @@ Known Limitations for the mvl-rust-facing statement of this.
 ADR-0009 resolves the recursion-proof row above (this ADR's original
 presence-only wording came from a documentation fix, not a decision — see
 ADR-0009's Context). This ADR still does not decide whether `#[mvl::total]`
-and panic-freedom should be split into separate attributes, using the
-already-parsed-but-unclaimed `#[mvl::partial]` to supply a tri-state — that
-remains a design question for a future ADR, not a documentation fix.
+and panic-freedom should be split into separate attributes — that remains a
+design question for a future ADR, not a documentation fix. It would need a
+new dual-of-`total` marker to supply a tri-state, not `#[mvl::partial]`:
+that attribute was removed rather than claimed (#54, `f19026e`) and no
+longer exists.
 
 ## Links
 

@@ -181,7 +181,6 @@ Call resolution MUST be same-file free functions only. A call to anything else M
 - **Effects cannot serve as a purity signal for the solver.** Requirement 4's conflation of *absent* with *declared-empty* means the two are indistinguishable, which is why #45 cannot use `rust-effect` as the purity oracle spec 006's reflexivity rule needs. A tri-state signal would change this decision, not extend it.
 - **Nor can an explicit `#[mvl::effect()]`** — Requirement 4's claim is verified only against same-file resolvable calls, so a function annotated pure that reaches an effect through a method or cross-file call is accepted in silence. It is an unverified assertion rather than an established fact, and nothing currently marks it as one. ADR-0008 §3–§4; pinned by `an_explicit_purity_claim_is_not_verified_against_unresolvable_calls`.
 - **No cross-procedural effect inference.** A function calling an unresolvable callee may perform arbitrary effects while declaring none, with no diagnostic. Spec 002 narrows this by rejecting `dyn Trait` and unreviewed macros but does not close it.
-- **`#[mvl::partial]` is parsed and unclaimed** (#54). The natural reading is the dual of `total` — an explicit opt-out — which would also supply the tri-state distinction #45 wants.
 - **Injected runtime assertions would falsify `#[mvl::total]`.** See spec 007 Requirement 5; the collision is introduced by this port and has no upstream answer.
 
 ---
@@ -190,8 +189,8 @@ Call resolution MUST be same-file free functions only. A call to anything else M
 
 | Layer | Artefact |
 |---|---|
-| **Intent** | #6 (`rust-total`), #9 (`rust-effect`, v1 scope), #45 (purity signal — blocked by Req 4), #54 (`partial` unclaimed) |
+| **Intent** | #6 (`rust-total`), #9 (`rust-effect`, v1 scope), #45 (purity signal — blocked by Req 4, closed as won't-fix per ADR-0008 §6) |
 | **Specification** | this document |
-| **Decision** | ADR-0003; ADR-0001 §1 (attribute carrier), §5 (greenfield rule) |
+| **Decision** | ADR-0003; ADR-0001 §1 (attribute carrier), §5 (greenfield rule); ADR-0009 (Requirement 3 amendment) |
 | **Program** | `crates/rust-total/src/checks/`, `crates/rust-effect/src/checks.rs` |
-| **Evidence** | `crates/rust-total/tests/totality.rs` (13 tests), `crates/rust-effect/src/checks.rs::tests` (8 tests), per-tool `tests/verification_mode.rs`, `examples/rust-total-demo/`, `examples/rust-effect-demo/` |
+| **Evidence** | `crates/rust-total/tests/totality.rs` (21 tests), `crates/rust-effect/src/checks.rs::tests` (9 tests), per-tool `tests/verification_mode.rs`, `examples/rust-total-demo/`, `examples/rust-effect-demo/` |
