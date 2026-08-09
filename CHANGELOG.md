@@ -8,6 +8,16 @@ below backfills everything merged while the workspace sat at that version.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-08-09
+
+### Added
+
+- `examples/rust-limit-idioms-demo/`: a focused before/after narrative for `rust-limit`'s qualified-subset lint (ADR-0002 rule 2) — `idiomatic/` dispatches through `Vec<Box<dyn Shape>>` (rejected), `contracted/` eliminates `dyn Trait` for a closed `enum` + `match` (accepted, and `rust-refine` actually discharges its `requires`/`ensures`).
+
+### Fixed
+
+- `examples/rust-limit-demo/violating`'s `bit_pattern` function silenced rustc's `unnecessary_transmutes` lint (`#[allow(unknown_lints, unnecessary_transmutes)]`) instead of rewriting away the `transmute` call the fixture exists to demonstrate.
+
 ## [0.1.4] - 2026-08-07
 
 ### Fixed
