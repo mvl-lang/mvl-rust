@@ -14,7 +14,9 @@ Two tools use the attribute carrier in its simplest form: an attribute on a func
 #[mvl::total]               → rust-total:  claims this body cannot panic and terminates
                                             (checked, not proved — see Known Limitations)
 #[mvl::decreases(measure)]  → rust-total:  names the measure for a recursive total function
-                                            (presence checked, not that it decreases)
+                                            (a parameter; provably decreasing at every
+                                            recursive call, for a small recognized shape
+                                            set — ADR-0009)
 #[mvl::effect(Log, Clock)]  → rust-effect: this body performs at most these effects
 ```
 
@@ -76,11 +78,11 @@ Rationale: without type information, flagging every arithmetic operator would fl
 
 **Tests:** `crates/rust-total/tests/totality.rs::binary_arithmetic_in_a_total_function_is_accepted`
 
-### Requirement 3: A directly recursive total function requires a `decreases` measure [MUST]
+### Requirement 3: A directly recursive total function requires a provably decreasing `decreases` measure [MUST]
 
 The tool MUST require `#[mvl::decreases(measure)]` on any `#[mvl::total]` function that directly calls itself.
 
-The tool MUST check the attribute's **presence only**. It MUST NOT be read as proving the measure decreases. Only *direct* self-recursion is detected; mutual recursion between two functions is out of scope.
+**Amended by ADR-0009**, superseding this requirement's original presence-only wording. `measure` MUST be a bare identifier naming one of the function's own parameters. At every direct recursive call, the argument in that parameter's position MUST be one of the recognized strictly-decreasing shapes: `param - <positive integer literal>` or `param / <integer literal ≥ 2>`. The tool MUST reject the declaration if `measure` is not a bare parameter identifier, and MUST reject each recursive call whose corresponding argument does not match a recognized shape. Only *direct* self-recursion is detected; mutual recursion between two functions is out of scope. The recognized shape set is deliberately small and expected to grow (ADR-0009 §2, the same allowlist-grows precedent as Requirement 4 of spec 002).
 
 **Implementation:** `crates/rust-total/src/checks/termination.rs`
 
@@ -93,14 +95,31 @@ The tool MUST check the attribute's **presence only**. It MUST NOT be read as pr
 
 **Tests:** `crates/rust-total/tests/totality.rs::missing_decreases_on_recursive_total_function_is_rejected`
 
-#### Scenario: Presence of a measure satisfies the check
+#### Scenario: A measure with a recognized decreasing shape at every recursive call is accepted
 
 - GIVEN a `#[mvl::total]` recursive function carrying `#[mvl::decreases(n)]`
+- AND every direct recursive call passes `n - <positive literal>` or `n / <literal ≥ 2>` for `n`
 - WHEN the termination check runs
 - THEN no diagnostic MUST be reported
-- AND the tool MUST NOT be read as having proven termination
 
 **Tests:** `crates/rust-total/tests/totality.rs::terminating_recursion_with_decreases_is_accepted`, `::non_recursive_total_function_needs_no_decreases`
+
+#### Scenario: A measure that does not provably decrease is rejected
+
+- GIVEN a `#[mvl::total]` recursive function carrying `#[mvl::decreases(n)]`
+- AND at least one direct recursive call passes an argument for `n` that isn't a recognized decreasing shape (e.g. `n` unchanged, or `n + 1`)
+- WHEN the termination check runs
+- THEN a `Level::Error` diagnostic MUST be reported for that call site
+
+**Tests:** `crates/rust-total/tests/totality.rs::non_decreasing_measure_is_rejected`
+
+#### Scenario: A measure that isn't a bare parameter is rejected
+
+- GIVEN a `#[mvl::total]` recursive function carrying `#[mvl::decreases(...)]` where the measure is not a single identifier naming a parameter (e.g. a computed expression)
+- WHEN the termination check runs
+- THEN a `Level::Error` diagnostic MUST be reported
+
+**Tests:** `crates/rust-total/tests/totality.rs::non_parameter_measure_is_rejected`
 
 ### Requirement 4: A caller must declare every effect its callees declare [MUST]
 
@@ -148,7 +167,7 @@ Call resolution MUST be same-file free functions only. A call to anything else M
 ## Known Limitations
 
 - **`#[mvl::total]` is weaker than its name.** It means "contains no *syntactically obvious* panic construct and, if directly recursive, carries a `decreases` attribute". It does not mean panic-free and it does not mean terminating. Any downstream assurance claim reading `total` as a guarantee is over-reading it.
-- **`#[mvl::total]` is not the same predicate as mvl's `total fn`, in either direction.** mvl's `total` is termination-only and opt-out (`partial` is the escape hatch); panic-freedom is a separate requirement (Req 10) checked via refinements. mvl-rust's `total` bundles panic-freedom checking into the same attribute and is opt-in (unannotated functions are unscanned), and its recursion check is presence-only rather than a proved measure. Concretely: `total fn divzero(a: Int, b: Int) -> Int { a / b }` is accepted by mvl (division-by-zero is a runtime panic, not a totality violation) and rejected by mvl-rust; a `#[mvl::decreases(n)]` naming a non-decreasing measure is accepted by mvl-rust (presence-only) and rejected by mvl (SMT-proved). Neither position is wrong — mvl's split follows SPARK/Dafny/Idris/Lean 4 in separating termination from runtime-error freedom, mvl-rust's bundling follows Turner's original 2004 formulation adapted to a language where `/` can trap — but the two attributes are not interchangeable and `total` does not mean the same thing when read across the two projects. ADR-0003 §"Relationship to MVL's `total fn`".
+- **`#[mvl::total]` is not the same predicate as mvl's `total fn`, in either direction.** mvl's `total` is termination-only and opt-out (`partial` is the escape hatch); panic-freedom is a separate requirement (Req 10) checked via refinements. mvl-rust's `total` bundles panic-freedom checking into the same attribute and is opt-in (unannotated functions are unscanned). Concretely: `total fn divzero(a: Int, b: Int) -> Int { a / b }` is accepted by mvl (division-by-zero is a runtime panic, not a totality violation) and rejected by mvl-rust. As of ADR-0009, both mvl-rust and mvl now reject a `#[mvl::decreases(n)]`/`decreases n` naming a measure that doesn't provably decrease — mvl-rust's check (`syn`-only, no types) recognizes a much smaller shape set than mvl's SMT-proved one, so mvl-rust still rejects some measures mvl could prove decreasing, but the two no longer disagree on the *presence-only* case: neither accepts a measure it cannot show decreases. mvl's split — termination separate from runtime-error freedom — follows SPARK/Dafny/Idris/Lean 4; mvl-rust's bundling follows Turner's original 2004 formulation adapted to a language where `/` can trap. The two attributes remain not interchangeable, and `total` does not mean the same thing when read across the two projects, but "decreases means presence-only" is no longer one of the differences. ADR-0003 §"Relationship to MVL's `total fn`", ADR-0009.
 - **Requirement 2's division rule produces false positives on float code**, by construction. Accepted on frequency grounds; fixing it needs types.
 - **Effects cannot serve as a purity signal for the solver.** Requirement 4's conflation of *absent* with *declared-empty* means the two are indistinguishable, which is why #45 cannot use `rust-effect` as the purity oracle spec 006's reflexivity rule needs. A tri-state signal would change this decision, not extend it.
 - **Nor can an explicit `#[mvl::effect()]`** — Requirement 4's claim is verified only against same-file resolvable calls, so a function annotated pure that reaches an effect through a method or cross-file call is accepted in silence. It is an unverified assertion rather than an established fact, and nothing currently marks it as one. ADR-0008 §3–§4; pinned by `an_explicit_purity_claim_is_not_verified_against_unresolvable_calls`.

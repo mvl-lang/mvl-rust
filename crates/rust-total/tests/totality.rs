@@ -87,6 +87,62 @@ fn missing_decreases_on_recursive_total_function_is_rejected() {
 }
 
 #[test]
+fn non_decreasing_measure_is_rejected() {
+    // ADR-0009: presence is no longer enough. `n` is passed unchanged, so
+    // the measure never decreases, and the tool must now say so instead of
+    // accepting it on presence alone.
+    let source = r#"
+        #[mvl::total]
+        #[mvl::decreases(n)]
+        fn loops_forever(n: u64) -> u64 {
+            if n == 0 { 0 } else { loops_forever(n) }
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].message.contains("loops_forever"));
+    assert!(diagnostics[0]
+        .message
+        .contains("does not provably decrease"));
+}
+
+#[test]
+fn divide_by_literal_at_least_two_is_a_recognized_decrease() {
+    // `n / 2` is a recognized decreasing shape (ADR-0009 §2), so termination
+    // adds no diagnostic of its own -- the one diagnostic present is
+    // panic_freedom's pre-existing, unrelated division-by-zero risk (spec
+    // 003 Requirement 1), not a termination complaint.
+    let source = r#"
+        #[mvl::total]
+        #[mvl::decreases(n)]
+        fn halve(n: u64) -> u64 {
+            if n == 0 { 0 } else { halve(n / 2) }
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1, "got {diagnostics:?}");
+    assert!(diagnostics[0].message.contains("division/modulo"));
+}
+
+#[test]
+fn non_parameter_measure_is_rejected() {
+    // ADR-0009 §1: the measure must be a bare parameter identifier. A
+    // computed expression isn't analyzable by a syn-only, no-type-info
+    // check, so it's rejected rather than silently accepted.
+    let source = r#"
+        #[mvl::total]
+        #[mvl::decreases(n - 1)]
+        fn factorial(n: u64) -> u64 {
+            if n == 0 { 1 } else { n * factorial(n - 1) }
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].message.contains("factorial"));
+    assert!(diagnostics[0].message.contains("bare parameter"));
+}
+
+#[test]
 fn non_recursive_total_function_needs_no_decreases() {
     let source = r#"
         #[mvl::total]

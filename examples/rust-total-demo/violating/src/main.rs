@@ -18,6 +18,19 @@ fn factorial(n: u64) -> u64 {
     }
 }
 
+// ADR-0009: presence is no longer enough. `n` is passed unchanged on the
+// recursive call, so the measure never decreases -- ADR-0009 rejects this
+// rather than accepting it on presence alone.
+#[mvl::total]
+#[mvl::decreases(n)]
+fn count_up(n: u64) -> u64 {
+    if n >= 10 {
+        n
+    } else {
+        count_up(n)
+    }
+}
+
 #[mvl::total]
 fn first(v: Vec<i32>) -> i32 {
     v[0] // raw indexing: outside the qualified subset
@@ -35,6 +48,7 @@ fn must_have(x: Option<i32>) -> i32 {
 
 fn main() {
     println!("{}", factorial(5));
+    println!("{}", count_up(0));
     println!("{}", first(vec![1, 2, 3]));
     println!("{}", half(10, 2));
     println!("{}", must_have(Some(5)));

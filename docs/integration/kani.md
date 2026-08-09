@@ -34,8 +34,9 @@ solver.
 - Use `mvl-rust` (`rust-total`, `rust-refine`) on the ordinary-Rust business
   logic: `rust-refine`'s pre/postconditions over integer arithmetic are
   proved natively and cheaply on every build, and `rust-total` adds a cheap
-  syntactic panic-risk scan and decreases-attribute presence check on top —
-  the latter is checked, not proved (see `rust-total`'s Known Limitations).
+  syntactic panic-risk scan plus a decreases-measure provability check on
+  top — the latter proves descent for a small recognized shape set, not a
+  general termination proof (see `rust-total`'s Known Limitations, ADR-0009).
 - Reserve Kani harnesses for the `unsafe` core, FFI boundaries, or anywhere
   you need a genuine bounded-model-checking guarantee (memory safety,
   bit-level correctness) that no attribute-based static check can give you.

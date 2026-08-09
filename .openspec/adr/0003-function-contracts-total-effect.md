@@ -89,12 +89,14 @@ unconditional reading for a specific function.
 **Termination** (`checks/termination.rs`). Requires `#[mvl::decreases(measure)]`
 on any `#[mvl::total]` function that directly calls itself.
 
-v1 checks **presence only** — it does not prove the measure actually decreases.
-Only *direct* self-recursion is detected; mutual recursion between two functions
-is out of scope. So `#[mvl::decreases]` is currently a *documentation
-obligation with a syntactic trigger*, not a termination proof. Recording this
-plainly matters: a reader who assumes otherwise has a false guarantee, and the
-attribute's name invites that assumption.
+v1 checked **presence only** — it did not prove the measure actually
+decreases, and this ADR originally recorded that as the ceiling: a
+*documentation obligation with a syntactic trigger*, not a termination
+proof. **Superseded by ADR-0009**: the measure must now name a parameter
+directly and every direct recursive call must pass a recognized
+strictly-decreasing argument, or the tool rejects it. Only *direct*
+self-recursion is detected; mutual recursion between two functions remains
+out of scope.
 
 ### 3. `#[mvl::effect(…)]` — flat sets, exact matching, same-file only
 
@@ -177,14 +179,17 @@ directions — neither is a superset of the other, despite the shared name:
 | Default | implicitly total, opt out via `partial` | unscanned, opt in via attribute |
 | `total` means | terminates | terminates **and** panic-free |
 | Panic-freedom | not checked here — Req 10's job, via refinements | checked: `.unwrap()`, `.expect()`, `panic!`, `todo!`, indexing, `/`, `%` |
-| Recursion proof | syntactic measures + structural-subterm set, SMT-proved for loops | presence of `#[mvl::decreases]` only, not proved |
+| Recursion proof | syntactic measures + structural-subterm set, SMT-proved for loops | parameter identifier, provable descent for a small recognized shape set (ADR-0009) |
 | Escape hatch | `partial` | `#[mvl::unchecked]` |
 
 Concretely: `total fn divzero(a: Int, b: Int) -> Int { a / b }` is accepted by
 mvl (division-by-zero is a runtime panic, outside `total`'s termination-only
 scope) and rejected by mvl-rust (`panic_freedom.rs` flags `/`). A
-`#[mvl::decreases(n)]` naming a measure that does not decrease is accepted by
-mvl-rust (presence-only, §2 above) and rejected by mvl (SMT-proved).
+`#[mvl::decreases(n)]` naming a measure that does not decrease is rejected by
+both projects as of ADR-0009 — mvl-rust's recognized shape set is much
+smaller than mvl's SMT-proved one, so mvl-rust still rejects some measures
+mvl could prove decreasing, but neither project accepts a measure it cannot
+show decreases anymore.
 
 Both positions have prior art and neither is "wrong": mvl's split — termination
 separate from runtime-error freedom — follows SPARK, Dafny, Idris and Lean 4.
@@ -195,11 +200,12 @@ attributes are not interchangeable, and a claim that a function is `total`
 does not mean the same thing when read across the two projects. See spec 003
 Known Limitations for the mvl-rust-facing statement of this.
 
-This ADR does not decide whether the two should converge (e.g. by splitting
-`#[mvl::total]` into separate termination and panic-freedom attributes,
-using the already-parsed-but-unclaimed `#[mvl::partial]` to supply a
-tri-state) — that is a design question for a future ADR, not a documentation
-fix.
+ADR-0009 resolves the recursion-proof row above (this ADR's original
+presence-only wording came from a documentation fix, not a decision — see
+ADR-0009's Context). This ADR still does not decide whether `#[mvl::total]`
+and panic-freedom should be split into separate attributes, using the
+already-parsed-but-unclaimed `#[mvl::partial]` to supply a tri-state — that
+remains a design question for a future ADR, not a documentation fix.
 
 ## Links
 

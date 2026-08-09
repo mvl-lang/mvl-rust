@@ -1,10 +1,10 @@
 # rust-total
 
 `#[mvl::total]` verifier for [mvl-rust](https://github.com/mvl-lang/mvl-rust):
-a syntactic panic-risk scan, plus a `decreases`-attribute presence check on
-direct recursion (spec 003 Requirements 1 and 3). Only functions carrying
-`#[mvl::total]` are scanned; everything else is untouched. This is weaker
-than the name suggests — see
+a syntactic panic-risk scan, plus a `decreases`-measure provability check on
+direct recursion (spec 003 Requirements 1 and 3, ADR-0009). Only functions
+carrying `#[mvl::total]` are scanned; everything else is untouched. This is
+still weaker than the name suggests — see
 [Known Limitations](https://github.com/mvl-lang/mvl-rust/blob/main/.openspec/specs/003-function-contracts/spec.md#known-limitations)
 for what is and isn't proved, including how this differs from MVL's own
 `total fn`.
@@ -13,8 +13,8 @@ for what is and isn't proved, including how this differs from MVL's own
 
 | Attribute | Meaning |
 |---|---|
-| `#[mvl::total]` | Claims the function is panic-free and (if recursive) terminates. The tool checks for syntactically obvious panic constructs and, on direct recursion, that a `decreases` attribute is present — it does not prove either property. |
-| `#[mvl::decreases(measure)]` | Names the expression intended to strictly decrease on every recursive call — required on recursive `#[mvl::total]` functions. Presence is checked, not that the measure actually decreases. |
+| `#[mvl::total]` | Claims the function is panic-free and (if recursive) terminates. The tool checks for syntactically obvious panic constructs and, on direct recursion, that a `decreases` measure is present and provably decreases — it does not prove panic-freedom. |
+| `#[mvl::decreases(measure)]` | Required on recursive `#[mvl::total]` functions. `measure` must be a bare parameter identifier, and every direct recursive call must pass a recognized strictly-decreasing argument for it (`measure - <positive literal>` or `measure / <literal >= 2>`) — anything else is rejected (ADR-0009). |
 
 ## Quick example
 

@@ -15,7 +15,7 @@ use mvl_rust_core::attrs::MvlAttr;
 use mvl_rust_core::diagnostics::Diagnostic;
 use std::path::Path;
 use syn::visit::{self, Visit};
-use syn::{Attribute, ItemFn};
+use syn::{Attribute, Expr, ItemFn};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -51,17 +51,17 @@ pub fn check_source(source: &str) -> Result<Vec<Diagnostic>, CheckError> {
     Ok(diagnostics)
 }
 
-fn total_and_decreases(attrs: &[Attribute]) -> (bool, bool) {
+fn total_and_decreases(attrs: &[Attribute]) -> (bool, Option<Expr>) {
     let mut is_total = false;
-    let mut has_decreases = false;
+    let mut decreases = None;
     for attr in attrs {
         match MvlAttr::try_from_attribute(attr) {
             Some(Ok(MvlAttr::Total(_))) => is_total = true,
-            Some(Ok(MvlAttr::Decreases(_))) => has_decreases = true,
+            Some(Ok(MvlAttr::Decreases(attr))) => decreases = Some(attr.measure),
             _ => {}
         }
     }
-    (is_total, has_decreases)
+    (is_total, decreases)
 }
 
 struct TotalFnFinder<'d> {
@@ -70,10 +70,10 @@ struct TotalFnFinder<'d> {
 
 impl<'ast> Visit<'ast> for TotalFnFinder<'_> {
     fn visit_item_fn(&mut self, node: &'ast ItemFn) {
-        let (is_total, has_decreases) = total_and_decreases(&node.attrs);
+        let (is_total, decreases) = total_and_decreases(&node.attrs);
         if is_total {
             panic_freedom::check(node, self.diagnostics);
-            termination::check(node, has_decreases, self.diagnostics);
+            termination::check(node, decreases.as_ref(), self.diagnostics);
         }
         visit::visit_item_fn(self, node);
     }
