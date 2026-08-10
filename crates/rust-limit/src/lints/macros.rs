@@ -24,6 +24,11 @@ const ALLOWED_MACROS: &[&str] = &[
     "panic",
     "todo",
     "unimplemented",
+    // `mvl::loop_decreases!(measure)` (ADR-0010): expands to nothing, the
+    // same "syntactic marker, no side effects" shape as every other entry
+    // here -- `rust-total`'s loop-termination check reads its invocation's
+    // argument tokens directly, never this expansion.
+    "loop_decreases",
 ];
 
 struct MacroVisitor<'d> {

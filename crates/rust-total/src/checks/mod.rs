@@ -8,6 +8,7 @@
 //! oversight, to keep the check functions cleanly typed against `ItemFn`
 //! rather than generalizing over both `ItemFn` and `ImplItemFn`.
 
+mod loop_termination;
 mod panic_freedom;
 mod termination;
 
@@ -85,6 +86,7 @@ impl<'ast> Visit<'ast> for TotalFnFinder<'_> {
         if is_total {
             panic_freedom::check(node, self.diagnostics);
             termination::check(node, decreases.as_ref(), &requires, self.diagnostics);
+            loop_termination::check(node, &requires, self.diagnostics);
         }
         visit::visit_item_fn(self, node);
     }

@@ -48,7 +48,7 @@ use mvl_rust_core::solver::DischargeResult;
 use quote::quote;
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
-use syn::{Expr, ExprCall, FnArg, Ident, ItemFn, Pat, PatIdent};
+use syn::{Block, Expr, ExprCall, FnArg, Ident, ItemFn, Pat, PatIdent};
 
 struct RecursiveCallCollector<'a> {
     fn_name: &'a Ident,
@@ -94,24 +94,26 @@ impl<'ast> Visit<'ast> for ShadowDetector<'_> {
     }
 }
 
-/// Whether `measure` is rebound anywhere in `item_fn`'s body -- a `let`, a
-/// closure parameter, a match arm, a for-loop pattern, anything that
-/// introduces a new binding with the same name. `rust-total` has no name
-/// resolution (ADR-0001), so it cannot tell a load-bearing shadow (the
-/// recursive call's `measure` token now means the *shadowed* local, not
-/// the parameter the entailment goal is supposed to be about) from a
-/// harmless, unrelated reuse of the same identifier. Flagging both is the
-/// "false rejection is the safe direction for a gate" call (ADR-0001 §5):
-/// the alternative is a real false *acceptance* -- confirmed empirically,
+/// Whether `measure` is rebound anywhere in `block` -- a `let`, a closure
+/// parameter, a match arm, a for-loop pattern, anything that introduces a
+/// new binding with the same name. `rust-total` has no name resolution
+/// (ADR-0001), so it cannot tell a load-bearing shadow (a reference to
+/// `measure` downstream now means the *shadowed* local, not the binding an
+/// entailment goal is supposed to be about) from a harmless, unrelated
+/// reuse of the same identifier. Flagging both is the "false rejection is
+/// the safe direction for a gate" call (ADR-0001 §5): the alternative is a
+/// real false *acceptance* -- confirmed empirically for the recursive case,
 /// `fn f(n: u64) { let n = n + 100; if n == 0 {0} else {f(n - 1)} }` never
 /// terminates (each call's `n` is strictly larger than the last) and was
-/// accepted with zero diagnostics before this check existed.
-fn measure_is_shadowed(item_fn: &ItemFn, measure: &Ident) -> bool {
+/// accepted with zero diagnostics before this check existed. Shared with
+/// `loop_termination.rs`, which has the identical risk for a loop's
+/// measure.
+pub(super) fn measure_is_shadowed(block: &Block, measure: &Ident) -> bool {
     let mut detector = ShadowDetector {
         measure,
         shadowed: false,
     };
-    detector.visit_block(&item_fn.block);
+    detector.visit_block(block);
     detector.shadowed
 }
 
@@ -169,7 +171,7 @@ pub fn check(
         return;
     };
 
-    if measure_is_shadowed(item_fn, measure_ident) {
+    if measure_is_shadowed(&item_fn.block, measure_ident) {
         diagnostics.push(shadowed_measure_diagnostic(fn_name, measure_ident));
         return;
     }

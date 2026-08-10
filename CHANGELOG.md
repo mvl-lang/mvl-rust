@@ -8,6 +8,18 @@ below backfills everything merged while the workspace sat at that version.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-10
+
+### Added
+
+- ADR-0010 / spec 003 Requirement 6: `rust-total` now checks `while`/`loop` termination, closing a real gap where an unconditional `loop { n += 1; }` inside a `#[mvl::total]` function was accepted with zero diagnostics. A new function-like macro, `mvl::loop_decreases!(measure)`, names the measure as the loop body's first statement — a real attribute macro (the `#[mvl::decreases(...)]` shape) cannot legally attach to a `while`/`loop` expression on stable Rust. The loop's one, unconditional, top-level assignment to the measure is proved via the same native solver call `#[mvl::decreases]` uses for recursion, with the function's own `#[mvl::requires(...)]` clauses as hypotheses.
+- `rust-limit`'s macro allowlist (ADR-0002 rule 4) gained `loop_decreases`, needed for `mvl::loop_decreases!` to pass the qualified-subset gate that runs before every other tool.
+- `examples/rust-total-demo` now covers loop termination end to end: `sum_to`/`countdown_loop` (compliant) and `spins_forever`/`shadowed_loop_measure`/`unbounded_countdown_loop`/`halve_loop` (violating).
+
+### Fixed
+
+- `crates/rust-total/src/checks/termination.rs`'s `measure_is_shadowed` generalized to operate on any `syn::Block`, shared with the new loop check rather than duplicated.
+
 ## [0.2.0] - 2026-08-09
 
 ### Added
