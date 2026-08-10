@@ -61,6 +61,42 @@ passthrough_attr!(
     decreases,
     "Pass-through for `#[mvl::decreases(measure)]`. See the crate docs."
 );
+
+/// Pass-through for `mvl::loop_decreases!(measure)`, `rust-total`'s marker
+/// for a `while`/`loop` termination measure (spec 003 Requirement 6,
+/// ADR-0010).
+///
+/// A **function-like** macro, not an attribute, and deliberately not named
+/// `decreases` (that name is already `#[proc_macro_attribute]` above, and a
+/// crate cannot export two proc-macro items under the same name regardless
+/// of kind — `E0428`). The distinct name is also the honest one: unlike
+/// `#[mvl::decreases(measure)]` on a function, this can't be an attribute on
+/// the loop it measures at all. A real `#[proc_macro_attribute]` cannot
+/// legally attach to a `while`/`loop` expression in statement position on
+/// stable Rust — confirmed by compiling it — so the measure is instead
+/// named by a marker macro *invocation* as the loop body's first statement,
+/// which has no such restriction:
+///
+/// ```
+/// # fn f(mut n: u64) -> u64 {
+/// while n > 0 {
+///     mvl_macros::loop_decreases!(n);
+///     n -= 1;
+/// }
+/// # n }
+/// ```
+///
+/// (Real usage is `mvl::loop_decreases!(measure)` — this doctest lives in
+/// the crate that actually defines the macro, per the module doc's split
+/// with `mvl`, hence the unqualified crate name above.)
+///
+/// Expands to nothing — `rust-total` reads the macro *invocation*'s
+/// argument tokens from source (the same way it already reads
+/// `#[mvl::decreases(measure)]`'s), never this expansion.
+#[proc_macro]
+pub fn loop_decreases(_input: TokenStream) -> TokenStream {
+    TokenStream::new()
+}
 passthrough_attr!(
     effect,
     "Pass-through for `#[mvl::effect(list)]`. See the crate docs."

@@ -26,6 +26,12 @@
 //! `ensures` reference parameters by their real names and `ensures` uses
 //! the fixed identifier `result` for the return value.
 //!
+//! The same grammar rule rules out an attribute on a `while`/`loop`
+//! expression, so **`loop_decreases!(measure)` is a function-like macro
+//! invocation, not an attribute** — the loop body's first statement, not a
+//! decoration on the loop header. See its own doc for why (spec 003
+//! Requirement 6, ADR-0010).
+//!
 //! (The proc-macro definitions themselves live in the internal `mvl-macros`
 //! crate and are re-exported here — a `proc-macro = true` crate can only
 //! export proc-macro items, and this crate also needs to export the
@@ -62,7 +68,9 @@
 //! See [`docs/overview.md`](https://github.com/mvl-lang/mvl-rust/blob/main/docs/overview.md)
 //! for which checker enforces which attribute above.
 
-pub use mvl_macros::{decreases, effect, ensures, label, relabel, requires, total, unchecked};
+pub use mvl_macros::{
+    decreases, effect, ensures, label, loop_decreases, relabel, requires, total, unchecked,
+};
 
 use std::marker::PhantomData;
 

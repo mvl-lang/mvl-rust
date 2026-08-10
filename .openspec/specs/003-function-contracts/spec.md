@@ -171,6 +171,70 @@ Call resolution MUST be same-file free functions only. A call to anything else M
 
 **Tests:** `crates/rust-effect/src/checks.rs::call_to_unresolvable_function_is_silently_skipped`
 
+### Requirement 6: A `while`/`loop` in a total function requires a provably decreasing `loop_decreases!` measure [MUST]
+
+**Added by ADR-0010**, closing a gap Requirement 3 never covered: direct recursion was checked, but a `while`/`loop` construct was not, at all.
+
+The tool MUST require `mvl::loop_decreases!(measure)` as the first statement of any `while`/`loop` expression's body inside a `#[mvl::total]` function. Because a real attribute macro cannot legally attach to a `while`/`loop` expression on stable Rust (ADR-0010), `loop_decreases!` is a function-like macro invocation, not an attribute, unlike `#[mvl::decreases(measure)]` on a recursive function.
+
+`measure` MUST be a bare identifier. The tool MUST reject the loop if `measure` is not a bare identifier, or if it is rebound anywhere in the loop body (same rule and rationale as Requirement 3's shadowing scenario). The tool MUST find every assignment to `measure` anywhere in the loop body (any nesting depth) and require exactly one; if more than one exists, or if the one that exists is not a direct, unconditional, top-level statement of the loop body, the tool MUST reject the loop. Given exactly one unconditional top-level assignment, the tool MUST build the entailment obligation `<measure's value after the assignment> < <measure>` and discharge it the same way Requirement 3 discharges a recursive call's descent — via `mvl_rust_core::solver::native::discharge_entailment`, with the function's own `#[mvl::requires(...)]` clauses as hypotheses — and MUST reject the loop if the result is `Violated` or `Runtime`.
+
+Only `while` and `loop` expressions are detected. `for` loops, loops inside `impl` methods, and reasoning across multiple mutations of the same measure are out of scope.
+
+**Implementation:** `crates/rust-total/src/checks/loop_termination.rs`
+
+#### Scenario: A loop with no `loop_decreases!` marker is rejected
+
+- GIVEN a `#[mvl::total]` function containing a `while`/`loop` expression with no `mvl::loop_decreases!(...)` as its body's first statement
+- WHEN the loop-termination check runs
+- THEN a `Level::Error` diagnostic MUST be reported
+
+**Tests:** `crates/rust-total/tests/totality.rs::loop_missing_decreases_marker_is_rejected`
+
+#### Scenario: A loop measure that isn't a bare identifier is rejected
+
+- GIVEN a `#[mvl::total]` function containing a `while`/`loop` whose `mvl::loop_decreases!(...)` argument is not a single identifier (e.g. a computed expression)
+- WHEN the loop-termination check runs
+- THEN a `Level::Error` diagnostic MUST be reported
+
+**Tests:** `crates/rust-total/tests/totality.rs::loop_non_identifier_measure_is_rejected`
+
+#### Scenario: A loop whose measure provably decreases is accepted
+
+- GIVEN a `#[mvl::total]` function containing a `while`/`loop` whose body starts with `mvl::loop_decreases!(n)`
+- AND the body's only assignment to `n` is a direct, unconditional, top-level statement whose new value discharges `<new value> < n` as `Proven`
+- WHEN the loop-termination check runs
+- THEN no diagnostic MUST be reported
+
+**Tests:** `crates/rust-total/tests/totality.rs::loop_with_literal_decrement_is_accepted`, `::loop_with_symbolic_decrement_is_proved_given_a_requires_hypothesis`, `::nested_loops_are_each_checked_independently`
+
+#### Scenario: A loop whose measure does not provably decrease is rejected
+
+- GIVEN a `#[mvl::total]` function containing a `while`/`loop` whose body starts with `mvl::loop_decreases!(n)`
+- AND the body's only assignment to `n` discharges `<new value> < n` as `Violated` or `Runtime`
+- WHEN the loop-termination check runs
+- THEN a `Level::Error` diagnostic MUST be reported
+
+**Tests:** `crates/rust-total/tests/totality.rs::loop_division_is_never_provably_decreasing`, `::loop_symbolic_decrement_without_a_positivity_hypothesis_is_rejected`
+
+#### Scenario: A conditional or duplicated assignment to the measure is rejected
+
+- GIVEN a `#[mvl::total]` function containing a `while`/`loop` whose body starts with `mvl::loop_decreases!(n)`
+- AND the only assignment to `n` is nested inside an `if`/`match`/inner loop, OR `n` is assigned more than once anywhere in the body
+- WHEN the loop-termination check runs
+- THEN a `Level::Error` diagnostic MUST be reported
+
+**Tests:** `crates/rust-total/tests/totality.rs::loop_conditional_mutation_is_rejected`, `::loop_multiple_mutations_are_rejected`
+
+#### Scenario: A measure shadowed in the loop body is rejected
+
+- GIVEN a `#[mvl::total]` function containing a `while`/`loop` whose body starts with `mvl::loop_decreases!(n)`
+- AND `n` is rebound somewhere in the loop body
+- WHEN the loop-termination check runs
+- THEN a `Level::Error` diagnostic MUST be reported, regardless of whether the assignment found would otherwise discharge as `Proven`
+
+**Tests:** `crates/rust-total/tests/totality.rs::loop_shadowed_measure_is_rejected`
+
 ---
 
 ## Known Limitations
@@ -182,6 +246,9 @@ Call resolution MUST be same-file free functions only. A call to anything else M
 - **Nor can an explicit `#[mvl::effect()]`** — Requirement 4's claim is verified only against same-file resolvable calls, so a function annotated pure that reaches an effect through a method or cross-file call is accepted in silence. It is an unverified assertion rather than an established fact, and nothing currently marks it as one. ADR-0008 §3–§4; pinned by `an_explicit_purity_claim_is_not_verified_against_unresolvable_calls`.
 - **No cross-procedural effect inference.** A function calling an unresolvable callee may perform arbitrary effects while declaring none, with no diagnostic. Spec 002 narrows this by rejecting `dyn Trait` and unreviewed macros but does not close it.
 - **Injected runtime assertions would falsify `#[mvl::total]`.** See spec 007 Requirement 5; the collision is introduced by this port and has no upstream answer.
+- **`for` loops aren't covered by Requirement 6.** Only `while` and `loop` are visited. A `for i in 0..n` loop terminates by construction in ordinary use and likely needs a different treatment (recognizing bounded-range iteration) rather than a `loop_decreases!` marker — a real gap, deferred rather than forced into this shape (ADR-0010 Consequences).
+- **Requirement 6 cannot compose multiple mutations of the same measure.** A loop that decrements a measure in one branch and increments it in another is rejected outright even when a human could argue it terminates on average. Conservative by design, not a scoped shape-list gap — closing it needs real per-path reasoning.
+- **Requirement 6's marker macro is unenforced if simply omitted-and-not-caught by a reviewer** in the sense that nothing about ordinary Rust requires a loop to carry it — the same is true of `#[mvl::total]` itself not being required on any function. This is opt-in by design (ADR-0001), not a defect specific to loops.
 
 ---
 
@@ -189,8 +256,8 @@ Call resolution MUST be same-file free functions only. A call to anything else M
 
 | Layer | Artefact |
 |---|---|
-| **Intent** | #6 (`rust-total`), #9 (`rust-effect`, v1 scope), #45 (purity signal — blocked by Req 4, closed as won't-fix per ADR-0008 §6) |
+| **Intent** | #6 (`rust-total`), #9 (`rust-effect`, v1 scope), #45 (purity signal — blocked by Req 4, closed as won't-fix per ADR-0008 §6), #82 (loop termination gap) |
 | **Specification** | this document |
-| **Decision** | ADR-0003; ADR-0001 §1 (attribute carrier), §5 (greenfield rule); ADR-0009 (Requirement 3 amendment) |
+| **Decision** | ADR-0003; ADR-0001 §1 (attribute carrier), §5 (greenfield rule); ADR-0009 (Requirement 3 amendment); ADR-0010 (Requirement 6) |
 | **Program** | `crates/rust-total/src/checks/`, `crates/rust-effect/src/checks.rs` |
-| **Evidence** | `crates/rust-total/tests/totality.rs` (21 tests), `crates/rust-effect/src/checks.rs::tests` (9 tests), per-tool `tests/verification_mode.rs`, `examples/rust-total-demo/`, `examples/rust-effect-demo/` |
+| **Evidence** | `crates/rust-total/tests/totality.rs` (31 tests), `crates/rust-effect/src/checks.rs::tests` (9 tests), per-tool `tests/verification_mode.rs`, `examples/rust-total-demo/`, `examples/rust-effect-demo/` |

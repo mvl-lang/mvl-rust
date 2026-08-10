@@ -90,6 +90,63 @@ fn halve(n: u64) -> u64 {
     }
 }
 
+// ADR-0010: the headline gap this section closes. `termination.rs` only
+// ever looked at recursive calls -- this genuinely never terminates
+// (`n += 1` forever) and was accepted with zero diagnostics before the
+// loop-termination check existed. Uncallable -- see module doc.
+#[allow(dead_code, unused_assignments, unused_variables)]
+#[mvl::total]
+fn spins_forever() -> u64 {
+    let mut n = 0;
+    loop {
+        n += 1;
+    }
+}
+
+// ADR-0010 §4: same class of bug as `shadowed_measure` above, for a loop.
+// `n -= 1` inside the shadowing block mutates the fresh local, never the
+// outer loop variable, so the outer `n > 0` condition never changes --
+// which is also exactly why rustc's own `unused_mut` fires on the outer
+// parameter below: it genuinely is never mutated, silent evidence of the
+// same bug this function exists to demonstrate.
+#[allow(dead_code, unused_mut, unused_assignments, unused_variables)]
+#[mvl::total]
+fn shadowed_loop_measure(mut n: u64) -> u64 {
+    while n > 0 {
+        mvl::loop_decreases!(n);
+        let mut n = n + 100;
+        n -= 1;
+    }
+    n
+}
+
+// The loop analogue of `unbounded_countdown` above: `fuel -= k` without a
+// `#[mvl::requires(k > 0)]` bound (see the compliant crate's
+// `countdown_loop`) -- the solver can't rule out `k == 0`. Never
+// terminates for e.g. k == 0, so it isn't called -- see module doc.
+#[allow(dead_code)]
+#[mvl::total]
+fn unbounded_countdown_loop(mut fuel: u64, k: u64) -> u64 {
+    while fuel > 0 {
+        mvl::loop_decreases!(fuel);
+        fuel -= k;
+    }
+    fuel
+}
+
+// The loop analogue of `halve` above: genuinely terminates at runtime
+// (integer division reaches 0), but division is outside the native
+// solver's linear-arithmetic system entirely, so it's never provable --
+// safe to call, since it does actually terminate.
+#[mvl::total]
+fn halve_loop(mut n: u64) -> u64 {
+    while n > 0 {
+        mvl::loop_decreases!(n);
+        n /= 2;
+    }
+    n
+}
+
 #[mvl::total]
 fn first(v: Vec<i32>) -> i32 {
     v[0] // raw indexing: outside the qualified subset
@@ -108,6 +165,7 @@ fn must_have(x: Option<i32>) -> i32 {
 fn main() {
     println!("{}", factorial(5));
     println!("{}", halve(100));
+    println!("{}", halve_loop(100));
     println!("{}", first(vec![1, 2, 3]));
     println!("{}", half(10, 2));
     println!("{}", must_have(Some(5)));

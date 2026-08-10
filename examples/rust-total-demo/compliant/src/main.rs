@@ -1,7 +1,8 @@
-//! Demonstrates code that stays within rust-total's checks: no panics, and
+//! Demonstrates code that stays within rust-total's checks: no panics,
 //! every recursive `#[mvl::total]` function carries a
 //! `#[mvl::decreases(measure)]` whose descent the native solver proves
-//! (ADR-0009).
+//! (ADR-0009), and every `while`/`loop` carries an `mvl::loop_decreases!`
+//! whose descent the same solver proves (ADR-0010).
 
 #[mvl::total]
 #[mvl::decreases(n)]
@@ -29,6 +30,36 @@ fn countdown(fuel: u64, k: u64) -> u64 {
     }
 }
 
+// ADR-0010: `#[mvl::decreases(...)]` can't attach to a `while`/`loop` at
+// all (a real attribute macro can't legally attach to an expression on
+// stable Rust) -- `mvl::loop_decreases!` is a function-like macro instead,
+// placed as the loop body's first statement. `n -= 1` is a literal
+// decrement, proved the same way `factorial`'s recursive call is.
+#[mvl::total]
+fn sum_to(n: u64) -> u64 {
+    let mut total = 0;
+    let mut i = n;
+    while i > 0 {
+        mvl::loop_decreases!(i);
+        total += i;
+        i -= 1;
+    }
+    total
+}
+
+// The loop analogue of `countdown` above: `fuel -= k` is a symbolic
+// decrement, only provable because `#[mvl::requires(k > 0)]` supplies the
+// hypothesis the solver needs.
+#[mvl::total]
+#[mvl::requires(k > 0)]
+fn countdown_loop(mut fuel: u64, k: u64) -> u64 {
+    while fuel > 0 {
+        mvl::loop_decreases!(fuel);
+        fuel -= k;
+    }
+    fuel
+}
+
 enum TrafficLight {
     Red,
     Yellow,
@@ -47,6 +78,8 @@ fn next(light: &TrafficLight) -> TrafficLight {
 fn main() {
     println!("5! = {}", factorial(5));
     println!("countdown(9, 3) = {}", countdown(9, 3));
+    println!("sum_to(5) = {}", sum_to(5));
+    println!("countdown_loop(9, 3) = {}", countdown_loop(9, 3));
 
     let mut light = TrafficLight::Red;
     for _ in 0..3 {

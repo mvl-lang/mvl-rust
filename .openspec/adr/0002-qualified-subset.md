@@ -58,8 +58,10 @@ style" does not belong here.
 
 Current allowlist for #4: `println`, `print`, `format`, `write`, `writeln`,
 `vec`, `assert`, `assert_eq`, `assert_ne`, `matches`, `panic`, `todo`,
-`unimplemented`. Deliberately small, and expected to grow as real use surfaces
-macros that provably expand to nothing outside rules 1–3, 5–6.
+`unimplemented`, `loop_decreases` (`mvl::loop_decreases!`, ADR-0010 —
+expands to nothing, same shape as the rest of this list). Deliberately
+small, and expected to grow as real use surfaces macros that provably
+expand to nothing outside rules 1–3, 5–6.
 
 `macro_rules!` **definitions** are exempt — only invocations are restricted.
 Defining a macro is fine; invoking an unreviewed one is not. Derive and

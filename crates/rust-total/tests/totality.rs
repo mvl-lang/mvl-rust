@@ -369,3 +369,231 @@ fn requires_and_ensures_on_a_total_function_are_not_flagged() {
         diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+// ── loop-termination (`loop_decreases!`) scenarios (spec 003 Requirement 6, ADR-0010) ──
+
+#[test]
+fn loop_missing_decreases_marker_is_rejected() {
+    // Spec 003 Requirement 6, scenario "A loop with no loop_decreases!
+    // marker is rejected". Confirmed as a real, previously-undocumented
+    // gap before this check existed: this compiled and ran forever with
+    // zero diagnostics from cargo-mvl-total.
+    let source = r#"
+        #[mvl::total]
+        fn spins_forever() -> u64 {
+            let mut n = 0;
+            loop {
+                n += 1;
+            }
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1, "got {diagnostics:?}");
+    assert!(diagnostics[0].message.contains("loop_decreases"));
+}
+
+#[test]
+fn loop_non_identifier_measure_is_rejected() {
+    // Spec 003 Requirement 6, scenario "A loop measure that isn't a bare
+    // identifier is rejected".
+    let source = r#"
+        #[mvl::total]
+        fn f(mut n: u64) -> u64 {
+            while n > 0 {
+                mvl::loop_decreases!(n - 1);
+                n -= 1;
+            }
+            n
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1, "got {diagnostics:?}");
+    assert!(diagnostics[0].message.contains("bare local variable"));
+}
+
+#[test]
+fn loop_with_literal_decrement_is_accepted() {
+    // Spec 003 Requirement 6, scenario "A loop whose measure provably
+    // decreases is accepted" -- the literal case, mirroring
+    // `terminating_recursion_with_decreases_is_accepted`.
+    let source = r#"
+        #[mvl::total]
+        fn countdown(mut n: u64) -> u64 {
+            while n > 0 {
+                mvl::loop_decreases!(n);
+                n -= 1;
+            }
+            n
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert!(
+        diagnostics.is_empty(),
+        "expected no diagnostics, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn loop_with_symbolic_decrement_is_proved_given_a_requires_hypothesis() {
+    // Spec 003 Requirement 6 -- the symbolic case, mirroring
+    // `a_symbolic_decrement_is_proved_given_a_requires_hypothesis`. `k` is
+    // not a literal; only provable because `#[mvl::requires(k > 0)]`
+    // supplies the hypothesis the solver needs.
+    let source = r#"
+        #[mvl::total]
+        #[mvl::requires(k > 0)]
+        fn countdown_by(mut fuel: u64, k: u64) -> u64 {
+            while fuel > 0 {
+                mvl::loop_decreases!(fuel);
+                fuel -= k;
+            }
+            fuel
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert!(
+        diagnostics.is_empty(),
+        "expected no diagnostics, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn loop_symbolic_decrement_without_a_positivity_hypothesis_is_rejected() {
+    // Same shape as above, minus the `requires(k > 0)` -- with no
+    // hypothesis bounding `k`, the solver cannot rule out `k == 0` (which
+    // would not decrease `fuel`), so the loop is rejected.
+    let source = r#"
+        #[mvl::total]
+        fn countdown_by(mut fuel: u64, k: u64) -> u64 {
+            while fuel > 0 {
+                mvl::loop_decreases!(fuel);
+                fuel -= k;
+            }
+            fuel
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1, "got {diagnostics:?}");
+    assert!(diagnostics[0]
+        .message
+        .contains("does not provably decrease"));
+}
+
+#[test]
+fn loop_division_is_never_provably_decreasing() {
+    // Spec 003 Requirement 6, scenario "A loop whose measure does not
+    // provably decrease is rejected" -- division. Mirrors
+    // `division_is_never_provably_decreasing`: genuinely terminates at
+    // runtime (integer division reaches 0), but the native solver's
+    // linear-arithmetic system cannot represent division at all, so it's
+    // never provable regardless of hypotheses.
+    let source = r#"
+        #[mvl::total]
+        fn halve(mut n: u64) -> u64 {
+            while n > 0 {
+                mvl::loop_decreases!(n);
+                n /= 2;
+            }
+            n
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1, "got {diagnostics:?}");
+    assert!(diagnostics[0]
+        .message
+        .contains("does not provably decrease"));
+}
+
+#[test]
+fn loop_conditional_mutation_is_rejected() {
+    // Spec 003 Requirement 6, scenario "A conditional or duplicated
+    // assignment to the measure is rejected" -- the conditional case. The
+    // only assignment to `n` is nested inside an `if`, so it doesn't run
+    // every iteration -- not a sound per-iteration decrease even though
+    // its shape (`n -= 1`) would otherwise qualify.
+    let source = r#"
+        #[mvl::total]
+        fn maybe_decrement(mut n: u64, flag: bool) -> u64 {
+            while n > 0 {
+                mvl::loop_decreases!(n);
+                if flag {
+                    n -= 1;
+                }
+            }
+            n
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1, "got {diagnostics:?}");
+    assert!(diagnostics[0].message.contains("conditional"));
+}
+
+#[test]
+fn loop_multiple_mutations_are_rejected() {
+    // Spec 003 Requirement 6, scenario "A conditional or duplicated
+    // assignment to the measure is rejected" -- the duplicate case.
+    let source = r#"
+        #[mvl::total]
+        fn double_decrement(mut n: u64) -> u64 {
+            while n > 0 {
+                mvl::loop_decreases!(n);
+                n -= 1;
+                n -= 1;
+            }
+            n
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1, "got {diagnostics:?}");
+    assert!(diagnostics[0].message.contains("more than once"));
+}
+
+#[test]
+fn loop_shadowed_measure_is_rejected() {
+    // Spec 003 Requirement 6, scenario "A measure shadowed in the loop
+    // body is rejected". Same class of bug as
+    // `a_shadowed_measure_is_rejected_even_though_it_looks_decreasing`:
+    // the `n -= 1` inside the shadowing block refers to the fresh local,
+    // never the outer loop variable, so the outer `n > 0` condition never
+    // changes and the loop never terminates.
+    let source = r#"
+        #[mvl::total]
+        fn shadowed(mut n: u64) -> u64 {
+            while n > 0 {
+                mvl::loop_decreases!(n);
+                let mut n = n + 100;
+                n -= 1;
+            }
+            n
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1, "got {diagnostics:?}");
+    assert!(diagnostics[0].message.contains("rebound"));
+}
+
+#[test]
+fn nested_loops_are_each_checked_independently() {
+    // Spec 003 Requirement 6 -- ADR-0010 §5: each loop needs its own
+    // marker and is checked on its own. Both are honestly decreasing
+    // here, so both are accepted.
+    let source = r#"
+        #[mvl::total]
+        fn nested(mut n: u64, mut m: u64) -> u64 {
+            while n > 0 {
+                mvl::loop_decreases!(n);
+                while m > 0 {
+                    mvl::loop_decreases!(m);
+                    m -= 1;
+                }
+                n -= 1;
+            }
+            n
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert!(
+        diagnostics.is_empty(),
+        "expected no diagnostics, got {diagnostics:?}"
+    );
+}
