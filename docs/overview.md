@@ -35,6 +35,9 @@ Every tool works in two modes:
 
 ## Start here if...
 
+- **You want to understand how the five tools relate architecturally** — see
+  [The Shared Solver Model](architecture.md); the five tools fall into three
+  tiers (syntactic, structural, proof), and the proof tier shares one engine.
 - **You have an existing Rust codebase and want to try this incrementally** —
   see [Adopting mvl-rust in an existing codebase](integration/existing-rust.md).
 - **You already use Kani, Creusot, or Prusti** — see the coexistence recipes
