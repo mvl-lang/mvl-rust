@@ -37,9 +37,14 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     eprintln!("usage: cargo mvl-mcdc scan [-o FILE] <FILE>...");
-    eprintln!("       cargo mvl-mcdc discharge [--run-dir=DIR] [--min-decisions=PCT] [--min-conditions=PCT] [--emit-mcdc-json] <FILE>...");
-    eprintln!("       cargo mvl-mcdc harvest --obligations=FILE [--run-dir=DIR] [--min-decisions=PCT] [--emit-mcdc-json]");
+    eprintln!();
+    eprintln!("  Default discharge path -- a human/LLM writes the vectors as tagged tests:");
     eprintln!("       cargo mvl-mcdc generate --obligations=FILE");
+    eprintln!("       cargo mvl-mcdc harvest --obligations=FILE [--run-dir=DIR] [--min-decisions=PCT] [--emit-mcdc-json]");
+    eprintln!();
+    eprintln!("  Alternative discharge path -- fully automatic, no tagging, but re-runs");
+    eprintln!("  `cargo test` once per mutant (expensive):");
+    eprintln!("       cargo mvl-mcdc discharge [--run-dir=DIR] [--min-decisions=PCT] [--min-conditions=PCT] [--emit-mcdc-json] <FILE>...");
 }
 
 fn write_output(content: &str, output: Option<&Path>) -> ExitCode {

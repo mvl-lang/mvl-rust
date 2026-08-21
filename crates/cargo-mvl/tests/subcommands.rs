@@ -84,3 +84,42 @@ fn assurance_aggregates_check_prove_and_test_sections() {
     assert!(report.prove.is_some());
     assert!(report.test.is_some());
 }
+
+#[test]
+fn mcdc_redirects_standalone_subcommands_instead_of_misreading_them_as_files() {
+    for keyword in ["scan", "discharge", "harvest", "generate"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_cargo-mvl"))
+            .args(["mcdc", keyword, "src/lib.rs"])
+            .output()
+            .expect("failed to spawn cargo-mvl");
+
+        assert!(
+            !output.status.success(),
+            "`cargo mvl mcdc {keyword} ...` must not succeed"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("cargo-mvl-mcdc"),
+            "expected a redirect to the standalone binary, got: {stderr}"
+        );
+        assert!(
+            !stderr.contains("failed to read"),
+            "must not be misread as a file path, got: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn mcdc_scan_reports_compiler_void_not_discharge() {
+    let path = write_fixture(
+        "mcdc_scan.rs",
+        "fn f(x: i32) -> i32 { match x { n if n > 0 => n, _ => 0 } }",
+    );
+    let (success, report) = run(&["mcdc", path.to_str().unwrap()]);
+
+    assert!(success);
+    let mcdc = report.mcdc.expect("mcdc section must be populated");
+    // One compiler-void `match`, one real (uncovered) guard decision.
+    assert_eq!(mcdc.conditions.len(), 2);
+    assert_eq!(mcdc.conditions.iter().filter(|c| c.covered).count(), 1);
+}
