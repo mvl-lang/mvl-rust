@@ -1,15 +1,15 @@
 [package]
-name = "rust-effect"
+name = "rust-mcdc"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "#[mvl::effect(list)] propagation checking for mvl-rust: same-file, flat effect-set enforcement across function calls."
+description = "Simulated MC/DC for mvl-rust: obligation scanning plus condition-mutation discharge on stable Rust."
 readme = "README.md"
 
 [[bin]]
-name = "cargo-mvl-effect"
+name = "cargo-mvl-mcdc"
 path = "src/main.rs"
 
 [dependencies]
@@ -17,4 +17,5 @@ mvl-rust-core = { path = "../mvl-rust-core", version = "0.4.0" }
 syn = { version = "2", features = ["full", "extra-traits", "visit"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
 thiserror = "2"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"

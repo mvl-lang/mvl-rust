@@ -10,10 +10,14 @@ use mvl_rust_core::assurance::schema::{
 };
 use mvl_rust_core::diagnostics::Level;
 
-/// Assurance subcommands with no implementation yet -- both need
+/// Assurance subcommands with no implementation yet -- `coverage` needs
 /// `cargo-llvm-cov` (an external tool with its own install/toolchain
-/// story), tracked by its own ticket (#15) for that reason.
-const UNIMPLEMENTED_SUBCOMMANDS: &[&str] = &["mcdc", "coverage"];
+/// story), tracked by its own ticket (#15). `mcdc`'s obligation-scan half
+/// is implemented below (`rust-mcdc::scanner`); its mutation-discharge
+/// half needs a `--run-dir` and shells out to `cargo test` per mutant, so
+/// it's only exposed via the standalone `cargo mvl-mcdc discharge` binary
+/// (#85), not through this in-process, source-text-only dispatcher.
+const UNIMPLEMENTED_SUBCOMMANDS: &[&str] = &["coverage"];
 
 fn main() -> ExitCode {
     let mut args: Vec<String> = env::args().skip(1).collect();
@@ -37,6 +41,7 @@ fn main() -> ExitCode {
         "prove" => run_prove(&files),
         "test" => run_test(rest),
         "assurance" => run_assurance(&files),
+        "mcdc" => run_mcdc(&files),
         _ if check::TOOL_ORDER.contains(&subcommand.as_str()) => run_single(&subcommand, &files),
         _ if UNIMPLEMENTED_SUBCOMMANDS.contains(&subcommand.as_str()) => {
             eprintln!(
@@ -63,7 +68,8 @@ fn print_usage() {
     eprintln!("  prove <FILE>...    rust-refine's obligation trace");
     eprintln!("  test [-- ARGS]     runs `cargo test`, parses pass/fail/ignored");
     eprintln!("  assurance <FILE>...   aggregates check + prove + test");
-    eprintln!("  mcdc|coverage      not yet implemented -- see #15 (needs cargo-llvm-cov)");
+    eprintln!("  mcdc <FILE>...     rust-mcdc's obligation scan (run `cargo mvl-mcdc discharge` for mutation-testing gate)");
+    eprintln!("  coverage           not yet implemented -- see #15 (needs cargo-llvm-cov)");
 }
 
 fn read_source(path: &PathBuf) -> Result<String, ExitCode> {
@@ -180,6 +186,60 @@ fn run_single(tool: &str, files: &[PathBuf]) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// `cargo mvl mcdc`: obligation scan only (layer "a" of #85's design) --
+/// deterministic, read-only, emitted as assurance-JSON's `McdcSection`.
+/// Every obligation reports `covered: false` here since discharge (layer
+/// "c", mutation testing) hasn't run; run `cargo mvl-mcdc discharge` for
+/// an actual pass/fail gate.
+fn run_mcdc(files: &[PathBuf]) -> ExitCode {
+    use mvl_rust_core::assurance::schema::{McdcCondition, McdcSection};
+
+    if files.is_empty() {
+        print_usage();
+        return ExitCode::from(2);
+    }
+
+    let mut conditions = Vec::new();
+    for path in files {
+        let source = match read_source(path) {
+            Ok(source) => source,
+            Err(code) => return code,
+        };
+        let decisions = match rust_mcdc::scanner::scan_source(&source) {
+            Ok(decisions) => decisions,
+            Err(err) => {
+                eprintln!("error: rust-mcdc failed on {}: {err}", path.display());
+                return ExitCode::from(2);
+            }
+        };
+        for decision in &decisions {
+            conditions.push(McdcCondition {
+                id: format!("{}:{}", path.display(), decision.site.start().line),
+                covered: decision.compiler_void,
+            });
+        }
+    }
+
+    let total = conditions.len();
+    let void = conditions.iter().filter(|c| c.covered).count();
+
+    let mut report = AssuranceReport::new("cargo-mvl", current_timestamp());
+    report.mcdc = Some(McdcSection {
+        conditions,
+        coverage_pct: if total == 0 {
+            100.0
+        } else {
+            (void as f64 / total as f64) * 100.0
+        },
+    });
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).expect("AssuranceReport always serializes")
+    );
+    ExitCode::SUCCESS
 }
 
 /// Assurance mode never fails the build: a file that can't be read or
