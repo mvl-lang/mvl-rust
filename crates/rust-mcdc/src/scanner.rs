@@ -66,6 +66,25 @@ impl Decision {
             .map(|span| slice(source, *span))
             .collect()
     }
+
+    pub fn line(&self) -> usize {
+        self.site.start().line
+    }
+
+    /// The serializable [`crate::obligation::ObligationRecord`] for this
+    /// decision, `file` as given by the caller (a `Span` carries no
+    /// filename of its own).
+    pub fn to_record(&self, file: &str) -> crate::obligation::ObligationRecord {
+        crate::obligation::ObligationRecord {
+            id: crate::obligation::obligation_id(file, self.line()),
+            file: file.to_string(),
+            line: self.line(),
+            decision: self.text.clone(),
+            conditions: self.leaves.len(),
+            vectors_required: self.vectors_required(),
+            compiler_void: self.compiler_void,
+        }
+    }
 }
 
 pub fn slice(source: &str, span: Span) -> &str {

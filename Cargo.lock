@@ -333,6 +333,7 @@ version = "0.3.0"
 dependencies = [
  "mvl-rust-core",
  "proc-macro2",
+ "serde",
  "serde_json",
  "syn 2.0.119",
  "thiserror",

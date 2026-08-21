@@ -24,7 +24,7 @@ use std::process::Command;
 use thiserror::Error;
 
 use crate::mutate::{self, Mutant};
-use crate::scanner::{scan_source, Decision, ScanError};
+use crate::scanner::{scan_source, ScanError};
 
 #[derive(Debug, Error)]
 pub enum DischargeError {
@@ -107,10 +107,6 @@ fn cargo_test_passes(run_dir: &Path) -> Result<bool, DischargeError> {
     Ok(status.success())
 }
 
-fn decision_line(decision: &Decision) -> usize {
-    decision.site.start().line
-}
-
 /// Discharges every decision in `path` by mutation testing, running
 /// `cargo test` from `run_dir` (typically the crate root) once per mutant.
 ///
@@ -136,7 +132,7 @@ pub fn discharge_file(path: &Path, run_dir: &Path) -> Result<Vec<DecisionOutcome
         }
 
         outcomes.push(DecisionOutcome {
-            line: decision_line(decision),
+            line: decision.line(),
             decision: decision.text.clone(),
             vectors_required: decision.vectors_required(),
             compiler_void: decision.compiler_void,
