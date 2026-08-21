@@ -8,6 +8,12 @@ below backfills everything merged while the workspace sat at that version.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-21
+
+### Added
+
+- `rust-mcdc` (#85): sixth tool, simulated MC/DC for stable Rust. `syn`-based obligation scanner extracts every decision (`if`/`while` condition, `match` guard), flattens `&&`/`||` chains into leaf conditions, and computes MC/DC's `n + 1` minimum vector count; an exhaustive `match` is recorded compiler-void. Two independent discharge paths over the same `obligations.json`: mutation (`cargo mvl-mcdc discharge` forces each leaf true/false and flips each operator, checking whether `cargo test` fails — `discharged ⇔ compiler-void ∨ all-condition-mutants-killed`) and tagged tests (`scan → generate → run → harvest`: a human/Claude writes the vectors as tests named `mcdc__<id>__v<N>`, `harvest` joins them against `cargo test`'s plain-text output, no mutation). `cargo mvl mcdc` wires the obligation scan in-process; both discharge paths need `--run-dir` and stay on the standalone `cargo-mvl-mcdc` binary. New Makefile targets (`mcdc`, `mcdc-scan`, `mcdc-generate`, `mcdc-run`, `mcdc-harvest`, `mcdc-discharge`, `test-mcdc`).
+
 ## [0.3.1] - 2026-08-21
 
 ### Fixed
