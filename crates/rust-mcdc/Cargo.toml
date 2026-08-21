@@ -1,0 +1,20 @@
+[package]
+name = "rust-mcdc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Simulated MC/DC for mvl-rust: obligation scanning plus condition-mutation discharge on stable Rust."
+readme = "README.md"
+
+[[bin]]
+name = "cargo-mvl-mcdc"
+path = "src/main.rs"
+
+[dependencies]
+mvl-rust-core = { path = "../mvl-rust-core", version = "0.3.0" }
+syn = { version = "2", features = ["full", "extra-traits", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+thiserror = "2"
+serde_json = "1"

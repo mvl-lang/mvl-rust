@@ -61,6 +61,7 @@ dependencies = [
  "rust-effect",
  "rust-ifc",
  "rust-limit",
+ "rust-mcdc",
  "rust-refine",
  "rust-total",
  "serde_json",
@@ -318,6 +319,17 @@ dependencies = [
 [[package]]
 name = "rust-limit"
 version = "0.3.1"
+dependencies = [
+ "mvl-rust-core",
+ "proc-macro2",
+ "serde_json",
+ "syn 2.0.119",
+ "thiserror",
+]
+
+[[package]]
+name = "rust-mcdc"
+version = "0.3.0"
 dependencies = [
  "mvl-rust-core",
  "proc-macro2",
