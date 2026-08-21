@@ -47,7 +47,10 @@ fn all_three_vectors_tagged_and_passing_discharges_the_obligation() {
     );
 
     let decisions = scan_source(LIB).unwrap();
-    let obligations: Vec<_> = decisions.iter().map(|d| d.to_record("src/lib.rs")).collect();
+    let obligations: Vec<_> = decisions
+        .iter()
+        .map(|d| d.to_record("src/lib.rs"))
+        .collect();
 
     let discharges = harvest(&obligations, &dir).unwrap();
     assert_eq!(discharges.len(), 1);
@@ -70,7 +73,10 @@ fn a_missing_vector_leaves_the_obligation_undischarged() {
     );
 
     let decisions = scan_source(LIB).unwrap();
-    let obligations: Vec<_> = decisions.iter().map(|d| d.to_record("src/lib.rs")).collect();
+    let obligations: Vec<_> = decisions
+        .iter()
+        .map(|d| d.to_record("src/lib.rs"))
+        .collect();
 
     let discharges = harvest(&obligations, &dir).unwrap();
     assert!(!discharges[0].discharged);
@@ -93,7 +99,10 @@ fn untagged_tests_do_not_count_toward_discharge() {
     );
 
     let decisions = scan_source(LIB).unwrap();
-    let obligations: Vec<_> = decisions.iter().map(|d| d.to_record("src/lib.rs")).collect();
+    let obligations: Vec<_> = decisions
+        .iter()
+        .map(|d| d.to_record("src/lib.rs"))
+        .collect();
 
     let discharges = harvest(&obligations, &dir).unwrap();
     assert!(!discharges[0].discharged);

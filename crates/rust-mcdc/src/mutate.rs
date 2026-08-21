@@ -50,7 +50,11 @@ pub fn mutants_for(decision: &Decision) -> Vec<Mutant> {
 }
 
 fn operator_flip(index: usize, op: &DecisionOp) -> Mutant {
-    let (from, to) = if op.is_and { ("&&", "||") } else { ("||", "&&") };
+    let (from, to) = if op.is_and {
+        ("&&", "||")
+    } else {
+        ("||", "&&")
+    };
     Mutant {
         description: format!("operator {index} flipped from `{from}` to `{to}`"),
         range: op.span.byte_range(),

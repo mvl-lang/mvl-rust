@@ -162,7 +162,10 @@ fn load_obligations(path: &Path) -> Result<Vec<ObligationRecord>, ExitCode> {
         ExitCode::from(2)
     })?;
     serde_json::from_str(&text).map_err(|err| {
-        eprintln!("error: failed to parse {} as obligations JSON: {err}", path.display());
+        eprintln!(
+            "error: failed to parse {} as obligations JSON: {err}",
+            path.display()
+        );
         ExitCode::from(2)
     })
 }
@@ -250,7 +253,13 @@ fn run_discharge(args: &[String]) -> ExitCode {
     if options.emit_json {
         print_mutation_report(&all_outcomes, killed_conditions, total_conditions);
     } else {
-        print_summary(&all_outcomes, total_decisions, complete_decisions, decisions_pct, conditions_pct);
+        print_summary(
+            &all_outcomes,
+            total_decisions,
+            complete_decisions,
+            decisions_pct,
+            conditions_pct,
+        );
     }
 
     if decisions_pct < options.min_decisions_pct || conditions_pct < options.min_conditions_pct {
@@ -330,7 +339,8 @@ fn run_harvest(args: &[String]) -> ExitCode {
             conditions,
             coverage_pct: decisions_pct,
         });
-        let json = serde_json::to_string_pretty(&report).expect("AssuranceReport always serializes");
+        let json =
+            serde_json::to_string_pretty(&report).expect("AssuranceReport always serializes");
         write_output(&json, output.as_deref());
     } else {
         let json = serde_json::to_string_pretty(&discharges).expect("discharges always serialize");
@@ -338,9 +348,7 @@ fn run_harvest(args: &[String]) -> ExitCode {
         if code != ExitCode::SUCCESS {
             return code;
         }
-        eprintln!(
-            "MC/DC harvest: {complete}/{total} obligations discharged ({decisions_pct:.1}%)"
-        );
+        eprintln!("MC/DC harvest: {complete}/{total} obligations discharged ({decisions_pct:.1}%)");
         for discharge in &discharges {
             if !discharge.discharged {
                 eprintln!(

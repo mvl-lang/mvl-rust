@@ -72,7 +72,10 @@ fn parse_tag(name: &str) -> Option<(String, u32)> {
     if id.is_empty() || digits.is_empty() {
         return None;
     }
-    Some((id.to_string(), digits.parse().expect("all-digit string parses as u32")))
+    Some((
+        id.to_string(),
+        digits.parse().expect("all-digit string parses as u32"),
+    ))
 }
 
 /// Runs `cargo test` in `run_dir` and groups every tagged test's outcome
@@ -127,8 +130,8 @@ pub fn harvest(
                 .map(|t| t.vector)
                 .collect::<BTreeSet<_>>()
                 .len();
-            let discharged =
-                o.compiler_void || (o.vectors_required > 0 && vectors_discharged >= o.vectors_required);
+            let discharged = o.compiler_void
+                || (o.vectors_required > 0 && vectors_discharged >= o.vectors_required);
             DischargeRecord {
                 id: o.id.clone(),
                 file: o.file.clone(),
