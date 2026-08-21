@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use mvl_rust_core::assurance::report::{build_check_report, diagnostic_to_record};
 use mvl_rust_core::assurance::schema::DiagnosticRecord;
+use mvl_rust_core::diagnostics::Level;
 use rust_effect::checks;
 
 fn main() -> ExitCode {
@@ -54,7 +55,7 @@ fn run_gate_mode(args: &[String]) -> ExitCode {
             }
         };
 
-        had_violations |= !diagnostics.is_empty();
+        had_violations |= diagnostics.iter().any(|d| d.level == Level::Error);
 
         for diagnostic in &diagnostics {
             diagnostic.emit(&source, arg);
