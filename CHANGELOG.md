@@ -8,6 +8,12 @@ below backfills everything merged while the workspace sat at that version.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-21
+
+### Fixed
+
+- `rust-effect` (#67): an explicit `#[mvl::effect()]` is a positive purity claim, but the checker only verifies it against same-file, resolvable, free-function calls. A function with unresolvable calls (method calls, cross-file calls) now gets a `Level::Note` diagnostic saying the claim is unverified rather than staying silent. Also fixes `rust-effect`'s gate mode, which previously failed the build on *any* diagnostic rather than only `Level::Error`, which would have made this new `Note` incorrectly fail passing builds.
+
 ## [0.3.0] - 2026-08-10
 
 ### Added
