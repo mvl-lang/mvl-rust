@@ -8,10 +8,17 @@
 //! hierarchy like `effect Log > Clock`), and call resolution is
 //! **same-file only** — `syn`-based scanning has no type information and
 //! no cross-file/cross-crate resolution, so a call to anything not
-//! defined as a free function in the same file is silently unresolvable
-//! and isn't flagged either way. Free functions only, not methods in
-//! `impl` blocks (same limitation `rust-total` documents for the same
-//! reason).
+//! defined as a free function in the same file (including any method
+//! call) is unresolvable: it isn't flagged as a propagation violation
+//! either way. Free functions only, not methods in `impl` blocks (same
+//! limitation `rust-total` documents for the same reason).
+//!
+//! That silence is fine for an *implicit* pure function -- absence of
+//! `#[mvl::effect(...)]` never claimed anything was checked. It is not
+//! fine for an *explicit* `#[mvl::effect()]`, which is a positive claim of
+//! purity (issue #67, ADR-0008 §3): when such a function contains
+//! unresolvable calls, the claim is trusted rather than checked, and a
+//! `Level::Note` diagnostic says so.
 
 use std::collections::{HashMap, HashSet};
 
@@ -19,7 +26,7 @@ use mvl_rust_core::attrs::MvlAttr;
 use mvl_rust_core::diagnostics::{Diagnostic, Level};
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
-use syn::{Attribute, Expr, ExprCall, Item, ItemFn};
+use syn::{Attribute, Expr, ExprCall, ExprMethodCall, Item, ItemFn};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -47,19 +54,36 @@ fn effect_set(attrs: &[Attribute]) -> HashSet<String> {
     HashSet::new()
 }
 
+/// Whether `#[mvl::effect(...)]` was written at all, as distinct from
+/// [`effect_set`]'s empty set, which absence and an explicit empty
+/// attribute both produce. Needed to flag *explicit* purity claims (issue
+/// #67) without also flagging ordinary implicit-pure functions that simply
+/// never mentioned effects.
+fn has_explicit_effect_attr(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        matches!(
+            MvlAttr::try_from_attribute(attr),
+            Some(Ok(MvlAttr::Effect(_)))
+        )
+    })
+}
+
 struct CallVisitor<'a, 'd> {
     caller_name: &'a str,
     caller_effects: &'a HashSet<String>,
     functions: &'a HashMap<String, HashSet<String>>,
     diagnostics: &'d mut Vec<Diagnostic>,
+    unresolved_calls: &'d mut usize,
 }
 
 impl<'ast> Visit<'ast> for CallVisitor<'_, '_> {
     fn visit_expr_call(&mut self, node: &'ast ExprCall) {
+        let mut resolved = false;
         if let Expr::Path(path_expr) = &*node.func {
             if let Some(ident) = path_expr.path.get_ident() {
                 let callee_name = ident.to_string();
                 if let Some(callee_effects) = self.functions.get(&callee_name) {
+                    resolved = true;
                     let mut missing: Vec<&str> = callee_effects
                         .difference(self.caller_effects)
                         .map(String::as_str)
@@ -82,7 +106,18 @@ impl<'ast> Visit<'ast> for CallVisitor<'_, '_> {
                 }
             }
         }
+        if !resolved {
+            *self.unresolved_calls += 1;
+        }
         visit::visit_expr_call(self, node);
+    }
+
+    fn visit_expr_method_call(&mut self, node: &'ast ExprMethodCall) {
+        // Method calls carry no callee-side effect info `syn` can see --
+        // always unresolvable, same boundary as a cross-file free-function
+        // call (module doc comment).
+        *self.unresolved_calls += 1;
+        visit::visit_expr_method_call(self, node);
     }
 }
 
@@ -102,13 +137,37 @@ pub fn check_source(source: &str) -> Result<Vec<Diagnostic>, CheckError> {
         if let Item::Fn(item_fn) = item {
             let caller_name = item_fn.sig.ident.to_string();
             let caller_effects = functions.get(&caller_name).cloned().unwrap_or_default();
+            let mut unresolved_calls = 0usize;
             let mut visitor = CallVisitor {
                 caller_name: &caller_name,
                 caller_effects: &caller_effects,
                 functions: &functions,
                 diagnostics: &mut diagnostics,
+                unresolved_calls: &mut unresolved_calls,
             };
             visitor.visit_block(&item_fn.block);
+
+            // A purity claim (explicit `#[mvl::effect()]`) is verified only
+            // against same-file, resolvable, free-function calls (module
+            // doc comment). When such a function contains calls this
+            // checker cannot see through, the claim is trusted, not
+            // checked -- say so rather than staying silent (issue #67).
+            if unresolved_calls > 0
+                && caller_effects.is_empty()
+                && has_explicit_effect_attr(&item_fn.attrs)
+            {
+                diagnostics.push(
+                    Diagnostic::new(
+                        Level::Note,
+                        format!(
+                            "`{caller_name}` claims purity via `#[mvl::effect()]`, but this \
+                             is not verified: {unresolved_calls} unresolvable call(s)"
+                        ),
+                        item_fn.sig.span(),
+                    )
+                    .with_label("purity claim not verified"),
+                );
+            }
         }
     }
     Ok(diagnostics)
@@ -172,19 +231,22 @@ mod tests {
 
     #[test]
     fn an_explicit_purity_claim_is_not_verified_against_unresolvable_calls() {
-        // The trust boundary, pinned (ADR-0008 §3). Both functions declare
-        // purity and neither is pure -- each returns a different value on
-        // successive calls -- but effects reach them through method and
-        // cross-file calls, which this checker cannot resolve and is silent
-        // about by design (`call_to_unresolvable_function_is_silently_skipped`
-        // above is the same boundary seen from the other side).
+        // The trust boundary (ADR-0008 §3, issue #67). Both functions
+        // declare purity and neither is pure -- each returns a different
+        // value on successive calls -- but effects reach them through
+        // method and cross-file calls, which this checker cannot resolve
+        // (`call_to_unresolvable_function_is_silently_skipped` above is the
+        // same boundary seen from the other side, for an implicit-pure
+        // function, where it stays silent).
         //
         // So `#[mvl::effect()]` is an *unverified assertion*, not an
-        // established fact. This matters beyond effects: anything treating it
-        // as a purity licence inherits the hole. L1 reflexivity trusting it
-        // would make `(wall_clock()) == wall_clock()` provable, dropping a
-        // check that can genuinely fail -- the #44 regression arriving through
-        // the explicit annotation rather than through absence. #45.
+        // established fact -- and now flagged as such, at `Level::Note`, so
+        // the report doesn't present it as an established one. This matters
+        // beyond effects: anything treating it as a purity licence inherits
+        // the hole. L1 reflexivity trusting it would make
+        // `(wall_clock()) == wall_clock()` provable, dropping a check that
+        // can genuinely fail -- the #44 regression arriving through the
+        // explicit annotation rather than through absence. #45.
         let diagnostics = check_source(
             "#[mvl::effect()] fn wall_clock() -> i64 { \
                  std::time::SystemTime::now().elapsed().unwrap().as_secs() as i64 \
@@ -194,11 +256,38 @@ mod tests {
              }",
         )
         .unwrap();
-        assert!(
-            diagnostics.is_empty(),
-            "documents the gap rather than endorsing it: a purity claim this \
-             checker cannot check is accepted in silence"
-        );
+        assert_eq!(diagnostics.len(), 2);
+        for diagnostic in &diagnostics {
+            assert_eq!(diagnostic.level, Level::Note);
+            assert!(diagnostic.message.contains("not verified"));
+        }
+        assert!(diagnostics[0].message.contains("wall_clock"));
+        assert!(diagnostics[1].message.contains("counter"));
+    }
+
+    #[test]
+    fn implicit_pure_function_with_unresolvable_calls_stays_silent() {
+        // No `#[mvl::effect(...)]` at all means no claim was made -- unlike
+        // the explicit-empty-attribute case above, there's nothing to flag
+        // as unverified.
+        let diagnostics =
+            check_source("fn f(c: &std::cell::Cell<i64>) -> i64 { c.set(c.get() + 1); c.get() }")
+                .unwrap();
+        assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn explicit_non_empty_effect_with_unresolvable_calls_stays_silent() {
+        // Issue #67 is scoped to purity claims specifically -- a function
+        // that already declares effects isn't claiming to be call-safe in
+        // the way an explicit empty `#[mvl::effect()]` is.
+        let diagnostics = check_source(
+            "#[mvl::effect(Console)] fn f(c: &std::cell::Cell<i64>) -> i64 { \
+                 c.set(c.get() + 1); c.get() \
+             }",
+        )
+        .unwrap();
+        assert!(diagnostics.is_empty());
     }
 
     #[test]
