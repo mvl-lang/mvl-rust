@@ -8,6 +8,12 @@ below backfills everything merged while the workspace sat at that version.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-21
+
+### Fixed
+
+- `cargo mvl mcdc`: `discharge`/`harvest`/`generate`/`scan` typed after `mcdc` were silently misread as filenames (`cargo mvl mcdc discharge <FILE>` failed with a confusing "failed to read discharge" instead of doing anything useful) — now redirected to the standalone `cargo-mvl-mcdc` binary with a clear message, since both discharge paths need `--run-dir` and shell out to `cargo test`. Also: `run_mcdc`'s `covered`/`coverage_pct` fields only ever reflect an obligation being compiler-void (an exhaustive `match`), never a real discharge signal — doc comments and help text previously read as if mutation discharge were the default next step; both now point at the tagged-test path (`generate`/`harvest`) as the default, with mutation (`discharge`) called out as the expensive, fully-automatic alternative.
+
 ## [0.4.0] - 2026-08-21
 
 ### Added

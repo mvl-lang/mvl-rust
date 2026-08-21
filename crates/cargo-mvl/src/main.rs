@@ -41,7 +41,7 @@ fn main() -> ExitCode {
         "prove" => run_prove(&files),
         "test" => run_test(rest),
         "assurance" => run_assurance(&files),
-        "mcdc" => run_mcdc(&files),
+        "mcdc" => run_mcdc(rest, &files),
         _ if check::TOOL_ORDER.contains(&subcommand.as_str()) => run_single(&subcommand, &files),
         _ if UNIMPLEMENTED_SUBCOMMANDS.contains(&subcommand.as_str()) => {
             eprintln!(
@@ -68,7 +68,10 @@ fn print_usage() {
     eprintln!("  prove <FILE>...    rust-refine's obligation trace");
     eprintln!("  test [-- ARGS]     runs `cargo test`, parses pass/fail/ignored");
     eprintln!("  assurance <FILE>...   aggregates check + prove + test");
-    eprintln!("  mcdc <FILE>...     rust-mcdc's obligation scan (run `cargo mvl-mcdc discharge` for mutation-testing gate)");
+    eprintln!("  mcdc <FILE>...     rust-mcdc's obligation scan; discharge it with:");
+    eprintln!("                       cargo mvl-mcdc generate --obligations=FILE   (list the ids/vectors to write tests against)");
+    eprintln!("                       cargo mvl-mcdc harvest  --obligations=FILE   (join tagged tests -- the default path)");
+    eprintln!("                       cargo mvl-mcdc discharge <FILE>...           (mutation testing -- expensive, no tagging needed)");
     eprintln!("  coverage           not yet implemented -- see #15 (needs cargo-llvm-cov)");
 }
 
@@ -190,11 +193,37 @@ fn run_single(tool: &str, files: &[PathBuf]) -> ExitCode {
 
 /// `cargo mvl mcdc`: obligation scan only (layer "a" of #85's design) --
 /// deterministic, read-only, emitted as assurance-JSON's `McdcSection`.
-/// Every obligation reports `covered: false` here since discharge (layer
-/// "c", mutation testing) hasn't run; run `cargo mvl-mcdc discharge` for
-/// an actual pass/fail gate.
-fn run_mcdc(files: &[PathBuf]) -> ExitCode {
+/// `covered` here means **compiler-void** (an exhaustive `match`), not
+/// "discharged" -- a real boolean decision always reports `covered:
+/// false` from this scan alone, regardless of how well-tested it is.
+/// Neither discharge path (mutation or tagged-test) runs here: both need
+/// a `--run-dir` and shell out to `cargo test`, so they stay on the
+/// standalone `cargo-mvl-mcdc` binary. The tagged-test path is the
+/// intended default -- `cargo-mvl-mcdc generate` lists what to write
+/// tests against, `cargo-mvl-mcdc harvest` joins them. `cargo-mvl-mcdc
+/// discharge` (mutation) is the fully-automatic but expensive
+/// alternative, not a replacement for it.
+///
+/// A subcommand keyword (`scan`/`discharge`/`harvest`/`generate`)
+/// mistakenly passed as a path here is caught explicitly below --
+/// otherwise it silently fails to read as a file with a confusing error,
+/// which is exactly what previously made `cargo mvl mcdc discharge
+/// <FILE>` look like discharge wasn't implemented at all.
+fn run_mcdc(raw_args: &[String], files: &[PathBuf]) -> ExitCode {
     use mvl_rust_core::assurance::schema::{McdcCondition, McdcSection};
+
+    const STANDALONE_SUBCOMMANDS: &[&str] = &["scan", "discharge", "harvest", "generate"];
+    if let Some(keyword) = raw_args
+        .first()
+        .map(String::as_str)
+        .filter(|arg| STANDALONE_SUBCOMMANDS.contains(arg))
+    {
+        eprintln!(
+            "cargo mvl mcdc: `{keyword}` needs a --run-dir and shells out to `cargo test`, so it's only available as `cargo-mvl-mcdc {keyword}` (the standalone binary), not `cargo mvl mcdc {keyword}`."
+        );
+        eprintln!("  the tagged-test path is the default -- see `cargo-mvl-mcdc generate`/`cargo-mvl-mcdc harvest`");
+        return ExitCode::from(2);
+    }
 
     if files.is_empty() {
         print_usage();
@@ -223,15 +252,18 @@ fn run_mcdc(files: &[PathBuf]) -> ExitCode {
     }
 
     let total = conditions.len();
-    let void = conditions.iter().filter(|c| c.covered).count();
+    let compiler_void = conditions.iter().filter(|c| c.covered).count();
 
     let mut report = AssuranceReport::new("cargo-mvl", current_timestamp());
     report.mcdc = Some(McdcSection {
         conditions,
+        // Fraction that are compiler-void, NOT a discharge/coverage
+        // percentage -- see the function doc. Run `cargo-mvl-mcdc
+        // harvest` (default) or `discharge` (mutation) for that.
         coverage_pct: if total == 0 {
             100.0
         } else {
-            (void as f64 / total as f64) * 100.0
+            (compiler_void as f64 / total as f64) * 100.0
         },
     });
 
