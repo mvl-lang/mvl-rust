@@ -84,6 +84,7 @@ use std::collections::HashMap;
 
 use mvl_rust_core::attrs::{MvlAttr, Predicate};
 use mvl_rust_core::diagnostics::{Diagnostic, Level};
+use mvl_rust_core::impl_methods::impl_methods;
 use mvl_rust_core::solver::native::{discharge_entailment, discharge_predicate, substitute_exprs};
 use mvl_rust_core::solver::{DischargeResult, Layer, ObligationClass, Warrant};
 use proc_macro2::Span;
@@ -484,50 +485,6 @@ fn param_name(arg: &FnArg) -> Option<String> {
         },
         FnArg::Receiver(_) => None,
     }
-}
-
-/// The simple type name of an `impl` block's `Self` type (`impl Foo { .. }`
-/// -> `"Foo"`), used to qualify a method's obligation name as
-/// `"Type::method"` so it can't collide with a free function or another
-/// impl's identically-named method. `None` for any `Self` type shape other
-/// than a plain path (its last segment's ident is taken, so `impl<T>
-/// Vec<T>` still resolves to `"Vec"`) -- conservative, matching this tool's
-/// syn-only, no-type-info scope elsewhere.
-fn impl_self_type_name(item_impl: &syn::ItemImpl) -> Option<String> {
-    match &*item_impl.self_ty {
-        syn::Type::Path(type_path) => type_path
-            .path
-            .segments
-            .last()
-            .map(|segment| segment.ident.to_string()),
-        _ => None,
-    }
-}
-
-/// Every method in every `impl` block in the file, paired with its
-/// qualified `"Type::method"` name (ADR-0001's "largest practical coverage
-/// gap" -- methods were previously invisible to every annotation-consuming
-/// check end to end). Covers both inherent and trait impls identically;
-/// call resolution *into* a method stays out of scope regardless (the
-/// module doc's "same-file, free functions only" boundary), so this only
-/// ever feeds declaration-site and return-site checking of the method's
-/// own contract, never new call-site obligations at its call expressions.
-fn impl_methods(file: &syn::File) -> Vec<(String, &syn::ImplItemFn)> {
-    let mut methods = Vec::new();
-    for item in &file.items {
-        let Item::Impl(item_impl) = item else {
-            continue;
-        };
-        let Some(type_name) = impl_self_type_name(item_impl) else {
-            continue;
-        };
-        for impl_item in &item_impl.items {
-            if let syn::ImplItem::Fn(method) = impl_item {
-                methods.push((format!("{type_name}::{}", method.sig.ident), method));
-            }
-        }
-    }
-    methods
 }
 
 /// The declaration-site obligations (`#[mvl::requires]`/`#[mvl::ensures]`

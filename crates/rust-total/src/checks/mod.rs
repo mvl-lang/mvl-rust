@@ -3,10 +3,26 @@
 //! Functions without `#[mvl::total]` aren't scanned at all — rust-total's
 //! checks are opt-in per function, not file-wide.
 //!
-//! v1 scope: free functions only (`fn f() { ... }`). Methods inside `impl`
-//! blocks aren't scanned yet — a deliberate v1 limitation, not an
-//! oversight, to keep the check functions cleanly typed against `ItemFn`
-//! rather than generalizing over both `ItemFn` and `ImplItemFn`.
+//! **Impl methods are checked too** (issue #89, following `rust-refine`'s
+//! fix for the identical gap): [`mvl_rust_core::impl_methods::impl_methods`]
+//! collects every method across the file's `impl` blocks, and each one
+//! carrying `#[mvl::total]` is checked by cloning its `attrs`/`vis`/`sig`/
+//! `block` into a synthetic [`ItemFn`] — the three check modules
+//! (`panic_freedom`, `termination`, `loop_termination`) stay typed against
+//! `&ItemFn` unchanged, since a method and a free function share that exact
+//! shape once separated from their enclosing `impl`.
+//!
+//! **Known simplification**, unlike `rust-refine`'s obligation ids: a
+//! method's diagnostics use its own bare name (`usable_page_size`), not the
+//! qualified `Type::method` form — the three check modules build their
+//! diagnostic text from `&Ident` (the synthetic `ItemFn`'s own
+//! `sig.ident`), and `Type::method` isn't a valid `Ident` (`::` isn't an
+//! identifier character). Qualifying it would mean threading a separate
+//! display string through every diagnostic builder in all three modules
+//! for a caret-pointed message that already names its span; not done here,
+//! `rust-total` has no cross-function obligation-id map that would
+//! actually collide on an unqualified name the way `rust-refine`'s
+//! `functions: HashMap<String, FnFacts>` could.
 
 mod loop_termination;
 mod panic_freedom;
@@ -14,6 +30,7 @@ mod termination;
 
 use mvl_rust_core::attrs::{MvlAttr, Predicate};
 use mvl_rust_core::diagnostics::Diagnostic;
+use mvl_rust_core::impl_methods::impl_methods;
 use std::path::Path;
 use syn::visit::{self, Visit};
 use syn::{Attribute, Expr, ItemFn};
@@ -49,7 +66,35 @@ pub fn check_source(source: &str) -> Result<Vec<Diagnostic>, CheckError> {
         diagnostics: &mut diagnostics,
     };
     finder.visit_file(&file);
+
+    for (_name, method) in impl_methods(&file) {
+        check_total_item(&method_as_item_fn(method), &mut diagnostics);
+    }
     Ok(diagnostics)
+}
+
+/// A method's `attrs`/`vis`/`sig`/`block`, cloned into a free-standing
+/// `ItemFn` -- see the module doc for why this is the chosen adapter
+/// rather than generalizing the three check modules over `ImplItemFn` too.
+fn method_as_item_fn(method: &syn::ImplItemFn) -> ItemFn {
+    ItemFn {
+        attrs: method.attrs.clone(),
+        vis: method.vis.clone(),
+        sig: method.sig.clone(),
+        block: Box::new(method.block.clone()),
+    }
+}
+
+/// The same `#[mvl::total]` dispatch [`TotalFnFinder::visit_item_fn`] does,
+/// factored out so the impl-method loop above and the free-function
+/// visitor share one call site rather than drifting apart.
+fn check_total_item(item_fn: &ItemFn, diagnostics: &mut Vec<Diagnostic>) {
+    let (is_total, decreases, requires) = total_decreases_and_requires(&item_fn.attrs);
+    if is_total {
+        panic_freedom::check(item_fn, diagnostics);
+        termination::check(item_fn, decreases.as_ref(), &requires, diagnostics);
+        loop_termination::check(item_fn, &requires, diagnostics);
+    }
 }
 
 /// `requires` collects only the `Predicate::Expr` clauses -- a quantified
@@ -82,12 +127,7 @@ struct TotalFnFinder<'d> {
 
 impl<'ast> Visit<'ast> for TotalFnFinder<'_> {
     fn visit_item_fn(&mut self, node: &'ast ItemFn) {
-        let (is_total, decreases, requires) = total_decreases_and_requires(&node.attrs);
-        if is_total {
-            panic_freedom::check(node, self.diagnostics);
-            termination::check(node, decreases.as_ref(), &requires, self.diagnostics);
-            loop_termination::check(node, &requires, self.diagnostics);
-        }
+        check_total_item(node, self.diagnostics);
         visit::visit_item_fn(self, node);
     }
 }

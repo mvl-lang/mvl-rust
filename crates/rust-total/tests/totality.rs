@@ -597,3 +597,58 @@ fn nested_loops_are_each_checked_independently() {
         "expected no diagnostics, got {diagnostics:?}"
     );
 }
+
+// ── impl-method scope (#89) ─────────────────────────────────────────────
+
+#[test]
+fn a_total_impl_method_is_checked_like_a_free_function() {
+    let source = r#"
+        struct Calc;
+        impl Calc {
+            #[mvl::total]
+            fn abs(x: i32) -> i32 {
+                if x < 0 { -x } else { x }
+            }
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert!(
+        diagnostics.is_empty(),
+        "expected no diagnostics for a compliant impl method, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn a_panicking_total_impl_method_is_flagged() {
+    let source = r#"
+        struct Calc;
+        impl Calc {
+            #[mvl::total]
+            fn first(v: Vec<i32>) -> i32 {
+                v[0]
+            }
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert!(
+        !diagnostics.is_empty(),
+        "expected the raw index to be flagged inside an impl method"
+    );
+}
+
+#[test]
+fn a_non_total_impl_method_is_not_scanned() {
+    let source = r#"
+        struct Calc;
+        impl Calc {
+            fn first(v: Vec<i32>) -> i32 {
+                v[0]
+            }
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert!(
+        diagnostics.is_empty(),
+        "expected no diagnostics for a non-#[total] impl method, got {diagnostics:?}"
+    );
+}
