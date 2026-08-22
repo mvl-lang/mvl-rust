@@ -55,7 +55,7 @@ checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 
 [[package]]
 name = "cargo-mvl"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "mvl-rust-core",
  "rust-effect",
@@ -175,14 +175,14 @@ checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
 name = "mvl"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "mvl-macros",
 ]
 
 [[package]]
 name = "mvl-macros"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "mvl-rust-core",
  "proc-macro2",
@@ -192,7 +192,7 @@ dependencies = [
 
 [[package]]
 name = "mvl-rust-core"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "annotate-snippets",
  "expect-test",
@@ -296,7 +296,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "rust-effect"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "mvl-rust-core",
  "proc-macro2",
@@ -307,7 +307,7 @@ dependencies = [
 
 [[package]]
 name = "rust-ifc"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "mvl-rust-core",
  "proc-macro2",
@@ -318,7 +318,7 @@ dependencies = [
 
 [[package]]
 name = "rust-limit"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "mvl-rust-core",
  "proc-macro2",
@@ -329,7 +329,7 @@ dependencies = [
 
 [[package]]
 name = "rust-mcdc"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "mvl-rust-core",
  "proc-macro2",
@@ -341,7 +341,7 @@ dependencies = [
 
 [[package]]
 name = "rust-refine"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "mvl-rust-core",
  "proc-macro2",
@@ -353,7 +353,7 @@ dependencies = [
 
 [[package]]
 name = "rust-total"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "mvl-rust-core",
  "proc-macro2",
