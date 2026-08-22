@@ -177,18 +177,28 @@ which is not a guarantee a tool can compose over.
 - **Same-file, free-function scope is the shared default.** No cross-file or
   cross-crate resolution. Calls to anything else are silently unresolvable and
   produce no obligation.
-- **Methods in `impl` blocks were largely invisible; `rust-refine` no longer
-  has this gap.** `rust-limit` always visited `ItemImpl`/`ItemTrait`.
-  `rust-refine` now does too, for declaration-site and return-site obligations
-  (an `impl` method's own `requires`/`ensures` is checked, qualified
-  `Type::method`) — closed after a real-world spike (sqlite-rs, issue #371)
+- **Methods in `impl` blocks were largely invisible; closed for all three
+  annotation-consuming tools.** `rust-limit` always visited
+  `ItemImpl`/`ItemTrait`. `rust-refine`, `rust-total`, and `rust-effect` now
+  do too (#371, #89) — a method's own `#[mvl::requires]`/`#[mvl::ensures]`
+  (declaration-site and return-site obligations), `#[mvl::total]`/
+  `#[mvl::decreases]`, and `#[mvl::effect(...)]` are each checked, keyed by
+  a qualified `Type::method` name (`mvl_rust_core::impl_methods`) so a
+  method can't collide with a free function or another impl's identically
+  named method. Closed after a real-world spike (sqlite-rs, issue #371)
   found `cargo mvl prove` silently returning zero obligations against
-  annotated methods, exit 0, no diagnostic. Call *resolution* into a method
-  is still out of scope (same-file, free-functions-only, per the bullet
-  above) — a call through `self.foo()`/`x.method()`/`Type::method(x)`
-  produces no call-site obligation even for a now-checked method. `rust-total`
-  and `rust-effect` still only visit `ItemFn`, so this gap remains open for
-  them.
+  annotated methods, exit 0, no diagnostic — the same failure mode existed,
+  unexercised until then, in `rust-total`/`rust-effect` too.
+
+  What's still out of scope, unchanged by this: call *resolution* into a
+  method (`self.foo()`, `x.method()`, `Type::method(x)`) stays same-file,
+  free-functions-only for every one of the three tools — only a method's
+  *own* declared contract is checked, never a new call-site obligation at
+  its call expressions. And `rust-total`'s per-method diagnostics use the
+  method's own bare name, not the qualified form (a documented
+  simplification in `rust-total/src/checks/mod.rs`, not a correctness
+  gap — it has no cross-function name-keyed map that could actually
+  collide on it).
 - **Verification is advisory until ADR-0006.** §2 makes the attributes inert,
   so a residual obligation is a note, not a check. Any claim the tools make
   about unproven obligations must say so — in diagnostics, in Γ, and in the

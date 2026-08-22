@@ -10,8 +10,18 @@
 //! no cross-file/cross-crate resolution, so a call to anything not
 //! defined as a free function in the same file (including any method
 //! call) is unresolvable: it isn't flagged as a propagation violation
-//! either way. Free functions only, not methods in `impl` blocks (same
-//! limitation `rust-total` documents for the same reason).
+//! either way.
+//!
+//! **Impl methods are checked too** (issue #89, following `rust-refine`'s
+//! and `rust-total`'s fixes for the identical gap): a method's own
+//! declared effect set is collected and its body scanned exactly like a
+//! free function's, keyed by a qualified `"Type::method"` name
+//! ([`mvl_rust_core::impl_methods::impl_methods`]) so it can't collide
+//! with a free function or another impl's identically named method. What
+//! stays unchanged: call resolution is still same-file *free functions*
+//! only — a call *into* a checked method (`self.foo()`, `x.method()`,
+//! `Type::method(x)`) is exactly as unresolvable as it was before, for the
+//! same reason (no type information to resolve a receiver's type).
 //!
 //! That silence is fine for an *implicit* pure function -- absence of
 //! `#[mvl::effect(...)]` never claimed anything was checked. It is not
@@ -24,6 +34,7 @@ use std::collections::{HashMap, HashSet};
 
 use mvl_rust_core::attrs::MvlAttr;
 use mvl_rust_core::diagnostics::{Diagnostic, Level};
+use mvl_rust_core::impl_methods::impl_methods;
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
 use syn::{Attribute, Expr, ExprCall, ExprMethodCall, Item, ItemFn};
@@ -131,46 +142,78 @@ pub fn check_source(source: &str) -> Result<Vec<Diagnostic>, CheckError> {
             functions.insert(sig.ident.to_string(), effect_set(attrs));
         }
     }
+    for (name, method) in impl_methods(&file) {
+        functions.insert(name, effect_set(&method.attrs));
+    }
 
     let mut diagnostics = Vec::new();
     for item in &file.items {
         if let Item::Fn(item_fn) = item {
             let caller_name = item_fn.sig.ident.to_string();
-            let caller_effects = functions.get(&caller_name).cloned().unwrap_or_default();
-            let mut unresolved_calls = 0usize;
-            let mut visitor = CallVisitor {
-                caller_name: &caller_name,
-                caller_effects: &caller_effects,
-                functions: &functions,
-                diagnostics: &mut diagnostics,
-                unresolved_calls: &mut unresolved_calls,
-            };
-            visitor.visit_block(&item_fn.block);
-
-            // A purity claim (explicit `#[mvl::effect()]`) is verified only
-            // against same-file, resolvable, free-function calls (module
-            // doc comment). When such a function contains calls this
-            // checker cannot see through, the claim is trusted, not
-            // checked -- say so rather than staying silent (issue #67).
-            if unresolved_calls > 0
-                && caller_effects.is_empty()
-                && has_explicit_effect_attr(&item_fn.attrs)
-            {
-                diagnostics.push(
-                    Diagnostic::new(
-                        Level::Note,
-                        format!(
-                            "`{caller_name}` claims purity via `#[mvl::effect()]`, but this \
-                             is not verified: {unresolved_calls} unresolvable call(s)"
-                        ),
-                        item_fn.sig.span(),
-                    )
-                    .with_label("purity claim not verified"),
-                );
-            }
+            scan_caller(
+                &caller_name,
+                &item_fn.attrs,
+                item_fn.sig.span(),
+                &item_fn.block,
+                &functions,
+                &mut diagnostics,
+            );
         }
     }
+    for (name, method) in impl_methods(&file) {
+        scan_caller(
+            &name,
+            &method.attrs,
+            method.sig.span(),
+            &method.block,
+            &functions,
+            &mut diagnostics,
+        );
+    }
     Ok(diagnostics)
+}
+
+/// Scans one function-or-method body for undeclared effect propagation,
+/// shared by [`check_source`]'s free-function and impl-method loops --
+/// the scan itself doesn't care which kind of item `caller_name`/`attrs`/
+/// `block` came from.
+fn scan_caller(
+    caller_name: &str,
+    attrs: &[Attribute],
+    sig_span: proc_macro2::Span,
+    block: &syn::Block,
+    functions: &HashMap<String, HashSet<String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let caller_effects = functions.get(caller_name).cloned().unwrap_or_default();
+    let mut unresolved_calls = 0usize;
+    let mut visitor = CallVisitor {
+        caller_name,
+        caller_effects: &caller_effects,
+        functions,
+        diagnostics,
+        unresolved_calls: &mut unresolved_calls,
+    };
+    visitor.visit_block(block);
+
+    // A purity claim (explicit `#[mvl::effect()]`) is verified only
+    // against same-file, resolvable, free-function calls (module doc
+    // comment). When such a function contains calls this checker cannot
+    // see through, the claim is trusted, not checked -- say so rather
+    // than staying silent (issue #67).
+    if unresolved_calls > 0 && caller_effects.is_empty() && has_explicit_effect_attr(attrs) {
+        diagnostics.push(
+            Diagnostic::new(
+                Level::Note,
+                format!(
+                    "`{caller_name}` claims purity via `#[mvl::effect()]`, but this \
+                     is not verified: {unresolved_calls} unresolvable call(s)"
+                ),
+                sig_span,
+            )
+            .with_label("purity claim not verified"),
+        );
+    }
 }
 
 #[cfg(test)]
@@ -301,5 +344,49 @@ mod tests {
     #[test]
     fn malformed_source_returns_parse_error() {
         assert!(check_source("fn f( {{{").is_err());
+    }
+
+    // ── impl-method scope (#89) ──────────────────────────────────────
+
+    #[test]
+    fn an_impl_method_declaring_the_same_effect_as_its_callee_is_fine() {
+        let diagnostics = check_source(
+            "#[mvl::effect(Console)] fn log() {} \
+             struct T; \
+             impl T { \
+                 #[mvl::effect(Console)] \
+                 fn f(&self) { log(); } \
+             }",
+        )
+        .unwrap();
+        assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn an_impl_method_missing_a_declared_effect_is_an_error() {
+        let diagnostics = check_source(
+            "#[mvl::effect(Console)] fn log() {} \
+             struct T; \
+             impl T { \
+                 fn f(&self) { log(); } \
+             }",
+        )
+        .unwrap();
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].message.contains("Console"));
+    }
+
+    #[test]
+    fn a_method_and_a_free_function_with_the_same_name_have_independent_effects() {
+        let diagnostics = check_source(
+            "#[mvl::effect(Console)] fn f() {} \
+             struct T; \
+             impl T { \
+                 #[mvl::effect(Console)] \
+                 fn f(&self) {} \
+             }",
+        )
+        .unwrap();
+        assert!(diagnostics.is_empty());
     }
 }

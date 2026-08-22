@@ -14,5 +14,6 @@
 pub mod assurance;
 pub mod attrs;
 pub mod diagnostics;
+pub mod impl_methods;
 pub mod solver;
 pub mod walker;

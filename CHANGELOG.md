@@ -8,6 +8,10 @@ below backfills everything merged while the workspace sat at that version.
 
 ## [Unreleased]
 
+### Fixed
+
+- `rust-total`/`rust-effect` (#89, following up on `rust-refine`'s identical fix): `impl` methods now get their `#[mvl::total]`/`#[mvl::decreases]`/`#[mvl::loop_decreases!]` (`rust-total`) and `#[mvl::effect(...)]` (`rust-effect`) checked, not just free functions — previously both tools' `check_source` only ever iterated `Item::Fn`, so an annotated method was invisible end to end, same silent-zero-obligations failure mode `rust-refine` had. `rust-total` reuses its existing check modules unchanged by cloning a method's `attrs`/`vis`/`sig`/`block` into a synthetic `ItemFn` (its per-method diagnostics use the method's own bare name, not qualified — a documented simplification, not a correctness gap, since it has no cross-function name-keyed map that could actually collide on it). `rust-effect` keys a method's declared effect set by its qualified `Type::method` name, same as `rust-refine`. New shared `mvl_rust_core::impl_methods` module (extracted from `rust-refine`'s fix, now used by all three) collects every method across a file's `impl` blocks. Call *resolution* into a method stays same-file/free-functions-only for all three tools, unchanged.
+
 ## [0.4.2] - 2026-08-22
 
 ### Fixed
