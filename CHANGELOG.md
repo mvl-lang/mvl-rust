@@ -8,6 +8,12 @@ below backfills everything merged while the workspace sat at that version.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-22
+
+### Fixed
+
+- `mvl-macros` (#92, found retrying #89's spike after #90): `#[mvl::ensures(...)]` on a `Result<T, E>`-returning function failed to compile (`E0282: type annotations needed`) when the predicate inspected the `Ok` payload and the function had an early `return Err(...)` — `inject_ensures` left the rewritten `let result = Err(...)` binding's type to inference, and a field access through `result.as_ref().unwrap().<field>` has nothing else to resolve it against. Fixed by threading the function's declared return type through `inject_ensures`/`ReturnRewriter` and annotating every instrumented `let result` binding explicitly. Does not change what `rust-refine` can prove statically — such an obligation now compiles and is picked up, but still lands at `layer: "runtime"`, since L1–L4 doesn't reason about struct-field access.
+
 ## [0.5.0] - 2026-08-22
 
 ### Fixed
