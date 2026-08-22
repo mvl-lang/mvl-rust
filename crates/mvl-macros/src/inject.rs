@@ -46,7 +46,7 @@ use mvl_rust_core::attrs::Predicate;
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::visit_mut::{self, VisitMut};
-use syn::{Block, Expr};
+use syn::{Block, Expr, ReturnType};
 
 /// Lowers `predicate` to an expression that evaluates to `bool` at runtime.
 ///
@@ -156,16 +156,46 @@ pub fn inject_requires(block: &mut Block, predicate: &Predicate) {
     block.stmts.insert(0, assertion);
 }
 
+/// The declared return type as a binding annotation (`: T`), or nothing for
+/// a `()`-returning function. Threading the function's own signature back
+/// into the `let result = ...` bindings below pins `result`'s type up
+/// front — see [`inject_ensures`]'s doc comment for why that annotation is
+/// load-bearing rather than cosmetic.
+fn result_type_annotation(return_type: &ReturnType) -> Option<TokenStream> {
+    match return_type {
+        ReturnType::Type(_, ty) => Some(quote!(: #ty)),
+        ReturnType::Default => None,
+    }
+}
+
 /// Instruments every point `block` produces its value with `ensures`'s
 /// assertion, binding the produced value to `result`.
-pub fn inject_ensures(block: &mut Block, predicate: &Predicate) {
+///
+/// `result` is always given an explicit type annotation from the function's
+/// own declared return type, rather than left to inference. At a `return
+/// Err(e)` site on a `Result<T, E>`-returning function, the rewritten
+/// `{ let result = Err(e); assert!(...); result }` gives `result` no
+/// `Ok`-side information on its own; a predicate that inspects the `Ok`
+/// payload (`result.as_ref().unwrap().field`) needs a concrete type to
+/// resolve that field access against, and nothing else in the expression
+/// supplies one -- `Err(e)`'s `T` stays an unconstrained inference variable
+/// until something pins it. Field/method resolution can't wait on a later
+/// constraint to arrive, so this is `E0282: type annotations needed`, not a
+/// timing issue that more inference would eventually resolve (confirmed by
+/// hand: the identical code compiles once `result` is annotated `:
+/// Result<S, E>`). The bare `#[mvl::requires]`/no-postcondition case never
+/// hit this because nothing there does a field access through an
+/// unconstrained `Err`/`Ok` variant.
+pub fn inject_ensures(block: &mut Block, predicate: &Predicate, return_type: &ReturnType) {
     let assertion = assertion(predicate, "`#[mvl::ensures]`");
+    let binding = result_type_annotation(return_type);
 
     // Explicit `return`s first: rewriting them does not disturb the tail,
     // whereas wrapping the tail first would put the new tail's `return`-free
     // body in scope of the rewriter for no reason.
     ReturnRewriter {
         assertion: &assertion,
+        binding: &binding,
     }
     .visit_block_mut(block);
 
@@ -176,7 +206,7 @@ pub fn inject_ensures(block: &mut Block, predicate: &Predicate) {
         // the checker splits them to get a precise per-branch obligation,
         // while the assert only needs the value that came out.
         Some(syn::Stmt::Expr(expr, None)) => quote! {
-            { let result = #expr; #assertion result }
+            { let result #binding = #expr; #assertion result }
         },
         // No trailing expression. Either the function returns `()`, or the
         // body diverges — the only two ways a body can lack one. `ensures`
@@ -214,6 +244,7 @@ pub fn inject_ensures(block: &mut Block, predicate: &Predicate) {
 /// Rewrites `return e` to assert before handing `e` back.
 struct ReturnRewriter<'a> {
     assertion: &'a TokenStream,
+    binding: &'a Option<TokenStream>,
 }
 
 impl VisitMut for ReturnRewriter<'_> {
@@ -237,14 +268,18 @@ impl VisitMut for ReturnRewriter<'_> {
             };
 
             let assertion = self.assertion;
+            let is_unit = ret.expr.is_none();
             let value = ret
                 .expr
                 .take()
                 .map(|expr| quote!(#expr))
                 .unwrap_or_else(|| quote!(()));
+            // A bare `return;` produces `()`, same as the tail's no-value
+            // case -- never annotated, there's nothing but `()` it could be.
+            let binding = if is_unit { &None } else { self.binding };
             ret.expr = Some(Box::new(
                 syn::parse2(quote! {
-                    { let result = #value; #assertion result }
+                    { let result #binding = #value; #assertion result }
                 })
                 .expect("wrapped return value is a valid expression"),
             ));
@@ -271,6 +306,19 @@ mod tests {
         quote!(#block).to_string()
     }
 
+    /// Most tests below aren't exercising `result`'s type annotation, so
+    /// they don't need a real return type -- `ReturnType::Default` keeps
+    /// them exactly as unannotated as before this was threaded through.
+    fn no_return_type() -> ReturnType {
+        ReturnType::Default
+    }
+
+    fn return_type(src: &str) -> ReturnType {
+        let function: syn::ItemFn =
+            syn::parse_str(&format!("fn f() {src} {{}}")).expect("test function parses");
+        function.sig.output
+    }
+
     #[test]
     fn requires_uses_assert_not_debug_assert() {
         // ADR-0006 §5 condition 2: a `debug_assert!` compiles out under
@@ -290,7 +338,7 @@ mod tests {
     #[test]
     fn ensures_uses_assert_not_debug_assert() {
         let mut b = block("{ x }");
-        inject_ensures(&mut b, &predicate("result > 0"));
+        inject_ensures(&mut b, &predicate("result > 0"), &no_return_type());
         let text = rendered(&b);
         assert!(text.contains("assert !"), "expected `assert!`, got: {text}");
         assert!(!text.contains("debug_assert"), "got: {text}");
@@ -314,7 +362,11 @@ mod tests {
     #[test]
     fn forall_lowers_to_all_over_an_inclusive_unsuffixed_range() {
         let mut b = block("{ 1 }");
-        inject_ensures(&mut b, &predicate("forall i in [1..50] . i > 0"));
+        inject_ensures(
+            &mut b,
+            &predicate("forall i in [1..50] . i > 0"),
+            &no_return_type(),
+        );
         let text = rendered(&b);
         assert!(text.contains(". all"), "expected `.all(...)`, got: {text}");
         // Inclusive: source `[1..50]` means 1 *through* 50.
@@ -335,7 +387,11 @@ mod tests {
     #[test]
     fn exists_lowers_to_any() {
         let mut b = block("{ 1 }");
-        inject_ensures(&mut b, &predicate("exists i in [0..3] . i > 0"));
+        inject_ensures(
+            &mut b,
+            &predicate("exists i in [0..3] . i > 0"),
+            &no_return_type(),
+        );
         let text = rendered(&b);
         assert!(text.contains(". any"), "expected `.any(...)`, got: {text}");
     }
@@ -343,7 +399,11 @@ mod tests {
     #[test]
     fn negative_bound_does_not_pin_a_type_either() {
         let mut b = block("{ 1 }");
-        inject_ensures(&mut b, &predicate("forall i in [-5..5] . i > -10"));
+        inject_ensures(
+            &mut b,
+            &predicate("forall i in [-5..5] . i > -10"),
+            &no_return_type(),
+        );
         let text = rendered(&b);
         assert!(!text.contains("i64"), "got: {text}");
     }
@@ -357,7 +417,11 @@ mod tests {
         // vacuous-truth/falsity semantics for that case. Pinned here so
         // the behavior is deliberate rather than untested.
         let mut b = block("{ 1 }");
-        inject_ensures(&mut b, &predicate("forall i in [5..1] . false"));
+        inject_ensures(
+            &mut b,
+            &predicate("forall i in [5..1] . false"),
+            &no_return_type(),
+        );
         let text = rendered(&b);
         assert!(text.contains(". all"), "expected `.all(...)`, got: {text}");
         assert!(
@@ -369,7 +433,7 @@ mod tests {
     #[test]
     fn explicit_return_is_instrumented() {
         let mut b = block("{ if x > 0 { return x ; } x + 1 }");
-        inject_ensures(&mut b, &predicate("result > 0"));
+        inject_ensures(&mut b, &predicate("result > 0"), &no_return_type());
         let text = rendered(&b);
         // Two instrumented return points: the explicit `return x` and the
         // tail `x + 1`. Two occurrences of the assertion is the signal that
@@ -386,7 +450,7 @@ mod tests {
     #[test]
     fn a_return_with_no_value_binds_unit() {
         let mut b = block("{ if x { return ; } }");
-        inject_ensures(&mut b, &predicate("result == 0"));
+        inject_ensures(&mut b, &predicate("result == 0"), &no_return_type());
         let text = rendered(&b);
         // `return;` with no expression must still bind `result` -- to `()`
         // -- rather than being skipped as if it carried no value.
@@ -399,7 +463,7 @@ mod tests {
         // enclosing function -- instrumenting it would assert this
         // function's postcondition against a value that is not its result.
         let mut b = block("{ let f = | | { return 1 ; } ; f ( ) }");
-        inject_ensures(&mut b, &predicate("result > 0"));
+        inject_ensures(&mut b, &predicate("result > 0"), &no_return_type());
         let text = rendered(&b);
         // Exactly one assertion: the tail `f()`. The closure's `return 1`
         // must be untouched.
@@ -417,8 +481,51 @@ mod tests {
         // confirms it carries the `#[allow(unreachable_code)]` needed to
         // build clean under `-D warnings`.
         let mut b = block("{ return x ; }");
-        inject_ensures(&mut b, &predicate("result > 0"));
+        inject_ensures(&mut b, &predicate("result > 0"), &no_return_type());
         let text = rendered(&b);
         assert!(text.contains("allow (unreachable_code)"), "got: {text}");
+    }
+
+    #[test]
+    fn result_is_annotated_with_the_declared_return_type() {
+        // The regression this fix closes (found retrying mvl-rust#89's spike
+        // against a real `Result`-returning parser, mvl-rust#90 follow-up).
+        // `return Err(e)` on its own leaves `result`'s `Ok` side an
+        // unconstrained inference variable; a postcondition that inspects
+        // the `Ok` payload (`result.as_ref().unwrap().field`) needs a
+        // concrete type to resolve that field access against, and nothing
+        // else in the generated code supplies one. Confirmed by hand this
+        // reproduces `E0282: type annotations needed` without the
+        // annotation this test pins in place.
+        let mut b = block("{ if x { return Err(E::Bad) ; } Ok(S { field : 1 }) }");
+        inject_ensures(
+            &mut b,
+            &predicate("result.is_err() || result.as_ref().unwrap().field >= 0"),
+            &return_type("-> Result<S, E>"),
+        );
+        let text = rendered(&b);
+        assert_eq!(
+            text.matches(": Result < S , E >").count(),
+            2,
+            "both the explicit return and the tail must bind `result` with an \
+             explicit type, not leave it to inference: {text}"
+        );
+    }
+
+    #[test]
+    fn a_return_with_no_value_is_never_annotated() {
+        // `return;` always binds `()`, regardless of the function's declared
+        // return type -- there's nothing to annotate it with. Using `-> i32`
+        // here (rather than a unit-returning function, where an annotation
+        // would be indistinguishable from none) makes this a real check:
+        // if the override in `ReturnRewriter` were missing, this `return;`
+        // site would come out annotated `: i32`, which wouldn't even parse.
+        let mut b = block("{ if x { return ; } 0 }");
+        inject_ensures(&mut b, &predicate("result == 0"), &return_type("-> i32"));
+        let text = rendered(&b);
+        assert!(
+            text.contains("let result = ()"),
+            "the `return;` site must bind plain `()`: {text}"
+        );
     }
 }

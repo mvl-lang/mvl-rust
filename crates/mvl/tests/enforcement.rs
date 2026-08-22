@@ -140,3 +140,40 @@ fn unchecked_suppresses_enforcement_regardless_of_attribute_order() {
     assert_eq!(opted_out_above(3), 3);
     assert_eq!(opted_out_below(3), 3);
 }
+
+#[derive(Debug, PartialEq)]
+enum ParseError {
+    TooShort,
+}
+
+#[derive(Debug, PartialEq)]
+struct DatabaseHeader {
+    page_size: u32,
+}
+
+// The exact shape mvl-rust#89's spike against a real `Result`-returning
+// parser hit: a postcondition inspecting the `Ok` payload's field, on a
+// function with an early `return Err(...)`. Before this fix, this failed to
+// *compile at all* with `E0282: type annotations needed` -- the rewritten
+// `return Err(...)` site left `result`'s `Ok` side an unconstrained
+// inference variable, and the field access on `result.as_ref().unwrap()`
+// had nothing to resolve it against. This function compiling and running
+// correctly is the regression test; there is no way to pin the old failure
+// as a `#[test]` since it never got past macro expansion.
+#[mvl::ensures(result.is_err() || result.as_ref().unwrap().page_size.is_power_of_two())]
+fn parse_header(buf: &[u8]) -> Result<DatabaseHeader, ParseError> {
+    if buf.len() < 4 {
+        return Err(ParseError::TooShort);
+    }
+    Ok(DatabaseHeader { page_size: 512 })
+}
+
+#[test]
+fn a_field_postcondition_permits_the_early_error_return() {
+    assert_eq!(parse_header(&[]), Err(ParseError::TooShort));
+}
+
+#[test]
+fn a_field_postcondition_checks_the_ok_payload() {
+    assert_eq!(parse_header(&[0; 8]), Ok(DatabaseHeader { page_size: 512 }));
+}
