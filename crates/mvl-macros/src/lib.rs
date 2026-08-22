@@ -189,7 +189,9 @@ fn path_names_one_of(path: &syn::Path, names: &[&str]) -> bool {
 /// is an `assert!` and not a `debug_assert!`.
 #[proc_macro_attribute]
 pub fn requires(attr: TokenStream, item: TokenStream) -> TokenStream {
-    expand(attr, item, inject::inject_requires)
+    expand(attr, item, |block, predicate, _return_type| {
+        inject::inject_requires(block, predicate)
+    })
 }
 
 /// `#[mvl::ensures(pred)]` — a whole-function postcondition referencing the
@@ -203,17 +205,19 @@ pub fn ensures(attr: TokenStream, item: TokenStream) -> TokenStream {
     expand(attr, item, inject::inject_ensures)
 }
 
+// `inject_requires` and `inject_ensures` differ in arity (the latter needs
+// the declared return type to annotate `result` -- see its doc comment), so
+// `requires` above wraps it in a closure matching this shared type instead
+// of every `inject` fn taking a return type it may not need.
+type Inject = fn(&mut syn::Block, &Predicate, &syn::ReturnType);
+
 /// Shared plumbing: parse the item, parse the predicate, apply `inject`.
 ///
 /// A malformed predicate becomes a compile error at the attribute's own
 /// span. That is a deliberate change from the pass-through era, where the
 /// tokens were discarded unparsed and a typo was silently accepted — the
 /// author got no verification and no warning either.
-fn expand(
-    attr: TokenStream,
-    item: TokenStream,
-    inject: fn(&mut syn::Block, &Predicate),
-) -> TokenStream {
+fn expand(attr: TokenStream, item: TokenStream, inject: Inject) -> TokenStream {
     // Parsed first so a predicate error below can still emit the function
     // alongside the diagnostic: the item itself is fine, and every other
     // call site in the crate should not also error with "cannot find
@@ -239,7 +243,7 @@ fn expand(
         return quote!(#function).into();
     }
 
-    inject(&mut function.block, &predicate);
+    inject(&mut function.block, &predicate, &function.sig.output);
     quote!(#function).into()
 }
 
