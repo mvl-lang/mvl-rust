@@ -8,6 +8,12 @@ below backfills everything merged while the workspace sat at that version.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-08-22
+
+### Fixed
+
+- `rust-refine`: `impl` methods now get their own `#[mvl::requires]`/`#[mvl::ensures]` checked (declaration-site and return-site obligations) — previously `find_obligations` (and `return_site_closure`, and the obligation scan itself) only ever iterated `Item::Fn` in a file's top-level items, so an annotated method inside `impl DatabaseHeader { ... }` was invisible end to end: `cargo mvl prove`/`cargo mvl-refine --emit-verification-json` silently returned zero obligations, exit 0, no diagnostic. Confirmed as a real-world blocker by a spike against `sqlite-rs` (issue #371), where every invariant of interest lived in `impl` methods. A method's obligation id is now qualified `Type::method` so it can't collide with a free function or another impl's identically named method. Call *resolution* into a method (`self.foo()`, `x.method()`, `Type::method(x)`) is still out of scope — same-file, free-functions-only remains the boundary for call-site obligations; only the method's own declared contract is now checked. `rust-total`/`rust-effect` still only visit `ItemFn` and keep the same gap. ADR-0001's Consequences section updated to match.
+
 ## [0.4.1] - 2026-08-21
 
 ### Fixed

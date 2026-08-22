@@ -28,12 +28,23 @@
 //!    as in any modular verifier (and as in real MVL): `g`'s own
 //!    obligation to establish it is the return-site obligation above.
 //!
-//! Scope, deliberately the same boundary `rust-effect` (#9) draws for the
-//! same reason — `syn`-based scanning has no type information and no
-//! cross-file resolution:
+//! **Impl methods are checked too** (declaration- and return-site
+//! obligations only — closing ADR-0001's "largest practical coverage gap":
+//! methods were previously invisible to every annotation-consuming check
+//! end to end). A method's obligation id is qualified `Type::method` from
+//! its enclosing `impl` block's `Self` type ([`impl_self_type_name`]), so
+//! it can't collide with a free function or another impl's identically
+//! named method. This does *not* extend call resolution, per the next
+//! bullet — see it for what's still unreached.
+//!
+//! Scope, otherwise deliberately the same boundary `rust-effect` (#9) draws
+//! for the same reason — `syn`-based scanning has no type information and
+//! no cross-file resolution:
 //!
 //! - Call resolution is **same-file, free functions only**. A call to
-//!   anything else is silently unresolvable and produces no obligation.
+//!   anything else — including a method call (`self.foo()`, `x.method()`,
+//!   or `Type::method(x)`), even now that the method itself is checked
+//!   above — is silently unresolvable and produces no obligation.
 //! - `match`-arm patterns don't narrow Γ (an `if let`/`match` binding
 //!   carries no refinement fact yet); only `if`/`else`/`while` conditions do.
 //! - Calls inside a macro invocation (`println!("{}", g(x))`) are invisible:
@@ -412,11 +423,22 @@ struct FnFacts {
 
 impl FnFacts {
     fn of(item_fn: &ItemFn) -> Self {
+        Self::from_attrs_and_sig(&item_fn.attrs, &item_fn.sig)
+    }
+
+    /// Same extraction, reached through an `impl` method (`syn::ImplItemFn`)
+    /// instead of a free function -- the two share the same `attrs`/`sig`
+    /// shape, so this is `of`'s only real difference.
+    fn of_method(method: &syn::ImplItemFn) -> Self {
+        Self::from_attrs_and_sig(&method.attrs, &method.sig)
+    }
+
+    fn from_attrs_and_sig(attrs: &[syn::Attribute], sig: &syn::Signature) -> Self {
         let mut facts = FnFacts {
-            params: item_fn.sig.inputs.iter().filter_map(param_name).collect(),
+            params: sig.inputs.iter().filter_map(param_name).collect(),
             ..Default::default()
         };
-        for attr in &item_fn.attrs {
+        for attr in attrs {
             match MvlAttr::try_from_attribute(attr) {
                 Some(Ok(MvlAttr::Requires(requires))) => facts.requires.push(requires.predicate),
                 Some(Ok(MvlAttr::Ensures(ensures))) => facts.ensures.push(ensures.predicate),
@@ -461,6 +483,79 @@ fn param_name(arg: &FnArg) -> Option<String> {
             _ => None,
         },
         FnArg::Receiver(_) => None,
+    }
+}
+
+/// The simple type name of an `impl` block's `Self` type (`impl Foo { .. }`
+/// -> `"Foo"`), used to qualify a method's obligation name as
+/// `"Type::method"` so it can't collide with a free function or another
+/// impl's identically-named method. `None` for any `Self` type shape other
+/// than a plain path (its last segment's ident is taken, so `impl<T>
+/// Vec<T>` still resolves to `"Vec"`) -- conservative, matching this tool's
+/// syn-only, no-type-info scope elsewhere.
+fn impl_self_type_name(item_impl: &syn::ItemImpl) -> Option<String> {
+    match &*item_impl.self_ty {
+        syn::Type::Path(type_path) => type_path
+            .path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string()),
+        _ => None,
+    }
+}
+
+/// Every method in every `impl` block in the file, paired with its
+/// qualified `"Type::method"` name (ADR-0001's "largest practical coverage
+/// gap" -- methods were previously invisible to every annotation-consuming
+/// check end to end). Covers both inherent and trait impls identically;
+/// call resolution *into* a method stays out of scope regardless (the
+/// module doc's "same-file, free functions only" boundary), so this only
+/// ever feeds declaration-site and return-site checking of the method's
+/// own contract, never new call-site obligations at its call expressions.
+fn impl_methods(file: &syn::File) -> Vec<(String, &syn::ImplItemFn)> {
+    let mut methods = Vec::new();
+    for item in &file.items {
+        let Item::Impl(item_impl) = item else {
+            continue;
+        };
+        let Some(type_name) = impl_self_type_name(item_impl) else {
+            continue;
+        };
+        for impl_item in &item_impl.items {
+            if let syn::ImplItem::Fn(method) = impl_item {
+                methods.push((format!("{type_name}::{}", method.sig.ident), method));
+            }
+        }
+    }
+    methods
+}
+
+/// The declaration-site obligations (`#[mvl::requires]`/`#[mvl::ensures]`
+/// coherence) for every impl method in the file -- [`DeclarationFinder`]'s
+/// `syn::visit::Visit` walk never reaches these (it overrides
+/// `visit_item_fn`, not `visit_impl_item_fn`), so they're collected
+/// separately rather than by adding impl-tracking state to that visitor.
+fn find_method_declarations(file: &syn::File, found: &mut Vec<FoundObligation>) {
+    for (name, method) in impl_methods(file) {
+        for attr in &method.attrs {
+            let (kind, predicate) = match MvlAttr::try_from_attribute(attr) {
+                Some(Ok(MvlAttr::Requires(requires))) => {
+                    (ObligationKind::Requires, requires.predicate)
+                }
+                Some(Ok(MvlAttr::Ensures(ensures))) => (ObligationKind::Ensures, ensures.predicate),
+                _ => continue,
+            };
+            found.push(FoundObligation {
+                fn_name: name.clone(),
+                kind,
+                predicate,
+                hypotheses: Vec::new(),
+                hypothesis_provenance: Vec::new(),
+                enforced: false,
+                span: attr.span(),
+                occurrence: 0,
+            });
+        }
     }
 }
 
@@ -1412,6 +1507,41 @@ fn negated_op(op: &syn::BinOp) -> Option<&'static str> {
 /// so even a return site the solver reports `Runtime` or `Violated` for is
 /// still safely covered by the same backstop as one it reports `Proven`
 /// for. Only `#[mvl::unchecked]` — no runtime check at all — forfeits this.
+fn return_site_closure_for(
+    name: &str,
+    block: &Block,
+    functions: &HashMap<String, FnFacts>,
+) -> ClosureKind {
+    let facts = functions.get(name);
+    let hypotheses = facts.map(FnFacts::hypotheses).unwrap_or_default();
+    let mut found = Vec::new();
+    let mut scan = CallSiteScan {
+        caller: name,
+        functions,
+        gamma_provenance: vec![None; hypotheses.len()],
+        gamma: hypotheses,
+        locals: Vec::new(),
+        ensures: facts.map(|f| f.ensures.as_slice()).unwrap_or(&[]),
+        self_unchecked: facts.is_some_and(|f| f.unchecked),
+        in_tail: true,
+        returns_here: true,
+        closed: None,
+        found: &mut found,
+    };
+    scan.visit_block(block);
+    let all_proven = found
+        .iter()
+        .filter(|f| f.kind == ObligationKind::ReturnSite)
+        .all(|f| matches!(f.discharge(), DischargeResult::Proven { .. }));
+    if all_proven {
+        ClosureKind::Proven
+    } else if facts.is_some_and(FnFacts::ensures_enforced) {
+        ClosureKind::Enforced
+    } else {
+        ClosureKind::Open
+    }
+}
+
 fn return_site_closure(
     file: &syn::File,
     functions: &HashMap<String, FnFacts>,
@@ -1420,34 +1550,11 @@ fn return_site_closure(
     for item in &file.items {
         let Item::Fn(item_fn) = item else { continue };
         let name = item_fn.sig.ident.to_string();
-        let facts = functions.get(&name);
-        let hypotheses = facts.map(FnFacts::hypotheses).unwrap_or_default();
-        let mut found = Vec::new();
-        let mut scan = CallSiteScan {
-            caller: &name,
-            functions,
-            gamma_provenance: vec![None; hypotheses.len()],
-            gamma: hypotheses,
-            locals: Vec::new(),
-            ensures: facts.map(|f| f.ensures.as_slice()).unwrap_or(&[]),
-            self_unchecked: facts.is_some_and(|f| f.unchecked),
-            in_tail: true,
-            returns_here: true,
-            closed: None,
-            found: &mut found,
-        };
-        scan.visit_block(&item_fn.block);
-        let all_proven = found
-            .iter()
-            .filter(|f| f.kind == ObligationKind::ReturnSite)
-            .all(|f| matches!(f.discharge(), DischargeResult::Proven { .. }));
-        let kind = if all_proven {
-            ClosureKind::Proven
-        } else if facts.is_some_and(FnFacts::ensures_enforced) {
-            ClosureKind::Enforced
-        } else {
-            ClosureKind::Open
-        };
+        let kind = return_site_closure_for(&name, &item_fn.block, functions);
+        closed.insert(name, kind);
+    }
+    for (name, method) in impl_methods(file) {
+        let kind = return_site_closure_for(&name, &method.block, functions);
         closed.insert(name, kind);
     }
     closed
@@ -1479,6 +1586,11 @@ pub fn find_obligations(source: &str) -> Result<Vec<FoundObligation>, CheckError
 
     let mut found = Vec::new();
     DeclarationFinder { found: &mut found }.visit_file(&file);
+    // `DeclarationFinder`'s `Visit` walk overrides `visit_item_fn`, not
+    // `visit_impl_item_fn` -- impl methods' own `requires`/`ensures` need a
+    // separate pass (ADR-0001's largest practical coverage gap: methods
+    // were invisible to every annotation-consuming check end to end).
+    find_method_declarations(&file, &mut found);
 
     // Same collect-then-walk shape as `rust-effect`: every function's own
     // declared facts first, so a call can be resolved against a callee
@@ -1489,37 +1601,58 @@ pub fn find_obligations(source: &str) -> Result<Vec<FoundObligation>, CheckError
             functions.insert(item_fn.sig.ident.to_string(), FnFacts::of(item_fn));
         }
     }
+    for (name, method) in impl_methods(&file) {
+        functions.insert(name, FnFacts::of_method(method));
+    }
 
     let closed = return_site_closure(&file, &functions);
 
     for item in &file.items {
         if let Item::Fn(item_fn) = item {
             let caller = item_fn.sig.ident.to_string();
-            let facts = functions.get(&caller);
-            let gamma = facts.map(FnFacts::hypotheses).unwrap_or_default();
-            let ensures: &[Predicate] = facts.map(|f| f.ensures.as_slice()).unwrap_or(&[]);
-            let mut scan = CallSiteScan {
-                caller: &caller,
-                functions: &functions,
-                gamma_provenance: vec![None; gamma.len()],
-                gamma,
-                locals: Vec::new(),
-                ensures,
-                self_unchecked: facts.is_some_and(|f| f.unchecked),
-                // The function body's own trailing expression is its return
-                // value, so the walk starts in tail position -- and a `return`
-                // in it returns from this function.
-                in_tail: true,
-                returns_here: true,
-                closed: Some(&closed),
-                found: &mut found,
-            };
-            scan.visit_block(&item_fn.block);
+            scan_function_body(&caller, &item_fn.block, &functions, &closed, &mut found);
         }
+    }
+    for (name, method) in impl_methods(&file) {
+        scan_function_body(&name, &method.block, &functions, &closed, &mut found);
     }
 
     number_occurrences(&mut found);
     Ok(found)
+}
+
+/// Runs [`CallSiteScan`] over one function-or-method body, starting in
+/// tail position with its own `requires` as Γ and its own `ensures` as the
+/// return-site goal. Shared by [`find_obligations`]'s free-function and
+/// impl-method loops -- the scan itself doesn't care which kind of item
+/// `name`/`block` came from.
+fn scan_function_body(
+    name: &str,
+    block: &Block,
+    functions: &HashMap<String, FnFacts>,
+    closed: &HashMap<String, ClosureKind>,
+    found: &mut Vec<FoundObligation>,
+) {
+    let facts = functions.get(name);
+    let gamma = facts.map(FnFacts::hypotheses).unwrap_or_default();
+    let ensures: &[Predicate] = facts.map(|f| f.ensures.as_slice()).unwrap_or(&[]);
+    let mut scan = CallSiteScan {
+        caller: name,
+        functions,
+        gamma_provenance: vec![None; gamma.len()],
+        gamma,
+        locals: Vec::new(),
+        ensures,
+        self_unchecked: facts.is_some_and(|f| f.unchecked),
+        // The body's own trailing expression is its return value, so the
+        // walk starts in tail position -- and a `return` in it returns
+        // from this function/method.
+        in_tail: true,
+        returns_here: true,
+        closed: Some(closed),
+        found,
+    };
+    scan.visit_block(block);
 }
 
 /// Renders one obligation's discharge outcome as a Gate-mode diagnostic.
@@ -1780,6 +1913,63 @@ mod tests {
         assert_eq!(found[1].kind, ObligationKind::Ensures);
         assert_eq!(found[2].kind, ObligationKind::ReturnSite);
         assert_eq!(found[2].fn_name, "mask_low_nibble");
+    }
+
+    #[test]
+    fn finds_requires_and_ensures_on_an_impl_method() {
+        let found = find_obligations(
+            "struct DatabaseHeader;\n\
+             impl DatabaseHeader {\n\
+                 #[mvl::requires(0 <= b && b <= 255)]\n\
+                 #[mvl::ensures(0 <= result && result <= 15)]\n\
+                 fn mask_low_nibble(b: i32) -> i32 { b & 15 }\n\
+             }",
+        )
+        .unwrap();
+
+        // Same three obligations as the free-function case, qualified by
+        // the impl's Self type -- ADR-0001's "methods are largely invisible"
+        // gap, closed for declaration-site and return-site checking.
+        assert_eq!(found.len(), 3);
+        assert_eq!(found[0].kind, ObligationKind::Requires);
+        assert_eq!(found[0].fn_name, "DatabaseHeader::mask_low_nibble");
+        assert_eq!(found[1].kind, ObligationKind::Ensures);
+        assert_eq!(found[2].kind, ObligationKind::ReturnSite);
+        assert_eq!(found[2].fn_name, "DatabaseHeader::mask_low_nibble");
+    }
+
+    #[test]
+    fn a_method_and_a_free_function_with_the_same_name_are_independent() {
+        let found = find_obligations(
+            "struct T;\n\
+             impl T {\n\
+                 #[mvl::ensures(result > 0)]\n\
+                 fn f(x: i32) -> i32 { x }\n\
+             }\n\
+             #[mvl::ensures(result < 0)]\n\
+             fn f(x: i32) -> i32 { x }",
+        )
+        .unwrap();
+
+        let method_ensures = found
+            .iter()
+            .find(|o| o.fn_name == "T::f" && o.kind == ObligationKind::Ensures)
+            .expect("method's own ensures, not the free function's");
+        let free_ensures = found
+            .iter()
+            .find(|o| o.fn_name == "f" && o.kind == ObligationKind::Ensures)
+            .expect("free function's own ensures, not the method's");
+        assert_ne!(
+            format!("{:?}", method_ensures.predicate),
+            format!("{:?}", free_ensures.predicate)
+        );
+    }
+
+    #[test]
+    fn method_with_no_refinement_attrs_finds_nothing() {
+        let found =
+            find_obligations("struct T;\nimpl T {\n    fn f(x: i32) -> i32 { x }\n}").unwrap();
+        assert!(found.is_empty());
     }
 
     #[test]

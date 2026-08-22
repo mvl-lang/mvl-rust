@@ -177,11 +177,18 @@ which is not a guarantee a tool can compose over.
 - **Same-file, free-function scope is the shared default.** No cross-file or
   cross-crate resolution. Calls to anything else are silently unresolvable and
   produce no obligation.
-- **Methods in `impl` blocks are largely invisible.** Only `rust-limit` visits
-  `ItemImpl`/`ItemTrait`. The annotation-consuming tools visit `ItemFn` and do
-  not handle `ImplItemFn`, so an annotated method is unanalysed end to end —
-  including its attributes. This is the largest practical coverage gap the
-  attribute model currently has, since most idiomatic Rust is methods.
+- **Methods in `impl` blocks were largely invisible; `rust-refine` no longer
+  has this gap.** `rust-limit` always visited `ItemImpl`/`ItemTrait`.
+  `rust-refine` now does too, for declaration-site and return-site obligations
+  (an `impl` method's own `requires`/`ensures` is checked, qualified
+  `Type::method`) — closed after a real-world spike (sqlite-rs, issue #371)
+  found `cargo mvl prove` silently returning zero obligations against
+  annotated methods, exit 0, no diagnostic. Call *resolution* into a method
+  is still out of scope (same-file, free-functions-only, per the bullet
+  above) — a call through `self.foo()`/`x.method()`/`Type::method(x)`
+  produces no call-site obligation even for a now-checked method. `rust-total`
+  and `rust-effect` still only visit `ItemFn`, so this gap remains open for
+  them.
 - **Verification is advisory until ADR-0006.** §2 makes the attributes inert,
   so a residual obligation is a note, not a check. Any claim the tools make
   about unproven obligations must say so — in diagnostics, in Γ, and in the
