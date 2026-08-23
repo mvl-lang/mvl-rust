@@ -264,6 +264,44 @@ fn a_caller_precondition_entails_the_callees() {
 }
 
 #[test]
+fn an_unsigned_params_implicit_non_negative_bound_closes_a_call_that_needs_it() {
+    // `x`'s only declared fact is its type, `u32` -- nothing is written
+    // about it explicitly. The callee's precondition is only provable
+    // given `x >= 0`, which #94 injects into Γ for free from the type.
+    let result = only_call_site(
+        "#[mvl::requires(n >= 0)]\n\
+         fn require_non_negative(n: i32) -> i32 { n }\n\
+         fn caller(x: u32) -> i32 { require_non_negative(x) }",
+    );
+    assert_proven_at(&result, Layer::L2);
+}
+
+#[test]
+fn an_unsigned_type_bound_composes_with_an_explicit_requires() {
+    // The explicit `x <= 100` and the implicit `x >= 0` from `x: u32`
+    // must both land in Γ -- neither alone proves `n >= 0 && n <= 100`.
+    let result = only_call_site(
+        "#[mvl::requires(n >= 0 && n <= 100)]\n\
+         fn require_bounded(n: i32) -> i32 { n }\n\
+         #[mvl::requires(x <= 100)]\n\
+         fn caller(x: u32) -> i32 { require_bounded(x) }",
+    );
+    assert_proven_at(&result, Layer::L2);
+}
+
+#[test]
+fn a_signed_parameter_gets_no_implicit_lower_bound() {
+    // Same shape, but `x: i32` -- no free `>= 0` fact, so this must still
+    // fall to `runtime`. Confirms the injection is unsigned-type-gated.
+    let result = only_call_site(
+        "#[mvl::requires(n >= 0)]\n\
+         fn require_non_negative(n: i32) -> i32 { n }\n\
+         fn caller(x: i32) -> i32 { require_non_negative(x) }",
+    );
+    assert_eq!(result, DischargeResult::Runtime);
+}
+
+#[test]
 fn branch_narrowing_proves_a_call_inside_the_then_arm() {
     // L2's own "branch narrowing" scenario: nothing is declared about `x`,
     // but inside `if x > 0` it is known.
