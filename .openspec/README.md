@@ -53,6 +53,7 @@ Rationale for dropping delta specs and `tasks.md`:
 | [006](specs/006-layered-solver/spec.md) | The Layered Solver | L1–L4 shipped; L5 absent | Partial |
 | [007](specs/007-runtime-enforcement/spec.md) | Runtime Enforcement | Residual obligations — 0/7 scenarios evidenced | Not implemented |
 | [008](specs/008-reporting/spec.md) | Reporting Across the Assurance Levels | Diagnostics, the shared schema, obligation identity, aggregation | Implemented |
+| [009](specs/009-mcdc/spec.md) | MC/DC Obligations | `rust-mcdc` — decision scanning, `n+1` vectors, tagged-test discharge; mutation engine kept library-only | Implemented |
 
 ## ADRs
 
