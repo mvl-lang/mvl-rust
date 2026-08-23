@@ -8,6 +8,13 @@ below backfills everything merged while the workspace sat at that version.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-23
+
+### Added
+
+- `rust-mcdc` (#96): a `match`'s `Decision`/`ObligationRecord` now carries a `wildcard_risk` flag alongside `compiler_void` when its exhaustiveness comes from a `_` catch-all arm rather than every variant being named — a `_` arm can silently absorb a variant added later with no compiler signal, unlike a fully-named exhaustive match. Deliberately scoped to `Pat::Wild` only: `syn` parses every bare identifier pattern (including a named unit variant like `None`) as `Pat::Ident`, so treating that as catch-all would false-positive on ordinary, fully-named exhaustive matches.
+- `mvl-rust-core` (#97): `Ok(x).is_ok()`, `Err(e).is_err()`, `Some(x).is_some()`, `None.is_none()` (and negated counterparts) now constant-fold to a literal bool at L1, purely from AST shape — no type information used or needed. Matches on the receiver constructor path's last segment, so `Ok(x)`, `Result::Ok(x)`, `std::result::Result::Ok(x)` are all recognized alike. A method call on any other receiver shape still falls through to `Runtime` unchanged.
+
 ## [0.6.0] - 2026-08-23
 
 ### Added

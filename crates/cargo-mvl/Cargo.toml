@@ -13,13 +13,13 @@ name = "cargo-mvl"
 path = "src/main.rs"
 
 [dependencies]
-mvl-rust-core = { path = "../mvl-rust-core", version = "0.6.0" }
-rust-limit = { path = "../rust-limit", version = "0.6.0" }
-rust-total = { path = "../rust-total", version = "0.6.0" }
-rust-refine = { path = "../rust-refine", version = "0.6.0" }
-rust-effect = { path = "../rust-effect", version = "0.6.0" }
-rust-ifc = { path = "../rust-ifc", version = "0.6.0" }
-rust-mcdc = { path = "../rust-mcdc", version = "0.6.0" }
+mvl-rust-core = { path = "../mvl-rust-core", version = "0.7.0" }
+rust-limit = { path = "../rust-limit", version = "0.7.0" }
+rust-total = { path = "../rust-total", version = "0.7.0" }
+rust-refine = { path = "../rust-refine", version = "0.7.0" }
+rust-effect = { path = "../rust-effect", version = "0.7.0" }
+rust-ifc = { path = "../rust-ifc", version = "0.7.0" }
+rust-mcdc = { path = "../rust-mcdc", version = "0.7.0" }
 serde_json = "1"
 
 [features]
