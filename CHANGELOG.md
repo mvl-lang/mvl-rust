@@ -8,6 +8,12 @@ below backfills everything merged while the workspace sat at that version.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-08-23
+
+### Fixed
+
+- `rust-mcdc` (#99): a bare `if let`/`while let` (no `&&` chain) produced zero MC/DC decisions/obligations instead of counting as a single opaque leaf — `boolean_decision()` special-cased any condition unwrapping to `Expr::Let` and bailed out with `None`, contradicting the module's own doc comment that a `let` pattern should count as an opaque single leaf. `syn` already parses `let`-chain leaves correctly (e.g. `a && let Some(n) = x`) via the existing `flatten()` path, so no new parsing logic was needed — the fix is removing the bail-out.
+
 ## [0.5.1] - 2026-08-22
 
 ### Fixed

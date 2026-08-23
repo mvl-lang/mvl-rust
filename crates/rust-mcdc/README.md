@@ -71,8 +71,10 @@ through the standalone `cargo-mvl-mcdc discharge`/`harvest` binary, not
 
 ## Known scope limits
 
-- `if let`/`while let` chains are treated as an opaque single leaf, not
-  decomposed.
+- `if let`/`while let` (and each `let` leaf of a stable-Rust `let`-chain) is
+  treated as an opaque single leaf, not decomposed into its own
+  sub-conditions — but it still counts as its own decision/leaf toward
+  `vectors_required`, same as any other leaf.
 - No per-mutant timeout: a mutant that turns a loop guard into `true` can
   block `cargo test` indefinitely.
 - One file at a time; no crate-wide obligation index yet (`.openspec/mcdc/index.yaml`,

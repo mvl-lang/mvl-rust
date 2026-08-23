@@ -12,10 +12,12 @@
 //! so it's recorded as compiler-void — no test obligation, only bookkeeping
 //! (`Obligation::compiler_void`).
 //!
-//! **Known scope limit:** `if let`/`while let` chains (stable-Rust
-//! `let`-chains) are not decomposed — a `let` pattern match is treated as
-//! an opaque single leaf, same as `rust-limit`'s and `rust-total`'s own
-//! "only what a single `syn::visit::Visit` pass can see" scope.
+//! **Known scope limit:** a `let` pattern (bare `if let`/`while let`, or one
+//! leaf of a stable-Rust `let`-chain joined by `&&`) is not decomposed into
+//! its own sub-conditions — it's treated as an opaque single leaf, same as
+//! `rust-limit`'s and `rust-total`'s own "only what a single
+//! `syn::visit::Visit` pass can see" scope. It still counts as its own
+//! decision/leaf toward `vectors_required`, same as any other leaf.
 
 use proc_macro2::Span;
 use syn::spanned::Spanned;
@@ -126,10 +128,9 @@ fn flatten<'ast>(expr: &'ast Expr, leaves: &mut Vec<&'ast Expr>, ops: &mut Vec<D
 }
 
 fn boolean_decision(source: &str, cond: &Expr) -> Option<Decision> {
-    // `if let`/`while let` chains aren't decomposed -- see module doc.
-    if matches!(unwrap_grouping(cond), Expr::Let(_)) {
-        return None;
-    }
+    // A `let` pattern (bare `if let`, or one leaf of a `&&`-chain) isn't
+    // decomposed into its own sub-conditions -- see module doc -- but it
+    // still counts as a one-leaf decision, same as any other opaque leaf.
     let mut leaves = Vec::new();
     let mut ops = Vec::new();
     flatten(cond, &mut leaves, &mut ops);
@@ -244,10 +245,23 @@ mod tests {
     }
 
     #[test]
-    fn if_let_is_not_decomposed() {
+    fn if_let_is_an_opaque_single_leaf_decision() {
         let source = "fn f(x: Option<i32>) { if let Some(n) = x { let _ = n; } }";
         let decisions = scan_source(source).unwrap();
-        assert!(decisions.is_empty());
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].leaves.len(), 1);
+        assert_eq!(decisions[0].vectors_required(), 2);
+        assert!(!decisions[0].compiler_void);
+    }
+
+    #[test]
+    fn let_chain_leaf_is_opaque_but_counted() {
+        let source = "fn f(a: bool, x: Option<i32>) { if a && let Some(n) = x { let _ = n; } }";
+        let decisions = scan_source(source).unwrap();
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].leaves.len(), 2);
+        assert_eq!(decisions[0].vectors_required(), 3);
+        assert!(decisions[0].ops[0].is_and);
     }
 
     #[test]
