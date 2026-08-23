@@ -8,6 +8,12 @@ use mvl_rust_core::diagnostics::Level;
 use mvl_rust_core::solver::Obligation;
 use rust_refine::checks;
 
+/// **ADR-0011's resolved-pure closure licence assumes `rust-limit` and
+/// `rust-effect` already gated this file** (`cargo mvl check`'s fixed
+/// order: `limit → total → refine → effect → ifc`). Standalone invocation
+/// of this binary on source that hasn't itself passed both is not covered
+/// by that licence and must not be trusted to apply it soundly — see
+/// `rust_refine::checks`'s module doc.
 fn main() -> ExitCode {
     let mut args: Vec<String> = env::args().skip(1).collect();
 

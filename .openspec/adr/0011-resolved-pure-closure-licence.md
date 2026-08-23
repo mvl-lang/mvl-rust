@@ -1,5 +1,5 @@
 ---
-status: Proposed
+status: Accepted
 date: 2026-08-23
 ---
 
@@ -44,9 +44,9 @@ Determinism (ADR-0008 §4's condition 4) is not separately re-verified — it fo
 - `rust-effect`'s own semantics or defaults (ADR-0003 §3 stands as written).
 - Call resolution scope — still same-file, free functions only, per the existing boundary every tool in this fan-out shares.
 
-### Not yet implemented
+### Implementation
 
-This ADR records the design; #103's acceptance criteria calls for a separate implementation ticket per ADR-0008 §5's mechanism (an `effects`/`unresolved_calls` field on `rust_refine::checks::FnFacts`, pre-screening at the two existing lookup sites, no solver signature change). Filing that ticket is the next step, not part of this ADR.
+Implemented in #110: `rust_refine::checks::FnFacts` gained `effect_pure`/`unresolved_calls`/`float_return` fields (the last two filled by a second collect-then-walk pass over `find_obligations`'s already-two-pass structure, mirroring `rust-effect`'s `CallVisitor`), and `obligations_for_call`/`propagate_postcondition` now rewrite a licensed call into an opaque symbol (keyed on the call's own token text, so two occurrences of the same call converge on the same symbol) before the built predicate is stored. The invocation-order precondition is documented rather than code-enforced — `rust-refine`'s `check_source`/`find_obligations` have no channel to receive "the other gates already ran," and threading one in would be new cross-tool coupling this workspace has otherwise avoided (ADR-0001 §3); the module doc on `rust_refine::checks` and the standalone binary's usage text both carry the warning instead.
 
 ## Consequences
 
