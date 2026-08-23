@@ -8,6 +8,10 @@ below backfills everything merged while the workspace sat at that version.
 
 ## [Unreleased]
 
+### Changed
+
+- `rust-mcdc`: the condition-mutation engine (`rust_mcdc::mutate`/`discharge`) is no longer wired into any CLI or Makefile target — kept as a library-only capability. Re-running the entire test suite once per mutant, with no per-mutant timeout, was too disruptive for everyday use against a real codebase, and the tagged-test path (`scan → generate → run → harvest`) already does the real reporting job against an *already-existing* test suite once its relevant tests carry the `mcdc__<id>__v<N>` tag — confirmed in practice against a live corpus (sqlite-rs), not just in theory. `cargo mvl mcdc discharge` and `cargo mvl-mcdc discharge` now report clearly that the engine isn't CLI-exposed rather than misbehaving; `make mcdc-discharge` is removed; `make test-mcdc` now simply runs `cargo test -p rust-mcdc` (matching every other `test-*` target) instead of self-dogfooding via mutation, which took minutes due to nested `cargo test` invocations in the crate's own fixtures.
+
 ## [0.7.0] - 2026-08-23
 
 ### Added
