@@ -40,7 +40,7 @@ The key words "MUST", "MUST NOT", "SHOULD", "SHOULD NOT", and "MAY" in this docu
 
 ### Requirement 1: Panic-risk constructs in a `#[mvl::total]` body are rejected [MUST]
 
-Inside a function annotated `#[mvl::total]`, the tool MUST reject `.unwrap()`, `.expect(…)`, the `panic!`/`todo!`/`unimplemented!` macros, raw indexing (`xs[i]`), and division or modulo.
+Inside a function annotated `#[mvl::total]`, the tool MUST reject `.unwrap()`, `.expect(…)`, the `panic!`/`todo!`/`unimplemented!`/`unreachable!` macros, raw indexing (`xs[i]`), and division or modulo.
 
 The tool MUST NOT scan functions that carry no `#[mvl::total]` annotation.
 

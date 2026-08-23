@@ -289,6 +289,19 @@ fn todo_and_unimplemented_are_rejected() {
 }
 
 #[test]
+fn unreachable_is_rejected() {
+    let source = r#"
+        #[mvl::total]
+        fn f() -> i32 {
+            unreachable!()
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].message.contains("unreachable!"));
+}
+
+#[test]
 fn raw_indexing_is_rejected() {
     let source = r#"
         #[mvl::total]
