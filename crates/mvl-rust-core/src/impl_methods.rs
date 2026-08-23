@@ -13,6 +13,31 @@
 
 use syn::{File, ImplItem, ImplItemFn, Item, ItemImpl, Type};
 
+/// Every item in `file`, recursively descending into every `Item::Mod`'s
+/// own content (at any nesting depth) — so a caller iterating top-level
+/// items directly (rather than through a `syn::visit::Visit` pass, which
+/// already recurses through modules by default) doesn't silently miss
+/// anything nested in a `mod foo { ... }` block (#115). A `mod` with no
+/// inline body (`mod foo;`, declared in a separate file) has no content
+/// to descend into and contributes nothing beyond itself, same as any
+/// other leaf item.
+pub fn flatten_items(file: &File) -> Vec<&Item> {
+    let mut items = Vec::new();
+    collect_items(&file.items, &mut items);
+    items
+}
+
+fn collect_items<'a>(items: &'a [Item], out: &mut Vec<&'a Item>) {
+    for item in items {
+        out.push(item);
+        if let Item::Mod(item_mod) = item {
+            if let Some((_, content)) = &item_mod.content {
+                collect_items(content, out);
+            }
+        }
+    }
+}
+
 /// The simple type name of an `impl` block's `Self` type (`impl Foo { .. }`
 /// -> `"Foo"`), used to qualify a method's name as `"Type::method"` so it
 /// can't collide with a free function or another impl's identically named
@@ -40,7 +65,7 @@ pub fn impl_self_type_name(item_impl: &ItemImpl) -> Option<String> {
 /// expressions.
 pub fn impl_methods(file: &File) -> Vec<(String, &ImplItemFn)> {
     let mut methods = Vec::new();
-    for item in &file.items {
+    for item in flatten_items(file) {
         let Item::Impl(item_impl) = item else {
             continue;
         };
@@ -82,6 +107,34 @@ mod tests {
                 .unwrap();
         let methods = impl_methods(&file);
         assert_eq!(methods[0].0, "Wrapper::get");
+    }
+
+    #[test]
+    fn an_impl_block_nested_in_a_mod_is_collected() {
+        let file: File = syn::parse_str(
+            "mod foo {\n    struct Bar;\n    impl Bar {\n        fn baz(&self) -> i32 { 0 }\n    }\n}",
+        )
+        .unwrap();
+        let methods = impl_methods(&file);
+        assert_eq!(methods.len(), 1);
+        assert_eq!(methods[0].0, "Bar::baz");
+    }
+
+    #[test]
+    fn a_doubly_nested_mod_is_collected_too() {
+        let file: File = syn::parse_str(
+            "mod a {\n    mod b {\n        struct C;\n        impl C {\n            fn d(&self) {}\n        }\n    }\n}",
+        )
+        .unwrap();
+        let methods = impl_methods(&file);
+        assert_eq!(methods.len(), 1);
+        assert_eq!(methods[0].0, "C::d");
+    }
+
+    #[test]
+    fn a_mod_with_no_inline_body_contributes_nothing() {
+        let file: File = syn::parse_str("mod foo;").unwrap();
+        assert!(impl_methods(&file).is_empty());
     }
 
     #[test]
