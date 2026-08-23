@@ -8,6 +8,8 @@ below backfills everything merged while the workspace sat at that version.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-23
+
 ### Added
 
 - `rust-total` (#117): new checks beyond the original termination-only scope — `unreachable!()` now flags alongside `panic!`/`todo!`/`unimplemented!` (spec 003 Requirement 1); a new `SwallowChecker` flags silently discarded call results (`let _ = <call>;`, `drop(<call>)`/`mem::drop(<call>)`, `.map(|_| ())` — spec 003 Requirement 7); a `--check=panic,termination,swallow` flag narrows which checks a run reports; a `--report=human|json|sarif` flag adds a minimal SARIF 2.1.0 output alongside the existing human/assurance-JSON formats (`--emit-verification-json` remains a supported alias for `--report=json`).
