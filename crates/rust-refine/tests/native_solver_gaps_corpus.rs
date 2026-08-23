@@ -276,3 +276,100 @@ mod field_projection_variables {
         assert_runtime(&result);
     }
 }
+
+// ── #113: a widening cast on a bare unsigned parameter ──────────────────────
+//
+// Neither #94's implicit bound nor #95's field-projection variable helped a
+// *cast* expression: `page_size as u64` was invisible to
+// `linterm_from_expr`/`variable_key` regardless of what was known about
+// `page_size` itself, confirmed independently for both a field projection
+// and a bare parameter in the sqlite-rs spike's follow-up round. The fix
+// (#113) strips a cast wrapping a known unsigned parameter, in the
+// return-site expression only, when the target is an unsigned type at
+// least as wide as the parameter's own declared width -- sound because
+// widening an unsigned integer never changes its value.
+mod widening_casts {
+    use super::*;
+
+    /// The spike's actual shape: two same-width unsigned parameters,
+    /// widened to a wider common type before subtracting, then compared
+    /// back against the narrower one in `ensures`.
+    #[test]
+    fn in_scope_widening_before_subtraction_now_closes() {
+        let result = only_return_site(
+            "#[mvl::requires(reserved_space <= page_size)]\n\
+             #[mvl::ensures(result <= page_size as u64)]\n\
+             fn usable_page_size(page_size: u32, reserved_space: u32) -> u64 {\n\
+                 (page_size as u64) - (reserved_space as u64)\n\
+             }",
+        );
+        assert_proven_at(&result, Layer::L4);
+    }
+
+    /// The minimal repro: a single cast on a bare parameter, nothing else
+    /// in the expression.
+    #[test]
+    fn in_scope_a_single_widening_cast_on_a_bare_parameter_now_closes() {
+        let result = only_return_site(
+            "#[mvl::ensures(result >= 0)]\n\
+             fn widen(x: u32) -> u64 { x as u64 }",
+        );
+        // A single-variable bound closes at L2 (interval), not L4 (which
+        // is only reached for cross-variable relations like the
+        // subtraction in the scenario below).
+        assert_proven_at(&result, Layer::L2);
+    }
+
+    /// A *narrowing* cast is not stripped -- it can truncate, so treating
+    /// it as the same variable would be unsound, not just imprecise.
+    #[test]
+    fn out_of_scope_a_narrowing_cast_still_falls_to_runtime() {
+        let result = only_return_site(
+            "#[mvl::ensures(result <= 255)]\n\
+             fn narrow(x: u32) -> u8 { x as u8 }",
+        );
+        assert_runtime(&result);
+    }
+
+    /// A cast to `usize` is never treated as a safe widening target, even
+    /// from a narrower fixed-width type -- `usize`'s own width is
+    /// platform-dependent, unlike every other type here.
+    #[test]
+    fn out_of_scope_a_cast_to_usize_still_falls_to_runtime() {
+        let result = only_return_site(
+            "#[mvl::ensures(result >= 0)]\n\
+             fn widen(x: u32) -> usize { x as usize }",
+        );
+        assert_runtime(&result);
+    }
+
+    /// A cast on a `self.field` (rather than a bare parameter) is
+    /// explicitly not covered by #113 -- `strip_safe_widening_casts` only
+    /// consults `FnFacts`' bare-parameter width map, not field types
+    /// (which would need struct-definition lookup, a bigger, deferred
+    /// piece per the original spike write-up).
+    #[test]
+    fn out_of_scope_a_field_projection_cast_still_falls_to_runtime() {
+        let result = only_return_site(
+            "struct Page { page_size: u32 }\n\
+             impl Page {\n\
+                 #[mvl::ensures(result <= self.page_size as u64)]\n\
+                 fn usable(&self) -> u64 { self.page_size as u64 }\n\
+             }",
+        );
+        assert_runtime(&result);
+    }
+
+    /// A signed cast target is never treated as safe, regardless of width
+    /// -- the injected/consulted bound is always about an *unsigned*
+    /// parameter's non-negativity, which a signed target doesn't inherit
+    /// automatically the way an unsigned one does.
+    #[test]
+    fn out_of_scope_a_signed_cast_target_still_falls_to_runtime() {
+        let result = only_return_site(
+            "#[mvl::ensures(result >= 0)]\n\
+             fn widen(x: u32) -> i64 { x as i64 }",
+        );
+        assert_runtime(&result);
+    }
+}

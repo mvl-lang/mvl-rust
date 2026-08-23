@@ -84,7 +84,7 @@ use std::collections::HashMap;
 
 use mvl_rust_core::attrs::{MvlAttr, Predicate};
 use mvl_rust_core::diagnostics::{Diagnostic, Level};
-use mvl_rust_core::impl_methods::impl_methods;
+use mvl_rust_core::impl_methods::{flatten_items, impl_methods};
 use mvl_rust_core::solver::native::{discharge_entailment, discharge_predicate, substitute_exprs};
 use mvl_rust_core::solver::{DischargeResult, Layer, ObligationClass, Warrant};
 use proc_macro2::Span;
@@ -414,12 +414,15 @@ impl FoundObligation {
 #[derive(Debug, Clone, Default)]
 struct FnFacts {
     params: Vec<String>,
-    /// Names of `params` entries whose declared type is an unsigned
-    /// integer (`u8`/`u16`/`u32`/`u64`/`u128`/`usize`) — used by
-    /// [`FnFacts::hypotheses`] to inject the implicit `param >= 0` bound
-    /// that the type carries for free (#94). `self`'s own fields are
-    /// explicitly out of scope here (tracked separately, #95).
-    unsigned_params: Vec<String>,
+    /// `params` entries whose declared type is an unsigned integer
+    /// (`u8`/`u16`/`u32`/`u64`/`u128`/`usize`), mapped to that type's bit
+    /// width — used by [`FnFacts::hypotheses`] to inject the implicit
+    /// `param >= 0` bound the type carries for free (#94), and by
+    /// [`strip_safe_widening_casts`] (#113) to know which `expr as T`
+    /// casts are safe to see through (`T`'s width `>=` the parameter's).
+    /// `self`'s own fields are explicitly out of scope here (tracked
+    /// separately, #95).
+    unsigned_param_widths: HashMap<String, u32>,
     requires: Vec<Predicate>,
     ensures: Vec<Predicate>,
     /// Whether this function carries `#[mvl::unchecked]` (#69) — `requires`/
@@ -443,7 +446,11 @@ impl FnFacts {
     fn from_attrs_and_sig(attrs: &[syn::Attribute], sig: &syn::Signature) -> Self {
         let mut facts = FnFacts {
             params: sig.inputs.iter().filter_map(param_name).collect(),
-            unsigned_params: sig.inputs.iter().filter_map(unsigned_param_name).collect(),
+            unsigned_param_widths: sig
+                .inputs
+                .iter()
+                .filter_map(unsigned_param_name_and_width)
+                .collect(),
             ..Default::default()
         };
         for attr in attrs {
@@ -476,7 +483,7 @@ impl FnFacts {
                 Predicate::Expr(expr) => Some(expr.clone()),
                 _ => None,
             })
-            .chain(self.unsigned_params.iter().map(|name| {
+            .chain(self.unsigned_param_widths.keys().map(|name| {
                 syn::parse_str::<Expr>(&format!("{name} >= 0"))
                     .expect("ident >= 0 literal always parses")
             }))
@@ -499,28 +506,149 @@ fn param_name(arg: &FnArg) -> Option<String> {
     }
 }
 
-/// The name of `arg` if it is a plain-identifier parameter declared with
-/// an unsigned integer type (`u8`/`u16`/`u32`/`u64`/`u128`/`usize`),
-/// matched conservatively on the type path's last segment (no type
-/// inference — a qualified path like `std::primitive::u32` still
-/// matches, a type alias for one does not). #94's implicit non-negative
-/// bound applies only to bare parameters; `self` is out of scope (#95).
-fn unsigned_param_name(arg: &FnArg) -> Option<String> {
+/// The bit width of a recognized unsigned integer type name, matched
+/// conservatively on the last path segment (no type inference — a
+/// qualified path like `std::primitive::u32` still matches, a type
+/// alias for one does not). `usize` is treated as 64-bit -- this
+/// backend has no target-pointer-width concept, and assuming the wider,
+/// common case is the conservative direction for a *source* width (it
+/// only makes fewer casts look "safe", never more) even though it's the
+/// unsafe direction for a *target* width; `usize` is excluded as a cast
+/// target for that reason, see [`strip_safe_widening_casts`].
+fn unsigned_type_width(ty: &Type) -> Option<u32> {
+    let Type::Path(type_path) = ty else {
+        return None;
+    };
+    match type_path.path.segments.last()?.ident.to_string().as_str() {
+        "u8" => Some(8),
+        "u16" => Some(16),
+        "u32" => Some(32),
+        "u64" | "usize" => Some(64),
+        "u128" => Some(128),
+        _ => None,
+    }
+}
+
+/// The name and bit width of `arg` if it is a plain-identifier parameter
+/// declared with an unsigned integer type. #94's implicit non-negative
+/// bound, and #113's safe-cast stripping, both apply only to bare
+/// parameters; `self` is out of scope (#95).
+fn unsigned_param_name_and_width(arg: &FnArg) -> Option<(String, u32)> {
     let FnArg::Typed(typed) = arg else {
         return None;
     };
     let Pat::Ident(ident) = &*typed.pat else {
         return None;
     };
-    let Type::Path(type_path) = &*typed.ty else {
-        return None;
-    };
-    let last = type_path.path.segments.last()?;
-    matches!(
-        last.ident.to_string().as_str(),
-        "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
-    )
-    .then(|| ident.ident.to_string())
+    let width = unsigned_type_width(&typed.ty)?;
+    Some((ident.ident.to_string(), width))
+}
+
+/// Rewrites `expr`, recursing only through arithmetic-shaped nodes
+/// (`+`/`-`/`*`, unary negation, parens/groups, and casts themselves --
+/// the same shape [`mvl_rust_core::solver::native`]'s linear-term
+/// extraction recurses through), dropping any `expr as T` that wraps a
+/// known unsigned parameter whose declared width is `<=` `T`'s.
+///
+/// Sound because the value of an unsigned integer is unchanged by
+/// widening it — `page_size as u64` and `page_size` denote the same
+/// number when `page_size: u32`, so treating them as the same solver
+/// variable (#95's `variable_key`) is exactly as safe as not casting at
+/// all. A *narrowing* cast is not stripped (can truncate, changing the
+/// value) — this only ever widens, never removes information the
+/// solver needs, and never treats a target of `usize` as a safe widening
+/// (its own width is target-dependent, unlike every fixed-width type
+/// here) even though it treats `usize` as a 64-bit *source*.
+///
+/// Anything outside this arithmetic shape (a method call, a struct
+/// field's own cast, a function call's argument) is left exactly as
+/// written — conservative, matching this backend's bail-on-anything-else
+/// convention elsewhere; see #113's follow-up note for field projections.
+fn strip_safe_widening_casts(expr: &Expr, unsigned_param_widths: &HashMap<String, u32>) -> Expr {
+    match expr {
+        Expr::Cast(cast) => {
+            let inner = strip_safe_widening_casts(&cast.expr, unsigned_param_widths);
+            let target_is_safe_widening_target = unsigned_type_width(&cast.ty)
+                .filter(|_| !matches!(&*cast.ty, Type::Path(p) if p.path.is_ident("usize")));
+            if let (Expr::Path(path), Some(target_width)) = (&inner, target_is_safe_widening_target)
+            {
+                if let Some(ident) = path.path.get_ident() {
+                    if let Some(&source_width) = unsigned_param_widths.get(&ident.to_string()) {
+                        if source_width <= target_width {
+                            return inner;
+                        }
+                    }
+                }
+            }
+            let mut cast = cast.clone();
+            cast.expr = Box::new(inner);
+            Expr::Cast(cast)
+        }
+        Expr::Binary(bin) => {
+            let mut bin = bin.clone();
+            bin.left = Box::new(strip_safe_widening_casts(&bin.left, unsigned_param_widths));
+            bin.right = Box::new(strip_safe_widening_casts(&bin.right, unsigned_param_widths));
+            Expr::Binary(bin)
+        }
+        Expr::Unary(unary) => {
+            let mut unary = unary.clone();
+            unary.expr = Box::new(strip_safe_widening_casts(
+                &unary.expr,
+                unsigned_param_widths,
+            ));
+            Expr::Unary(unary)
+        }
+        Expr::Paren(paren) => {
+            let mut paren = paren.clone();
+            paren.expr = Box::new(strip_safe_widening_casts(
+                &paren.expr,
+                unsigned_param_widths,
+            ));
+            Expr::Paren(paren)
+        }
+        Expr::Group(group) => {
+            let mut group = group.clone();
+            group.expr = Box::new(strip_safe_widening_casts(
+                &group.expr,
+                unsigned_param_widths,
+            ));
+            Expr::Group(group)
+        }
+        other => other.clone(),
+    }
+}
+
+/// [`strip_safe_widening_casts`], lifted over a whole [`Predicate`] --
+/// applied *after* [`substitute_exprs`], so it reaches a cast sitting in
+/// the `ensures` text itself (`result <= page_size as u64`) exactly the
+/// same way it reaches one in the substituted return expression.
+fn strip_safe_widening_casts_predicate(
+    pred: Predicate,
+    unsigned_param_widths: &HashMap<String, u32>,
+) -> Predicate {
+    match pred {
+        Predicate::Expr(expr) => {
+            Predicate::Expr(strip_safe_widening_casts(&expr, unsigned_param_widths))
+        }
+        Predicate::Forall { var, lo, hi, body } => Predicate::Forall {
+            var,
+            lo,
+            hi,
+            body: Box::new(strip_safe_widening_casts_predicate(
+                *body,
+                unsigned_param_widths,
+            )),
+        },
+        Predicate::Exists { var, lo, hi, body } => Predicate::Exists {
+            var,
+            lo,
+            hi,
+            body: Box::new(strip_safe_widening_casts_predicate(
+                *body,
+                unsigned_param_widths,
+            )),
+        },
+    }
 }
 
 /// The declaration-site obligations (`#[mvl::requires]`/`#[mvl::ensures]`
@@ -612,6 +740,14 @@ struct CallSiteScan<'a> {
     /// has to establish (#42). Empty for a function without a postcondition,
     /// which makes the whole return-point walk a no-op.
     ensures: &'a [Predicate],
+    /// This function's own unsigned parameters and their widths -- used by
+    /// [`CallSiteScan::obligations_for_return`] to strip a safe widening
+    /// cast from the returned expression before substituting it for
+    /// `result` (#113), the same source [`FnFacts::hypotheses`] already
+    /// reads for #94's implicit `>= 0` bound. `None` when there are no
+    /// known facts for this function at all (matches `ensures`'s own
+    /// `unwrap_or(&[])` fallback elsewhere).
+    unsigned_param_widths: Option<&'a HashMap<String, u32>>,
     /// Whether *this* function (the one being scanned) carries
     /// `#[mvl::unchecked]` (#69) -- used to compute `enforced` on a
     /// return-site [`FoundObligation`], which asks whether an unproven
@@ -788,10 +924,20 @@ impl CallSiteScan<'_> {
             HashMap::from([("result".to_string(), returned.clone())]);
 
         for ensures in self.ensures {
+            // Substitute first, then strip safe widening casts from the
+            // *whole* resulting predicate -- the cast can equally sit in
+            // the `ensures` text itself (`result <= page_size as u64`) as
+            // in the substituted return expression, and stripping only one
+            // side leaves the other unrecognized by the solver (#113).
+            let predicate = substitute_exprs(ensures, &bindings);
+            let predicate = match self.unsigned_param_widths {
+                Some(widths) => strip_safe_widening_casts_predicate(predicate, widths),
+                None => predicate,
+            };
             self.found.push(FoundObligation {
                 fn_name: self.caller.to_string(),
                 kind: ObligationKind::ReturnSite,
-                predicate: substitute_exprs(ensures, &bindings),
+                predicate,
                 hypotheses: self.gamma.clone(),
                 hypothesis_provenance: self.gamma_provenance.clone(),
                 // `self.ensures` is non-empty (checked above), so this
@@ -1196,6 +1342,7 @@ impl<'ast> Visit<'ast> for CallSiteScan<'_> {
             gamma: hypotheses,
             locals: Vec::new(),
             ensures: &facts.ensures,
+            unsigned_param_widths: Some(&facts.unsigned_param_widths),
             self_unchecked: facts.unchecked,
             in_tail: true,
             // A nested `fn` is its own return target, even when the `fn` sits
@@ -1515,6 +1662,7 @@ fn return_site_closure_for(
         gamma: hypotheses,
         locals: Vec::new(),
         ensures: facts.map(|f| f.ensures.as_slice()).unwrap_or(&[]),
+        unsigned_param_widths: facts.map(|f| &f.unsigned_param_widths),
         self_unchecked: facts.is_some_and(|f| f.unchecked),
         in_tail: true,
         returns_here: true,
@@ -1540,7 +1688,7 @@ fn return_site_closure(
     functions: &HashMap<String, FnFacts>,
 ) -> HashMap<String, ClosureKind> {
     let mut closed = HashMap::new();
-    for item in &file.items {
+    for item in flatten_items(file) {
         let Item::Fn(item_fn) = item else { continue };
         let name = item_fn.sig.ident.to_string();
         let kind = return_site_closure_for(&name, &item_fn.block, functions);
@@ -1589,7 +1737,7 @@ pub fn find_obligations(source: &str) -> Result<Vec<FoundObligation>, CheckError
     // declared facts first, so a call can be resolved against a callee
     // defined later in the file.
     let mut functions: HashMap<String, FnFacts> = HashMap::new();
-    for item in &file.items {
+    for item in flatten_items(&file) {
         if let Item::Fn(item_fn) = item {
             functions.insert(item_fn.sig.ident.to_string(), FnFacts::of(item_fn));
         }
@@ -1600,7 +1748,7 @@ pub fn find_obligations(source: &str) -> Result<Vec<FoundObligation>, CheckError
 
     let closed = return_site_closure(&file, &functions);
 
-    for item in &file.items {
+    for item in flatten_items(&file) {
         if let Item::Fn(item_fn) = item {
             let caller = item_fn.sig.ident.to_string();
             scan_function_body(&caller, &item_fn.block, &functions, &closed, &mut found);
@@ -1636,6 +1784,7 @@ fn scan_function_body(
         gamma,
         locals: Vec::new(),
         ensures,
+        unsigned_param_widths: facts.map(|f| &f.unsigned_param_widths),
         self_unchecked: facts.is_some_and(|f| f.unchecked),
         // The body's own trailing expression is its return value, so the
         // walk starts in tail position -- and a `return` in it returns
@@ -1906,6 +2055,49 @@ mod tests {
         assert_eq!(found[1].kind, ObligationKind::Ensures);
         assert_eq!(found[2].kind, ObligationKind::ReturnSite);
         assert_eq!(found[2].fn_name, "mask_low_nibble");
+    }
+
+    #[test]
+    fn a_free_function_nested_in_a_mod_gets_its_return_site_obligation_too() {
+        // #115: previously only the declaration-site obligations (via
+        // DeclarationFinder's Visit walk, which already recurses through
+        // modules by default) were found through a `mod` -- the
+        // return-site obligation, generated by a flat `for item in
+        // &file.items` loop, was silently dropped.
+        let found = find_obligations(
+            "mod foo {\n\
+                 #[mvl::ensures(0 <= result && result <= 15)]\n\
+                 fn mask_low_nibble(b: i32) -> i32 { b & 15 }\n\
+             }",
+        )
+        .unwrap();
+
+        assert_eq!(found.len(), 2, "found: {found:?}");
+        assert_eq!(found[0].kind, ObligationKind::Ensures);
+        assert_eq!(found[1].kind, ObligationKind::ReturnSite);
+        assert_eq!(found[1].fn_name, "mask_low_nibble");
+    }
+
+    #[test]
+    fn an_impl_method_nested_in_a_mod_is_found_at_all() {
+        // #115: an `impl` block inside a `mod` was previously invisible
+        // entirely -- not even its declaration-site obligation.
+        let found = find_obligations(
+            "mod foo {\n\
+                 struct T;\n\
+                 impl T {\n\
+                     #[mvl::ensures(result > 0)]\n\
+                     fn f(x: i32) -> i32 { x }\n\
+                 }\n\
+             }",
+        )
+        .unwrap();
+
+        assert_eq!(found.len(), 2, "found: {found:?}");
+        assert_eq!(found[0].kind, ObligationKind::Ensures);
+        assert_eq!(found[0].fn_name, "T::f");
+        assert_eq!(found[1].kind, ObligationKind::ReturnSite);
+        assert_eq!(found[1].fn_name, "T::f");
     }
 
     #[test]

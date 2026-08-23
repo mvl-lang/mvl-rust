@@ -1172,11 +1172,49 @@ fn classify_clause(expr: &Expr) -> Clause {
         }) => Clause::Constant(b.value),
         Expr::Paren(paren) => classify_clause(&paren.expr),
         Expr::Group(group) => classify_clause(&group.expr),
+        Expr::Binary(bin) if matches!(bin.op, BinOp::Or(_)) => short_circuit_or(bin),
+        Expr::Binary(bin) if matches!(bin.op, BinOp::And(_)) => short_circuit_and(bin),
         Expr::Binary(bin) => classify_comparison(bin),
         Expr::MethodCall(_) => match fold_known_shape_result_option_method(expr) {
             Some(value) => Clause::Constant(value),
             None => Clause::Unknown,
         },
+        _ => Clause::Unknown,
+    }
+}
+
+/// Boolean short-circuit simplification for `||`, applied at the same L1
+/// pass that already folds a leaf like `Err(x).is_err()` to a literal
+/// (#97) -- the fold is otherwise stuck at the leaf: `result.is_err() ||
+/// <unprovable>` stayed `Unknown` even though the left operand alone
+/// folds to `true`, because nothing combined the two sides (#114).
+///
+/// `true || x` is `true` regardless of what `x` is, including something
+/// this backend can never decide -- so only one side needs to fold to
+/// `true` for the whole clause to. Both sides need to fold to `false`
+/// for the clause to be `false` (an undecided side might be `true`).
+/// Anything else (one or both sides `Unknown`, no side `true`) stays
+/// `Unknown` -- this only tightens what already folds, it never widens
+/// what a bound-carrying side could mean once combined with a
+/// disjunction (`Clause::Bound` from either side is treated as `Unknown`
+/// here, same as before this fix).
+fn short_circuit_or(bin: &syn::ExprBinary) -> Clause {
+    match (classify_clause(&bin.left), classify_clause(&bin.right)) {
+        (Clause::Constant(true), _) | (_, Clause::Constant(true)) => Clause::Constant(true),
+        (Clause::Constant(false), Clause::Constant(false)) => Clause::Constant(false),
+        _ => Clause::Unknown,
+    }
+}
+
+/// Dual of [`short_circuit_or`] for `&&`. Reached only when a `&&` sits
+/// somewhere `flatten_and`'s top-level split doesn't already separate it
+/// out (e.g. nested inside an `||`'s operand) -- `flatten_and` handles
+/// the common top-level case by splitting into independent clauses
+/// before any of this runs.
+fn short_circuit_and(bin: &syn::ExprBinary) -> Clause {
+    match (classify_clause(&bin.left), classify_clause(&bin.right)) {
+        (Clause::Constant(false), _) | (_, Clause::Constant(false)) => Clause::Constant(false),
+        (Clause::Constant(true), Clause::Constant(true)) => Clause::Constant(true),
         _ => Clause::Unknown,
     }
 }
@@ -1549,6 +1587,72 @@ mod tests {
         // Receiver isn't a syntactically known Ok/Err/Some/None shape --
         // must fall through to Runtime, not be guessed at.
         assert_eq!(discharge("x.is_ok()"), DischargeResult::Runtime);
+    }
+
+    // ── short-circuit propagation through `||`/`&&` (#114) ──────────────
+
+    #[test]
+    fn a_folded_true_left_of_or_short_circuits_past_an_unprovable_right() {
+        // The DatabaseHeader::parse shape from the sqlite-rs spike:
+        // `result.is_err() || <field checks the solver can't decide>`.
+        // `Err(5).is_err()` alone already folds to `true` (#97); this
+        // asserts the `||` combining it with something undecidable now
+        // also folds, instead of the whole clause staying `Unknown`.
+        assert_eq!(
+            discharge("Err(5).is_err() || x.frobnicate()"),
+            DischargeResult::Proven { layer: Layer::L1 }
+        );
+    }
+
+    #[test]
+    fn a_folded_true_right_of_or_short_circuits_past_an_unprovable_left() {
+        assert_eq!(
+            discharge("x.frobnicate() || Err(5).is_err()"),
+            DischargeResult::Proven { layer: Layer::L1 }
+        );
+    }
+
+    #[test]
+    fn or_stays_unknown_when_neither_side_folds_to_true() {
+        // Both sides undecidable -- correctly stays Runtime, not guessed.
+        assert_eq!(
+            discharge("x.frobnicate() || y.frobnicate()"),
+            DischargeResult::Runtime
+        );
+    }
+
+    #[test]
+    fn or_folds_false_only_when_both_sides_fold_false() {
+        assert!(matches!(
+            discharge("Ok(5).is_err() || Some(5).is_none()"),
+            DischargeResult::Violated { .. }
+        ));
+    }
+
+    #[test]
+    fn or_does_not_fold_false_when_only_one_side_is_provably_false() {
+        // One side false, the other undecidable -- the undecided side
+        // might be true, so the disjunction must stay undecided too.
+        assert_eq!(
+            discharge("Ok(5).is_err() || x.frobnicate()"),
+            DischargeResult::Runtime
+        );
+    }
+
+    #[test]
+    fn a_folded_false_short_circuits_and() {
+        assert!(matches!(
+            discharge("Ok(5).is_err() && x.frobnicate()"),
+            DischargeResult::Violated { .. }
+        ));
+    }
+
+    #[test]
+    fn and_stays_unknown_when_neither_side_folds_to_false() {
+        assert_eq!(
+            discharge("x.frobnicate() && y.frobnicate()"),
+            DischargeResult::Runtime
+        );
     }
 
     #[test]
