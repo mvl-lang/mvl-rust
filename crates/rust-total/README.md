@@ -1,12 +1,17 @@
 # rust-total
 
-`#[mvl::total]` verifier for [mvl-rust](https://github.com/mvl-lang/mvl-rust):
-a syntactic panic-risk scan, a silent-swallow scan for discarded call
-results (spec 003 Requirement 7, #117), plus a `decreases`-measure
-provability check on direct recursion (spec 003 Requirement 3, ADR-0009)
-and on `while`/`loop` (spec 003 Requirement 6, ADR-0010). Only functions
-carrying `#[mvl::total]` are scanned; everything else is untouched. This is
-still weaker than the name suggests — see
+`#[mvl::total]`/`#[mvl::partial]` verifier for
+[mvl-rust](https://github.com/mvl-lang/mvl-rust): a syntactic panic-risk
+scan, a silent-swallow scan for discarded call results (spec 003
+Requirement 7, #117), plus a `decreases`-measure provability check on
+direct recursion (spec 003 Requirement 3, ADR-0009) and on `while`/`loop`
+(spec 003 Requirement 6, ADR-0010).
+
+**Every `fn` item and `impl` method must carry exactly one of
+`#[mvl::total]` or `#[mvl::partial]` (ADR-0012, #117)** — scanning is
+whole-file, not opt-in. Neither present is a build-breaking error demanding
+an explicit declaration; both present is a build-breaking error too. This
+is still weaker than the name suggests — see
 [Known Limitations](https://github.com/mvl-lang/mvl-rust/blob/main/.openspec/specs/003-function-contracts/spec.md#known-limitations)
 for what is and isn't proved, including how this differs from MVL's own
 `total fn`.
@@ -16,6 +21,7 @@ for what is and isn't proved, including how this differs from MVL's own
 | Attribute | Meaning |
 |---|---|
 | `#[mvl::total]` | Claims the function is panic-free and terminates. The tool checks for syntactically obvious panic constructs, silent discarding of a call's result (`let _ = <call>;`, `drop(<call>)`, `.map(\|_\| ())`), and, on direct recursion or a `while`/`loop`, that a decreasing measure is present and provably decreases — it does not prove panic-freedom. |
+| `#[mvl::partial]` | The explicit opposite of `#[mvl::total]` (ADR-0012, #117): opts a function out of every check above. Required on any function not claiming totality — there is no unannotated third state. |
 | `#[mvl::decreases(measure)]` | Required on recursive `#[mvl::total]` functions. `measure` must be a bare parameter identifier; every direct recursive call's argument for it must discharge `<argument> < <measure>` as `Proven` through the native linear-arithmetic solver `rust-refine` also uses (subtraction of a literal or a `requires`-bounded amount qualifies; division/modulo never does) — anything unproven is rejected (ADR-0009). |
 | `mvl::loop_decreases!(measure)` | Required as the first statement of any `while`/`loop` body in a `#[mvl::total]` function. A **function-like macro**, not an attribute — a real attribute macro cannot legally attach to a loop expression on stable Rust (ADR-0010). Same provability rule as `decreases`, applied to the loop's one, unconditional, top-level assignment of `measure`. |
 
@@ -25,10 +31,13 @@ for what is and isn't proved, including how this differs from MVL's own
 cargo mvl-total [--report=human|json|sarif] [--check=panic,termination,swallow] <FILE>...
 ```
 
-`--check` restricts which of the three checks run (default: all). Names are
-`panic` (Requirement 1), `termination` (Requirements 3 and 6, covering both
-recursion and `while`/`loop`), and `swallow` (Requirement 7). An unrecognized
-name is a usage error (exit code 2), not a silent no-op.
+`--check` restricts which of the three checks run against `#[mvl::total]`
+functions (default: all). Names are `panic` (Requirement 1), `termination`
+(Requirements 3 and 6, covering both recursion and `while`/`loop`), and
+`swallow` (Requirement 7). An unrecognized name is a usage error (exit code
+2), not a silent no-op. It does not affect Requirement 8's mandatory
+`total`/`partial` declaration check, which always runs regardless of
+`--check`.
 
 `--report` selects the output format (default: `human`, Gate mode — fails
 the build on any violation). `json` emits the project's own assurance-JSON

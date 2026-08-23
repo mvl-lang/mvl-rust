@@ -16,18 +16,51 @@ fn compliant_total_function_has_no_diagnostics() {
 }
 
 #[test]
-fn non_total_functions_are_not_scanned_at_all() {
-    // Plenty of panic-risk constructs here, but with no #[mvl::total] this
-    // function is entirely out of scope for rust-total.
+fn an_undeclared_function_is_rejected() {
+    // ADR-0012: neither #[mvl::total] nor #[mvl::partial] present is now a
+    // hard error demanding an explicit declaration, not silence.
     let source = r#"
         fn f(v: Vec<i32>, i: usize) -> i32 {
             v[i].checked_add(1).unwrap()
         }
     "#;
     let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0]
+        .message
+        .contains("must be explicitly declared"));
+}
+
+#[test]
+fn a_function_declared_both_total_and_partial_is_rejected() {
+    let source = r#"
+        #[mvl::total]
+        #[mvl::partial]
+        fn f() {}
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0]
+        .message
+        .contains("cannot be both `#[mvl::total]` and `#[mvl::partial]`"));
+}
+
+#[test]
+fn a_partial_function_is_exempt_from_every_check() {
+    // Plenty of panic-risk constructs here, but #[mvl::partial] is the
+    // explicit, declared opt-out -- no diagnostics, same as the old
+    // "unannotated" behavior, but now a stated choice rather than a default.
+    let source = r#"
+        #[mvl::partial]
+        fn f(v: Vec<i32>, i: usize) -> i32 {
+            let _ = v[i].checked_add(1).unwrap();
+            v[i]
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
     assert!(
         diagnostics.is_empty(),
-        "expected no diagnostics for a non-#[total] function, got {diagnostics:?}"
+        "expected no diagnostics for a #[mvl::partial] function, got {diagnostics:?}"
     );
 }
 
@@ -650,7 +683,7 @@ fn a_panicking_total_impl_method_is_flagged() {
 }
 
 #[test]
-fn a_non_total_impl_method_is_not_scanned() {
+fn an_undeclared_impl_method_is_rejected() {
     let source = r#"
         struct Calc;
         impl Calc {
@@ -660,9 +693,27 @@ fn a_non_total_impl_method_is_not_scanned() {
         }
     "#;
     let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0]
+        .message
+        .contains("must be explicitly declared"));
+}
+
+#[test]
+fn a_partial_impl_method_is_exempt() {
+    let source = r#"
+        struct Calc;
+        impl Calc {
+            #[mvl::partial]
+            fn first(v: Vec<i32>) -> i32 {
+                v[0]
+            }
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
     assert!(
         diagnostics.is_empty(),
-        "expected no diagnostics for a non-#[total] impl method, got {diagnostics:?}"
+        "expected no diagnostics for a #[mvl::partial] impl method, got {diagnostics:?}"
     );
 }
 
@@ -753,8 +804,9 @@ fn map_with_real_transform_is_not_rejected() {
 }
 
 #[test]
-fn swallow_check_does_not_scan_non_total_functions() {
+fn swallow_check_does_not_scan_a_partial_function() {
     let source = r#"
+        #[mvl::partial]
         fn f() {
             let _ = write_config();
             drop(write_config());
@@ -763,7 +815,7 @@ fn swallow_check_does_not_scan_non_total_functions() {
     let diagnostics = check_source(source).unwrap();
     assert!(
         diagnostics.is_empty(),
-        "expected no diagnostics for a non-#[total] function, got {diagnostics:?}"
+        "expected no diagnostics for a #[mvl::partial] function, got {diagnostics:?}"
     );
 }
 

@@ -42,17 +42,17 @@ The key words "MUST", "MUST NOT", "SHOULD", "SHOULD NOT", and "MAY" in this docu
 
 Inside a function annotated `#[mvl::total]`, the tool MUST reject `.unwrap()`, `.expect(…)`, the `panic!`/`todo!`/`unimplemented!`/`unreachable!` macros, raw indexing (`xs[i]`), and division or modulo.
 
-The tool MUST NOT scan functions that carry no `#[mvl::total]` annotation.
+**Amended by ADR-0012** (#117), which supersedes this requirement's original "MUST NOT scan an unannotated function" wording — see Requirement 8. A function carrying `#[mvl::partial]` (Requirement 8's other declaration) is exempt from this requirement, exactly as an unannotated function used to be.
 
 **Implementation:** `crates/rust-total/src/checks/panic_freedom.rs`
 
-#### Scenario: An unannotated function is not scanned
+#### Scenario: A partial function is exempt
 
-- GIVEN a function containing `.unwrap()` and no `#[mvl::total]` attribute
+- GIVEN a function containing `.unwrap()` and carrying `#[mvl::partial]`
 - WHEN `cargo mvl-total` runs
-- THEN no diagnostic MUST be reported — totality is opt-in
+- THEN no diagnostic from this requirement MUST be reported — `partial` is the explicit, declared opt-out
 
-**Tests:** `crates/rust-total/tests/totality.rs::non_total_functions_are_not_scanned_at_all`
+**Tests:** `crates/rust-total/tests/totality.rs::a_partial_function_is_exempt_from_every_check`
 
 #### Scenario: A compliant total function produces no diagnostics
 
@@ -281,6 +281,43 @@ Same syntactic-only limitation as Requirement 1: without type information the to
 
 **Tests:** `crates/rust-total/tests/totality.rs::map_discarding_closure_is_rejected`, `::map_with_real_transform_is_not_rejected`
 
+### Requirement 8: Every function must declare exactly one of `#[mvl::total]` or `#[mvl::partial]` [MUST]
+
+**Added by ADR-0012** (#117), amending Requirement 1's original opt-in-by-annotation scoping. The tool MUST scan every `fn` item and `impl` method in the file, whole-file — not only ones carrying `#[mvl::total]`. For each one:
+
+- If neither `#[mvl::total]` nor `#[mvl::partial]` is present, the tool MUST report a `Level::Error` diagnostic demanding an explicit declaration.
+- If both are present, the tool MUST report a `Level::Error` diagnostic rejecting the conflicting declaration.
+- If only `#[mvl::total]` is present, Requirements 1, 2, 3, 6, and 7 apply as written (narrowable via `--check`, #117 Phase 3).
+- If only `#[mvl::partial]` is present, none of Requirements 1, 2, 3, 6, or 7 apply to that function — it is explicitly, permanently exempt.
+
+There is no default in either direction: an absent declaration is always an error, never silently read as `total` or as `partial`.
+
+**Implementation:** `crates/rust-total/src/checks/mod.rs`
+
+#### Scenario: An undeclared function is rejected
+
+- GIVEN a function with neither `#[mvl::total]` nor `#[mvl::partial]`
+- WHEN `cargo mvl-total` runs
+- THEN a `Level::Error` diagnostic MUST be reported demanding an explicit declaration
+
+**Tests:** `crates/rust-total/tests/totality.rs::an_undeclared_function_is_rejected`, `::an_undeclared_impl_method_is_rejected`
+
+#### Scenario: A function declared both total and partial is rejected
+
+- GIVEN a function carrying both `#[mvl::total]` and `#[mvl::partial]`
+- WHEN `cargo mvl-total` runs
+- THEN a `Level::Error` diagnostic MUST be reported
+
+**Tests:** `crates/rust-total/tests/totality.rs::a_function_declared_both_total_and_partial_is_rejected`
+
+#### Scenario: A partial function is exempt from every check
+
+- GIVEN a `#[mvl::partial]` function whose body contains panic-risk constructs, an unproven recursive measure, or a swallowed result
+- WHEN `cargo mvl-total` runs
+- THEN no diagnostic from Requirements 1, 2, 3, 6, or 7 MUST be reported for that function
+
+**Tests:** `crates/rust-total/tests/totality.rs::a_partial_function_is_exempt_from_every_check`, `::a_partial_impl_method_is_exempt`, `::swallow_check_does_not_scan_a_partial_function`
+
 ---
 
 ## Known Limitations
@@ -297,7 +334,7 @@ Same syntactic-only limitation as Requirement 1: without type information the to
 - **Injected runtime assertions would falsify `#[mvl::total]`.** See spec 007 Requirement 5; the collision is introduced by this port and has no upstream answer.
 - **`for` loops aren't covered by Requirement 6.** Only `while` and `loop` are visited. A `for i in 0..n` loop terminates by construction in ordinary use and likely needs a different treatment (recognizing bounded-range iteration) rather than a `loop_decreases!` marker — a real gap, deferred rather than forced into this shape (ADR-0010 Consequences).
 - **Requirement 6 cannot compose multiple mutations of the same measure.** A loop that decrements a measure in one branch and increments it in another is rejected outright even when a human could argue it terminates on average. Conservative by design, not a scoped shape-list gap — closing it needs real per-path reasoning.
-- **Requirement 6's marker macro is unenforced if simply omitted-and-not-caught by a reviewer** in the sense that nothing about ordinary Rust requires a loop to carry it — the same is true of `#[mvl::total]` itself not being required on any function. This is opt-in by design (ADR-0001), not a defect specific to loops.
+- **Resolved by ADR-0012 (#117).** This limitation previously read: *"Requirement 6's marker macro is unenforced if simply omitted-and-not-caught by a reviewer... the same is true of `#[mvl::total]` itself not being required on any function. This is opt-in by design (ADR-0001), not a defect specific to loops."* Requirement 8 closes exactly this: a function that was never given `#[mvl::total]` (or `#[mvl::partial]`) is no longer silently unscanned — it's a diagnostic error. The marker macro itself, once inside a `#[mvl::total]` function's loop, was always enforced (a missing `loop_decreases!` is Requirement 6's own rejected case); the actual gap was the function-level annotation being skippable, and that's what's fixed.
 
 ---
 
@@ -305,8 +342,8 @@ Same syntactic-only limitation as Requirement 1: without type information the to
 
 | Layer | Artefact |
 |---|---|
-| **Intent** | #6 (`rust-total`), #9 (`rust-effect`, v1 scope), #45 (purity signal — blocked by Req 4, closed as won't-fix per ADR-0008 §6), #82 (loop termination gap), #117 (Requirement 7, silent-swallow checking) |
+| **Intent** | #6 (`rust-total`), #9 (`rust-effect`, v1 scope), #45 (purity signal — blocked by Req 4, closed as won't-fix per ADR-0008 §6), #82 (loop termination gap), #117 (Requirement 7 silent-swallow checking; Requirement 8 mandatory declaration) |
 | **Specification** | this document |
-| **Decision** | ADR-0003; ADR-0001 §1 (attribute carrier), §5 (greenfield rule); ADR-0009 (Requirement 3 amendment); ADR-0010 (Requirement 6) |
+| **Decision** | ADR-0003; ADR-0001 §1 (attribute carrier), §5 (greenfield rule); ADR-0009 (Requirement 3 amendment); ADR-0010 (Requirement 6); ADR-0012 (Requirement 1 amendment; Requirement 8) |
 | **Program** | `crates/rust-total/src/checks/`, `crates/rust-effect/src/checks.rs` |
-| **Evidence** | `crates/rust-total/tests/totality.rs` (48 tests), `crates/rust-effect/src/checks.rs::tests` (9 tests), per-tool `tests/verification_mode.rs`, `examples/rust-total-demo/`, `examples/rust-effect-demo/` |
+| **Evidence** | `crates/rust-total/tests/totality.rs` (51 tests), `crates/rust-effect/src/checks.rs::tests` (9 tests), per-tool `tests/verification_mode.rs`, `examples/rust-total-demo/`, `examples/rust-effect-demo/` |

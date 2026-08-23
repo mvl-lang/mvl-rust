@@ -10,26 +10,39 @@ fn parse_fn_attrs(src: &str) -> Vec<Attribute> {
 }
 
 #[test]
-fn refine_and_partial_are_no_longer_recognised() {
-    // Removed in #54. Both were parsed and read by no tool, so an author who
-    // wrote one got silence rather than verification -- and `refine` was the
+fn refine_is_no_longer_recognised() {
+    // Removed in #54. Parsed and read by no tool, so an author who wrote it
+    // got silence rather than verification -- and `refine` was the
     // attribute spec 001 advertised as the headline example. `requires`/
     // `ensures` cover everything `refine` was for.
     //
-    // They now fall through to `None`, the same as any third-party attribute:
-    // unrecognised rather than recognised-and-ignored. Re-adding either with an
+    // It now falls through to `None`, the same as any third-party attribute:
+    // unrecognised rather than recognised-and-ignored. Re-adding it with an
     // implementation is cheap; an inert attribute is worse than an absent one.
     for src in [
         "#[refine(x >= 0)] fn f(x: i32) -> i32 { x }",
         "#[mvl::refine(x >= 0)] fn f(x: i32) -> i32 { x }",
-        "#[partial] fn f() {}",
-        "#[mvl::partial] fn f() {}",
     ] {
         let attrs = parse_fn_attrs(src);
         assert!(
             MvlAttr::try_from_attribute(&attrs[0]).is_none(),
             "`{src}` must not be recognised"
         );
+    }
+}
+
+#[test]
+fn parses_partial_attr_with_no_arguments() {
+    // `partial` was removed alongside `refine` in #54 (dead weight, read by
+    // no tool) and re-added by ADR-0012 (#117) with a real, load-bearing
+    // meaning: the explicit opposite of `#[mvl::total]`, not the inert
+    // attribute #54 removed.
+    for src in ["#[partial] fn f() {}", "#[mvl::partial] fn f() {}"] {
+        let attrs = parse_fn_attrs(src);
+        assert!(matches!(
+            MvlAttr::try_from_attribute(&attrs[0]),
+            Some(Ok(MvlAttr::Partial(_)))
+        ));
     }
 }
 

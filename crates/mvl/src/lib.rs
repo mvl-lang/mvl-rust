@@ -69,7 +69,7 @@
 //! for which checker enforces which attribute above.
 
 pub use mvl_macros::{
-    decreases, effect, ensures, label, loop_decreases, relabel, requires, total, unchecked,
+    decreases, effect, ensures, label, loop_decreases, partial, relabel, requires, total, unchecked,
 };
 
 use std::marker::PhantomData;

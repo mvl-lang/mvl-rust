@@ -22,10 +22,10 @@
 //! attribute inert. See the `inject` module for the mechanism and ADR-0006 §4–§5 for
 //! why enforcement — rather than reporting alone — is what makes Γ sound.
 //!
-//! **Everything else stays a pass-through.** `total`, `decreases`, `effect`,
-//! `label` and `relabel` are read by tools that report; none of them has a
-//! runtime obligation to enforce. They discard their argument tokens exactly
-//! as before.
+//! **Everything else stays a pass-through.** `total`, `partial`,
+//! `decreases`, `effect`, `label` and `relabel` are read by tools that
+//! report; none of them has a runtime obligation to enforce. They discard
+//! their argument tokens exactly as before.
 //!
 //! The consequence worth stating plainly: enforcement now requires the `mvl`
 //! crate to actually be a dependency. ADR-0001 §2 promised the facade was "a
@@ -56,6 +56,13 @@ macro_rules! passthrough_attr {
 passthrough_attr!(
     total,
     "Pass-through for `#[mvl::total]`. See the crate docs."
+);
+passthrough_attr!(
+    partial,
+    "Pass-through for `#[mvl::partial]` (#117, ADR-0012) — the explicit \
+     opposite of `#[mvl::total]`. `rust-total` now requires every function \
+     to carry exactly one of the two; there is no third, unannotated state. \
+     See the crate docs."
 );
 passthrough_attr!(
     decreases,

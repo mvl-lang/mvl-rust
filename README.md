@@ -19,7 +19,7 @@ Two facets, one workspace:
 | Crate | `cargo mvl` subcommand | Checks | Attribute(s) |
 |---|---|---|---|
 | [`rust-limit`](crates/rust-limit) | `limit` | Code stays inside the Rust subset the other tools can verify (no `unsafe`, no `dyn Trait`, ...) | — (whole-file) |
-| [`rust-total`](crates/rust-total) | `total` | Syntactic panic-risk scan, plus a `decreases`-measure provability check on direct recursion — see [Known Limitations](.openspec/specs/003-function-contracts/spec.md#known-limitations) | `#[mvl::total]`, `#[mvl::decreases(measure)]` |
+| [`rust-total`](crates/rust-total) | `total` | Syntactic panic-risk scan, plus a `decreases`-measure provability check on direct recursion — see [Known Limitations](.openspec/specs/003-function-contracts/spec.md#known-limitations) | `#[mvl::total]` or `#[mvl::partial]` (whole-file, one required per function — ADR-0012), `#[mvl::decreases(measure)]` |
 | [`rust-refine`](crates/rust-refine) | `refine` | Preconditions/postconditions hold, proved at compile time where possible | `#[mvl::requires(pred)]`, `#[mvl::ensures(pred)]` |
 | [`rust-effect`](crates/rust-effect) | `effect` | A caller declares every effect its callees declare | `#[mvl::effect(list)]` |
 | [`rust-ifc`](crates/rust-ifc) | `ifc` | Labeled data is only declassified through a declared transition | `#[mvl::label]`, `#[mvl::relabel(from, to, audit)]` |
@@ -38,9 +38,12 @@ cargo install cargo-mvl
 cargo mvl check src/main.rs
 ```
 
-Add attributes to the functions you want checked, then re-run. Nothing about
-unannotated code changes — the tools are opt-in per function or per attribute
-(the qualified-subset lint, `rust-limit`, is the one whole-file check).
+Add attributes to the functions you want checked, then re-run. Most tools are
+opt-in per function or per attribute; `rust-limit` (the qualified-subset
+lint) and `rust-total` (panic-freedom/termination) are both whole-file —
+`rust-total` requires every function to explicitly declare `#[mvl::total]`
+or `#[mvl::partial]` (ADR-0012), so adopting it means annotating every
+function in a scanned file, not just the ones you want checked.
 
 ## Docs
 

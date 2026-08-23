@@ -67,7 +67,10 @@ fn ifc_runs_for_real_and_finds_a_violation() {
 
 #[test]
 fn clean_source_has_no_diagnostics_from_implemented_tools() {
-    let results = check_source("fn f() -> i32 { 1 }");
+    // ADR-0012: `total` now requires an explicit #[mvl::total]/#[mvl::partial]
+    // declaration on every function, so a "clean" fixture needs one to stay
+    // clean under `total` too.
+    let results = check_source("#[mvl::total] fn f() -> i32 { 1 }");
     for tool in ["limit", "total", "refine", "effect", "ifc"] {
         let result = results.iter().find(|r| r.tool == tool).unwrap();
         match &result.outcome {

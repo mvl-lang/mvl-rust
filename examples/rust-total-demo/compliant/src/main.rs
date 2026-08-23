@@ -75,6 +75,11 @@ fn next(light: &TrafficLight) -> TrafficLight {
     }
 }
 
+// ADR-0012: every function `cargo-mvl-total` scans must be explicitly
+// declared -- `main` here is orchestration, not something this demo is
+// making a totality claim about, so it's `#[mvl::partial]` rather than
+// `#[mvl::total]`.
+#[mvl::partial]
 fn main() {
     println!("5! = {}", factorial(5));
     println!("countdown(9, 3) = {}", countdown(9, 3));
