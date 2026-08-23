@@ -8,6 +8,12 @@ below backfills everything merged while the workspace sat at that version.
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-08-23
+
+### Fixed
+
+- `rust-refine` (#94): an unsigned parameter's implicit `>= 0` bound never reached the solver's hypothesis context Γ, so a predicate provable only via that bound fell all the way to `runtime` even though it was pure, closed linear arithmetic. `FnFacts` now tracks which parameters are declared `u8`/`u16`/`u32`/`u64`/`u128`/`usize` (matched conservatively on the type path's last segment) and synthesizes `param >= 0` for each, composing with any explicit `requires` clauses already present.
+
 ## [0.5.2] - 2026-08-23
 
 ### Fixed
