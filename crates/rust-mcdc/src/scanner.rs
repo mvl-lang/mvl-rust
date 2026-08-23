@@ -49,6 +49,10 @@ pub struct Decision {
     pub leaves: Vec<Span>,
     pub ops: Vec<DecisionOp>,
     pub compiler_void: bool,
+    /// `true` if this compiler-void `match` is exhaustive because of a
+    /// `_`/catch-all arm rather than every variant being named. Always
+    /// `false` for a non-`match` decision.
+    pub wildcard_risk: bool,
 }
 
 impl Decision {
@@ -85,6 +89,7 @@ impl Decision {
             conditions: self.leaves.len(),
             vectors_required: self.vectors_required(),
             compiler_void: self.compiler_void,
+            wildcard_risk: self.wildcard_risk,
         }
     }
 }
@@ -140,7 +145,25 @@ fn boolean_decision(source: &str, cond: &Expr) -> Option<Decision> {
         leaves: leaves.iter().map(|e| e.span()).collect(),
         ops,
         compiler_void: false,
+        wildcard_risk: false,
     })
+}
+
+/// A `_` arm makes a `match` exhaustive without naming every variant.
+/// `syn` has no type info, so this can't distinguish an enum's remaining
+/// variants from any other scrutinee type; it conservatively flags any `_`
+/// arm regardless (see module doc).
+///
+/// Deliberately scoped to `Pat::Wild` only: an unguarded bound-name arm
+/// (e.g. `other => ...`) is exhaustive the same way `_` is, but `syn`
+/// parses *every* bare identifier pattern as `Pat::Ident` -- including a
+/// unit enum variant matched by name (`None => ...`) -- so treating
+/// `Pat::Ident` as catch-all would false-positive on ordinary, fully-named
+/// exhaustive matches. Flagging only the unambiguous `_` case trades a
+/// missed rare case (bound-name catch-alls) for no false positives on the
+/// common one.
+fn is_wildcard_arm(arm: &syn::Arm) -> bool {
+    arm.guard.is_none() && matches!(arm.pat, syn::Pat::Wild(_))
 }
 
 impl<'ast> Visit<'ast> for Collector<'_> {
@@ -167,6 +190,7 @@ impl<'ast> Visit<'ast> for Collector<'_> {
             leaves: Vec::new(),
             ops: Vec::new(),
             compiler_void: true,
+            wildcard_risk: node.arms.iter().any(is_wildcard_arm),
         });
         for arm in &node.arms {
             if let Some((_, guard)) = &arm.guard {
@@ -240,8 +264,46 @@ mod tests {
         assert_eq!(decisions.len(), 2);
         let match_decision = decisions.iter().find(|d| d.compiler_void).unwrap();
         assert_eq!(match_decision.vectors_required(), 0);
+        assert!(match_decision.wildcard_risk);
         let guard_decision = decisions.iter().find(|d| !d.compiler_void).unwrap();
         assert_eq!(guard_decision.leaves.len(), 1);
+    }
+
+    #[test]
+    fn fully_named_exhaustive_match_has_no_wildcard_risk() {
+        let source = "fn f(x: Option<i32>) { match x { Some(n) => n, None => 0 } }";
+        let decisions = scan_source(source).unwrap();
+        assert_eq!(decisions.len(), 1);
+        assert!(decisions[0].compiler_void);
+        assert!(!decisions[0].wildcard_risk);
+    }
+
+    #[test]
+    fn wildcard_arm_flags_totality_risk() {
+        let source = "fn f(x: i32) { match x { 0 => 1, _ => 0 } }";
+        let decisions = scan_source(source).unwrap();
+        assert_eq!(decisions.len(), 1);
+        assert!(decisions[0].compiler_void);
+        assert!(decisions[0].wildcard_risk);
+    }
+
+    #[test]
+    fn unguarded_catch_all_binding_is_not_detected_as_wildcard_risk() {
+        // Known scope limit (see is_wildcard_arm doc): syn can't tell a
+        // bound-name catch-all from a legitimately named unit variant, so
+        // only the unambiguous `_` is flagged.
+        let source = "fn f(x: i32) { match x { 0 => 1, other => other } }";
+        let decisions = scan_source(source).unwrap();
+        assert!(!decisions[0].wildcard_risk);
+    }
+
+    #[test]
+    fn guarded_wildcard_arm_is_not_wildcard_risk_on_its_own() {
+        let source = "fn f(x: i32, a: bool) { match x { 0 => 1, _ if a => 0, _ => 1 } }";
+        let decisions = scan_source(source).unwrap();
+        let match_decision = decisions.iter().find(|d| d.compiler_void).unwrap();
+        // still flagged, but via the unconditional `_`, not the guarded one
+        assert!(match_decision.wildcard_risk);
     }
 
     #[test]
