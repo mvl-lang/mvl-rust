@@ -34,14 +34,6 @@ help:
 	@echo "  compile            fail fast: does the workspace compile at all?"
 	@echo "  coverage           cargo llvm-cov line/function coverage (cached in target/llvm-cov.json)"
 	@echo "  clean              cargo clean (workspace + example crates)"
-	@echo ""
-	@echo "MC/DC (rust-mcdc, #85) -- scan -> generate -> run -> harvest:"
-	@echo "  mcdc               full pipeline: mcdc-scan mcdc-run mcdc-harvest (MCDC_SRC=<file/dir>)"
-	@echo "  mcdc-scan          obligation scan -> target/mcdc/obligations.json"
-	@echo "  mcdc-run           cargo test (stable, plain-text libtest output)"
-	@echo "  mcdc-harvest       joins obligations.json against tagged (mcdc__<id>__v<N>) test outcomes"
-	@echo "  mcdc-generate      lists obligations + the tagging convention, for a human/Claude to write tests against"
-	@echo "  mcdc-discharge     mutation-testing discharge instead of tagging (MCDC_SRC=<file>, expensive)"
 
 build:
 	cargo build --workspace --all-targets
