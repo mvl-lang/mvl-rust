@@ -22,13 +22,21 @@ for what is and isn't proved, including how this differs from MVL's own
 ## CLI
 
 ```
-cargo mvl-total [--emit-verification-json] [--check=panic,termination,swallow] <FILE>...
+cargo mvl-total [--report=human|json|sarif] [--check=panic,termination,swallow] <FILE>...
 ```
 
 `--check` restricts which of the three checks run (default: all). Names are
 `panic` (Requirement 1), `termination` (Requirements 3 and 6, covering both
 recursion and `while`/`loop`), and `swallow` (Requirement 7). An unrecognized
 name is a usage error (exit code 2), not a silent no-op.
+
+`--report` selects the output format (default: `human`, Gate mode — fails
+the build on any violation). `json` emits the project's own assurance-JSON
+schema (spec Requirement 14); `sarif` emits a minimal SARIF 2.1.0 log for
+CI tools that consume that format (e.g. GitHub code scanning). Both `json`
+and `sarif` are non-gating "views" of the same analysis Gate mode runs —
+they always exit `0`. `--emit-verification-json` remains a supported alias
+for `--report=json`.
 
 ## Quick example
 
