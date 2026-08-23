@@ -8,6 +8,12 @@ below backfills everything merged while the workspace sat at that version.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-23
+
+### Added
+
+- `rust-refine` (#110, ADR-0011): the resolved-pure closure licence — a same-file call to a function carrying an explicit, empty `#[mvl::effect()]`, with zero unresolved same-file calls (computed identically to `rust-effect`'s `CallVisitor`) and a non-`f32`/`f64` return type, is rewritten into a single opaque symbol before the obligation reaches the solver. Two occurrences of the same call converge on the same symbol, so L1 structural reflexivity can now discharge terms like `span(gen(), gen())` against `requires(lo <= hi)` — ADR-0008 §3's own motivating example — instead of falling to a runtime check. The rewrite fires at the two call-substitution lookup sites (`obligations_for_call`/`propagate_postcondition`); `native.rs`'s `is_call_free` and the solver it gates are untouched. The licence assumes `rust-limit` and `rust-effect` have already gated the file (`cargo mvl check`'s fixed order) — documented as a caller precondition rather than code-enforced, since `rust-refine` has no channel to receive that state and threading one in would be new cross-tool coupling this workspace has otherwise avoided.
+
 ## [0.7.1] - 2026-08-23
 
 ### Changed

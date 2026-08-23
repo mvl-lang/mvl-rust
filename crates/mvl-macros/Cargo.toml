@@ -12,7 +12,7 @@ readme = "README.md"
 proc-macro = true
 
 [dependencies]
-mvl-rust-core = { path = "../mvl-rust-core", version = "0.7.0" }
+mvl-rust-core = { path = "../mvl-rust-core", version = "0.8.0" }
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full", "visit-mut", "parsing", "printing", "extra-traits"] }
