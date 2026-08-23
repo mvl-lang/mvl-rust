@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use mvl_rust_core::assurance::report::{build_check_report, diagnostic_to_record};
 use mvl_rust_core::assurance::schema::DiagnosticRecord;
 use rust_total::checks;
+use rust_total::checks::CheckSet;
 
 fn main() -> ExitCode {
     let mut args: Vec<String> = env::args().skip(1).collect();
@@ -20,19 +21,34 @@ fn main() -> ExitCode {
     let emit_verification_json = args.iter().any(|arg| arg == "--emit-verification-json");
     args.retain(|arg| arg != "--emit-verification-json");
 
+    let check_flag = args.iter().find_map(|arg| arg.strip_prefix("--check="));
+    let checks = match check_flag {
+        Some(spec) => match CheckSet::parse(spec) {
+            Ok(set) => set,
+            Err(err) => {
+                eprintln!("error: {err}");
+                return ExitCode::from(2);
+            }
+        },
+        None => CheckSet::ALL,
+    };
+    args.retain(|arg| !arg.starts_with("--check="));
+
     if args.is_empty() {
-        eprintln!("usage: cargo mvl-total [--emit-verification-json] <FILE>...");
+        eprintln!(
+            "usage: cargo mvl-total [--emit-verification-json] [--check=panic,termination,swallow] <FILE>..."
+        );
         return ExitCode::from(2);
     }
 
     if emit_verification_json {
-        run_verification_mode(&args)
+        run_verification_mode(&args, checks)
     } else {
-        run_gate_mode(&args)
+        run_gate_mode(&args, checks)
     }
 }
 
-fn run_gate_mode(args: &[String]) -> ExitCode {
+fn run_gate_mode(args: &[String], checks: CheckSet) -> ExitCode {
     let mut had_violations = false;
 
     for arg in args {
@@ -45,7 +61,7 @@ fn run_gate_mode(args: &[String]) -> ExitCode {
             }
         };
 
-        let diagnostics = match checks::check_source(&source) {
+        let diagnostics = match checks::check_source_with(&source, checks) {
             Ok(diagnostics) => diagnostics,
             Err(err) => {
                 eprintln!("error: {err}");
@@ -71,13 +87,13 @@ fn run_gate_mode(args: &[String]) -> ExitCode {
 /// re-run, not a different code path — and never fails the build: even a
 /// read/parse error is captured as a diagnostic in the emitted report
 /// rather than aborting (spec Requirement 14's contract).
-fn run_verification_mode(args: &[String]) -> ExitCode {
+fn run_verification_mode(args: &[String], checks: CheckSet) -> ExitCode {
     let mut records = Vec::new();
 
     for arg in args {
         let path = PathBuf::from(arg);
         match std::fs::read_to_string(&path) {
-            Ok(source) => match checks::check_source(&source) {
+            Ok(source) => match checks::check_source_with(&source, checks) {
                 Ok(diagnostics) => {
                     records.extend(diagnostics.iter().map(|d| diagnostic_to_record(d, arg)));
                 }

@@ -1,4 +1,4 @@
-use rust_total::checks::check_source;
+use rust_total::checks::{check_source, check_source_with, CheckSet};
 
 #[test]
 fn compliant_total_function_has_no_diagnostics() {
@@ -732,7 +732,9 @@ fn map_discarding_closure_is_rejected() {
     "#;
     let diagnostics = check_source(source).unwrap();
     assert_eq!(diagnostics.len(), 1);
-    assert!(diagnostics[0].message.contains("discards the wrapped value"));
+    assert!(diagnostics[0]
+        .message
+        .contains("discards the wrapped value"));
 }
 
 #[test]
@@ -763,4 +765,68 @@ fn swallow_check_does_not_scan_non_total_functions() {
         diagnostics.is_empty(),
         "expected no diagnostics for a non-#[total] function, got {diagnostics:?}"
     );
+}
+
+#[test]
+fn check_set_parse_accepts_a_single_name() {
+    let set = CheckSet::parse("panic").unwrap();
+    assert!(set.panic);
+    assert!(!set.termination);
+    assert!(!set.swallow);
+}
+
+#[test]
+fn check_set_parse_accepts_a_comma_separated_subset() {
+    let set = CheckSet::parse("termination,swallow").unwrap();
+    assert!(!set.panic);
+    assert!(set.termination);
+    assert!(set.swallow);
+}
+
+#[test]
+fn check_set_parse_rejects_an_unknown_name() {
+    assert!(CheckSet::parse("pnaic").is_err());
+}
+
+#[test]
+fn check_source_with_panic_only_skips_swallow_violations() {
+    let source = r#"
+        #[mvl::total]
+        fn f() {
+            let _ = write_config();
+            some_call().unwrap();
+        }
+    "#;
+    let diagnostics = check_source_with(source, CheckSet::parse("panic").unwrap()).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].message.contains("unwrap"));
+}
+
+#[test]
+fn check_source_with_swallow_only_skips_panic_violations() {
+    let source = r#"
+        #[mvl::total]
+        fn f() {
+            let _ = write_config();
+            some_call().unwrap();
+        }
+    "#;
+    let diagnostics = check_source_with(source, CheckSet::parse("swallow").unwrap()).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].message.contains("silently discards"));
+}
+
+#[test]
+fn check_source_with_all_matches_check_source() {
+    let source = r#"
+        #[mvl::total]
+        fn f() {
+            let _ = write_config();
+            some_call().unwrap();
+        }
+    "#;
+    let via_default = check_source(source).unwrap();
+    let via_explicit_all = check_source_with(source, CheckSet::ALL).unwrap();
+    assert_eq!(via_default.len(), via_explicit_all.len());
+    assert_eq!(via_default.len(), 2);
 }

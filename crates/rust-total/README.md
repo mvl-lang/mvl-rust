@@ -19,6 +19,17 @@ for what is and isn't proved, including how this differs from MVL's own
 | `#[mvl::decreases(measure)]` | Required on recursive `#[mvl::total]` functions. `measure` must be a bare parameter identifier; every direct recursive call's argument for it must discharge `<argument> < <measure>` as `Proven` through the native linear-arithmetic solver `rust-refine` also uses (subtraction of a literal or a `requires`-bounded amount qualifies; division/modulo never does) — anything unproven is rejected (ADR-0009). |
 | `mvl::loop_decreases!(measure)` | Required as the first statement of any `while`/`loop` body in a `#[mvl::total]` function. A **function-like macro**, not an attribute — a real attribute macro cannot legally attach to a loop expression on stable Rust (ADR-0010). Same provability rule as `decreases`, applied to the loop's one, unconditional, top-level assignment of `measure`. |
 
+## CLI
+
+```
+cargo mvl-total [--emit-verification-json] [--check=panic,termination,swallow] <FILE>...
+```
+
+`--check` restricts which of the three checks run (default: all). Names are
+`panic` (Requirement 1), `termination` (Requirements 3 and 6, covering both
+recursion and `while`/`loop`), and `swallow` (Requirement 7). An unrecognized
+name is a usage error (exit code 2), not a silent no-op.
+
 ## Quick example
 
 ```rust

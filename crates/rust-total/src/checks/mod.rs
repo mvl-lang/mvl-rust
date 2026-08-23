@@ -49,27 +49,75 @@ pub enum CheckError {
     Parse(#[source] syn::Error),
 }
 
+/// Which of the three checks to run — the `--check` CLI flag's parsed form.
+/// Defaults to all three; a subset is opt-in narrowing, never widening.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CheckSet {
+    pub panic: bool,
+    pub termination: bool,
+    pub swallow: bool,
+}
+
+impl CheckSet {
+    pub const ALL: CheckSet = CheckSet {
+        panic: true,
+        termination: true,
+        swallow: true,
+    };
+
+    /// Parses a comma-separated `--check` value, e.g. `"panic,swallow"`.
+    /// An unrecognized name is an error rather than silently ignored, so a
+    /// typo (`--check=pnaic`) doesn't quietly turn into "no checks".
+    pub fn parse(spec: &str) -> Result<CheckSet, String> {
+        let mut set = CheckSet {
+            panic: false,
+            termination: false,
+            swallow: false,
+        };
+        for name in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            match name {
+                "panic" => set.panic = true,
+                "termination" => set.termination = true,
+                "swallow" => set.swallow = true,
+                other => return Err(format!("unknown --check value: `{other}`")),
+            }
+        }
+        Ok(set)
+    }
+}
+
 /// Reads and checks the file at `path`, returning every violation found
 /// (empty if fully compliant, or if it uses no `#[mvl::total]` functions).
 pub fn check_file(path: &Path) -> Result<Vec<Diagnostic>, CheckError> {
+    check_file_with(path, CheckSet::ALL)
+}
+
+/// Same as [`check_file`], scoped to a subset of checks.
+pub fn check_file_with(path: &Path, checks: CheckSet) -> Result<Vec<Diagnostic>, CheckError> {
     let source = std::fs::read_to_string(path).map_err(|source| CheckError::Io {
         path: path.display().to_string(),
         source,
     })?;
-    check_source(&source)
+    check_source_with(&source, checks)
 }
 
-/// Runs the checks against already-loaded source text.
+/// Runs all checks against already-loaded source text.
 pub fn check_source(source: &str) -> Result<Vec<Diagnostic>, CheckError> {
+    check_source_with(source, CheckSet::ALL)
+}
+
+/// Same as [`check_source`], scoped to a subset of checks.
+pub fn check_source_with(source: &str, checks: CheckSet) -> Result<Vec<Diagnostic>, CheckError> {
     let file: syn::File = syn::parse_str(source).map_err(CheckError::Parse)?;
     let mut diagnostics = Vec::new();
     let mut finder = TotalFnFinder {
         diagnostics: &mut diagnostics,
+        checks,
     };
     finder.visit_file(&file);
 
     for (_name, method) in impl_methods(&file) {
-        check_total_item(&method_as_item_fn(method), &mut diagnostics);
+        check_total_item(&method_as_item_fn(method), checks, &mut diagnostics);
     }
     Ok(diagnostics)
 }
@@ -89,13 +137,19 @@ fn method_as_item_fn(method: &syn::ImplItemFn) -> ItemFn {
 /// The same `#[mvl::total]` dispatch [`TotalFnFinder::visit_item_fn`] does,
 /// factored out so the impl-method loop above and the free-function
 /// visitor share one call site rather than drifting apart.
-fn check_total_item(item_fn: &ItemFn, diagnostics: &mut Vec<Diagnostic>) {
+fn check_total_item(item_fn: &ItemFn, checks: CheckSet, diagnostics: &mut Vec<Diagnostic>) {
     let (is_total, decreases, requires) = total_decreases_and_requires(&item_fn.attrs);
     if is_total {
-        panic_freedom::check(item_fn, diagnostics);
-        termination::check(item_fn, decreases.as_ref(), &requires, diagnostics);
-        loop_termination::check(item_fn, &requires, diagnostics);
-        swallow::check(item_fn, diagnostics);
+        if checks.panic {
+            panic_freedom::check(item_fn, diagnostics);
+        }
+        if checks.termination {
+            termination::check(item_fn, decreases.as_ref(), &requires, diagnostics);
+            loop_termination::check(item_fn, &requires, diagnostics);
+        }
+        if checks.swallow {
+            swallow::check(item_fn, diagnostics);
+        }
     }
 }
 
@@ -125,11 +179,12 @@ fn total_decreases_and_requires(attrs: &[Attribute]) -> (bool, Option<Expr>, Vec
 
 struct TotalFnFinder<'d> {
     diagnostics: &'d mut Vec<Diagnostic>,
+    checks: CheckSet,
 }
 
 impl<'ast> Visit<'ast> for TotalFnFinder<'_> {
     fn visit_item_fn(&mut self, node: &'ast ItemFn) {
-        check_total_item(node, self.diagnostics);
+        check_total_item(node, self.checks, self.diagnostics);
         visit::visit_item_fn(self, node);
     }
 }
