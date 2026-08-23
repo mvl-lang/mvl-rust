@@ -866,19 +866,19 @@ impl Constraint {
 }
 
 /// Extracts a linear integer term from `expr`. Returns `None` for
-/// anything non-linear (function calls, variable × variable, field
-/// access, ...) -- the same bail-conservatively contract as this
-/// backend's existing `int_value`/`ident_name` helpers, generalized to a
-/// full linear combination rather than a single literal or bare ident.
+/// anything non-linear (function calls, variable × variable, ...) -- the
+/// same bail-conservatively contract as this backend's existing
+/// `int_value`/`ident_name` helpers, generalized to a full linear
+/// combination rather than a single literal or bare ident. A field
+/// projection on a bare-path receiver (`self.x`, `param.x`) is treated as
+/// a variable in its own right via [`variable_key`] (#95); anything
+/// deeper (`self.a.b`, `xs[i].field`) still bails.
 fn linterm_from_expr(expr: &Expr) -> Option<LinTerm> {
     match expr {
         Expr::Lit(ExprLit {
             lit: Lit::Int(int), ..
         }) => int.base10_parse::<i128>().ok().map(LinTerm::constant),
-        Expr::Path(path) if path.qself.is_none() => path
-            .path
-            .get_ident()
-            .map(|ident| LinTerm::var(ident.to_string())),
+        Expr::Path(_) | Expr::Field(_) => variable_key(expr).map(LinTerm::var),
         Expr::Unary(ExprUnary {
             op: UnOp::Neg(_),
             expr,
@@ -1342,13 +1342,42 @@ fn constant_fold(op: &BinOp, l: i128, r: i128) -> Option<bool> {
 /// Single bare identifier (`x`, `result`, ...) — not a path with multiple
 /// segments, since those aren't ordinary local variables.
 fn ident_name(expr: &Expr) -> Option<String> {
+    variable_key(expr)
+}
+
+/// The Γ-side variable key `expr` is bound as, if any — the single choke
+/// point [`ident_name`] (L2) and [`linterm_from_expr`] (L4) both go
+/// through so a hypothesis and a goal always agree on what counts as "the
+/// same variable" (#95).
+///
+/// Two shapes: a bare identifier (`x`, `result`, ...), keyed as itself; or
+/// one level of field projection on a bare-path receiver (`self.x`,
+/// `param.x`), keyed as `"receiver.field"`. Deliberately conservative,
+/// matching this backend's bail-on-anything-else convention elsewhere: a
+/// two-level chain (`self.a.b`) or an indexed receiver (`xs[i].field`)
+/// still returns `None`, since a receiver that isn't a bare path could
+/// alias in ways this syntactic pass has no way to reason about.
+fn variable_key(expr: &Expr) -> Option<String> {
     match expr {
         Expr::Path(path) if path.qself.is_none() => {
             let segment = path.path.get_ident()?;
             Some(segment.to_string())
         }
-        Expr::Paren(paren) => ident_name(&paren.expr),
-        Expr::Group(group) => ident_name(&group.expr),
+        Expr::Field(field) => {
+            let syn::Member::Named(member) = &field.member else {
+                return None;
+            };
+            let Expr::Path(receiver) = ungroup(&field.base) else {
+                return None;
+            };
+            if receiver.qself.is_some() {
+                return None;
+            }
+            let receiver = receiver.path.get_ident()?;
+            Some(format!("{receiver}.{member}"))
+        }
+        Expr::Paren(paren) => variable_key(&paren.expr),
+        Expr::Group(group) => variable_key(&group.expr),
         _ => None,
     }
 }
@@ -1456,6 +1485,43 @@ mod tests {
     #[test]
     fn not_equal_is_runtime() {
         assert_eq!(discharge("x != 5"), DischargeResult::Runtime);
+    }
+
+    #[test]
+    fn field_projection_on_a_bare_receiver_is_a_bindable_variable() {
+        // `self.x` occurring twice must be keyed as the same variable for
+        // the contradiction to be seen at all -- if it were treated as an
+        // opaque, un-keyed term this would fall to `Runtime` instead (#95).
+        assert!(matches!(
+            discharge("self.x == 5 && self.x == 6"),
+            DischargeResult::Violated { .. }
+        ));
+    }
+
+    #[test]
+    fn field_projection_supports_interval_bounds() {
+        assert_eq!(
+            discharge("self.page_size >= 0 && self.page_size < 100"),
+            DischargeResult::Proven { layer: Layer::L2 }
+        );
+    }
+
+    #[test]
+    fn a_two_level_field_chain_still_falls_to_runtime() {
+        // Deliberate scope boundary (#95): only one level of projection on
+        // a bare-path receiver is recognized.
+        assert_eq!(
+            discharge("self.a.b == 5 && self.a.b == 6"),
+            DischargeResult::Runtime
+        );
+    }
+
+    #[test]
+    fn an_indexed_receiver_still_falls_to_runtime() {
+        assert_eq!(
+            discharge("xs[i].field == 5 && xs[i].field == 6"),
+            DischargeResult::Runtime
+        );
     }
 
     #[test]
