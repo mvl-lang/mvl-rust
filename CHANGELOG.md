@@ -8,6 +8,12 @@ below backfills everything merged while the workspace sat at that version.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-23
+
+### Added
+
+- `mvl-rust-core` (#95): `self.field`/`param.field` — a field projection on a bare-path receiver — is now recognized as a bindable solver variable by both L2 (`ident_name`) and L4 (`linterm_from_expr`), via a shared `variable_key` helper so a Γ-side hypothesis and a goal-side term always key the same expression identically. Previously `Expr::Field` was invisible to both layers regardless of how good the surrounding hypothesis context was, which mattered in practice since real-world Rust is mostly methods. Deliberately scoped to one level of projection: a two-level chain (`self.a.b`) or an indexed receiver (`xs[i].field`) still falls to `runtime`, asserted as the boundary rather than left as a silent gap.
+
 ## [0.5.3] - 2026-08-23
 
 ### Fixed

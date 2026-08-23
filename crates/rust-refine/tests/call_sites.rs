@@ -683,6 +683,44 @@ fn a_body_establishing_its_ensures_is_proven() {
 }
 
 #[test]
+fn a_self_field_projection_closes_the_same_way_a_bare_parameter_would() {
+    // The exact repro from #95: identical arithmetic and an already-
+    // sufficient hypothesis clause to the free-function version, but
+    // `self.field` in place of a bare parameter. Before #95, `Expr::Field`
+    // was never bound as a solver variable by either L2 or L4, so this
+    // fell to `runtime` even with the explicit `>= 0` bounds present.
+    let result = only_return_site(
+        "struct Page { page_size: i32, reserved_space: i32 }\n\
+         impl Page {\n\
+         #[mvl::requires(self.reserved_space <= self.page_size && self.reserved_space >= 0 && self.page_size >= 0)]\n\
+         #[mvl::ensures(result <= self.page_size)]\n\
+         pub fn usable_page_size(&self) -> i32 {\n\
+           self.page_size - self.reserved_space\n\
+         }\n\
+         }",
+    );
+    assert_proven_at(&result, Layer::L4);
+}
+
+#[test]
+fn a_two_level_self_field_chain_still_falls_to_runtime() {
+    // Deliberate scope boundary (#95): `self.a.b` is not recognized, so
+    // this must still be `runtime` even with the same-shaped hypotheses.
+    let result = only_return_site(
+        "struct Inner { size: i32 }\n\
+         struct Outer { inner: Inner }\n\
+         impl Outer {\n\
+         #[mvl::requires(self.inner.size >= 0)]\n\
+         #[mvl::ensures(result >= 0)]\n\
+         pub fn size(&self) -> i32 {\n\
+           self.inner.size\n\
+         }\n\
+         }",
+    );
+    assert_eq!(result, DischargeResult::Runtime);
+}
+
+#[test]
 fn a_functional_postcondition_closes_by_reflexivity() {
     // The shape #43 existed to make provable, and the reason it blocked this
     // issue: substitution produces `(a + b) == a + b`, grouped on one side,
