@@ -90,7 +90,7 @@ use mvl_rust_core::solver::{DischargeResult, Layer, ObligationClass, Warrant};
 use proc_macro2::Span;
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
-use syn::{Block, Expr, ExprCall, ExprIf, ExprWhile, FnArg, Item, ItemFn, Local, Pat};
+use syn::{Block, Expr, ExprCall, ExprIf, ExprWhile, FnArg, Item, ItemFn, Local, Pat, Type};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -414,6 +414,12 @@ impl FoundObligation {
 #[derive(Debug, Clone, Default)]
 struct FnFacts {
     params: Vec<String>,
+    /// Names of `params` entries whose declared type is an unsigned
+    /// integer (`u8`/`u16`/`u32`/`u64`/`u128`/`usize`) — used by
+    /// [`FnFacts::hypotheses`] to inject the implicit `param >= 0` bound
+    /// that the type carries for free (#94). `self`'s own fields are
+    /// explicitly out of scope here (tracked separately, #95).
+    unsigned_params: Vec<String>,
     requires: Vec<Predicate>,
     ensures: Vec<Predicate>,
     /// Whether this function carries `#[mvl::unchecked]` (#69) — `requires`/
@@ -437,6 +443,7 @@ impl FnFacts {
     fn from_attrs_and_sig(attrs: &[syn::Attribute], sig: &syn::Signature) -> Self {
         let mut facts = FnFacts {
             params: sig.inputs.iter().filter_map(param_name).collect(),
+            unsigned_params: sig.inputs.iter().filter_map(unsigned_param_name).collect(),
             ..Default::default()
         };
         for attr in attrs {
@@ -459,8 +466,9 @@ impl FnFacts {
     }
 
     /// The clauses this function's own `requires` contribute to Γ inside
-    /// its body. Quantified preconditions are skipped — see the module
-    /// doc's scope note.
+    /// its body, plus the implicit `param >= 0` bound each unsigned
+    /// parameter carries for free (#94). Quantified preconditions are
+    /// skipped — see the module doc's scope note.
     fn hypotheses(&self) -> Vec<Expr> {
         self.requires
             .iter()
@@ -468,6 +476,10 @@ impl FnFacts {
                 Predicate::Expr(expr) => Some(expr.clone()),
                 _ => None,
             })
+            .chain(self.unsigned_params.iter().map(|name| {
+                syn::parse_str::<Expr>(&format!("{name} >= 0"))
+                    .expect("ident >= 0 literal always parses")
+            }))
             .collect()
     }
 }
@@ -485,6 +497,30 @@ fn param_name(arg: &FnArg) -> Option<String> {
         },
         FnArg::Receiver(_) => None,
     }
+}
+
+/// The name of `arg` if it is a plain-identifier parameter declared with
+/// an unsigned integer type (`u8`/`u16`/`u32`/`u64`/`u128`/`usize`),
+/// matched conservatively on the type path's last segment (no type
+/// inference — a qualified path like `std::primitive::u32` still
+/// matches, a type alias for one does not). #94's implicit non-negative
+/// bound applies only to bare parameters; `self` is out of scope (#95).
+fn unsigned_param_name(arg: &FnArg) -> Option<String> {
+    let FnArg::Typed(typed) = arg else {
+        return None;
+    };
+    let Pat::Ident(ident) = &*typed.pat else {
+        return None;
+    };
+    let Type::Path(type_path) = &*typed.ty else {
+        return None;
+    };
+    let last = type_path.path.segments.last()?;
+    matches!(
+        last.ident.to_string().as_str(),
+        "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
+    )
+    .then(|| ident.ident.to_string())
 }
 
 /// The declaration-site obligations (`#[mvl::requires]`/`#[mvl::ensures]`
