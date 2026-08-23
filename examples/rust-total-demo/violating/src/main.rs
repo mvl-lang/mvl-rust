@@ -162,6 +162,8 @@ fn must_have(x: Option<i32>) -> i32 {
     x.unwrap() // unwrap: outside the qualified subset
 }
 
+// ADR-0012: orchestration, not itself a totality claim this demo is making.
+#[mvl::partial]
 fn main() {
     println!("{}", factorial(5));
     println!("{}", halve(100));

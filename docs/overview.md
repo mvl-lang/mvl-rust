@@ -10,16 +10,18 @@ add the ones that check something you actually want checked.
 | I want to guarantee... | Tool | Attribute | Nothing to add? |
 |---|---|---|---|
 | My code stays in the subset the other tools can verify at all | [`rust-limit`](https://docs.rs/rust-limit) | — (whole-file) | Runs on every function, no opt-in |
-| This function has no obvious panic risk, and (if recursive) carries a decreases measure whose descent is proved by the native linear-arithmetic solver `rust-refine` also uses — see [Known Limitations](https://github.com/mvl-lang/mvl-rust/blob/main/.openspec/specs/003-function-contracts/spec.md#known-limitations) | [`rust-total`](https://docs.rs/rust-total) | `#[mvl::total]`, `#[mvl::decreases(measure)]` | |
+| This function has no obvious panic risk, and (if recursive) carries a decreases measure whose descent is proved by the native linear-arithmetic solver `rust-refine` also uses — see [Known Limitations](https://github.com/mvl-lang/mvl-rust/blob/main/.openspec/specs/003-function-contracts/spec.md#known-limitations) | [`rust-total`](https://docs.rs/rust-total) | `#[mvl::total]` (or explicitly `#[mvl::partial]` to opt out), `#[mvl::decreases(measure)]` | |
 | A precondition/postcondition holds — proved at compile time where possible, enforced at runtime otherwise | [`rust-refine`](https://docs.rs/rust-refine) | `#[mvl::requires(pred)]`, `#[mvl::ensures(pred)]` | |
 | A caller can't forget to declare an effect its callees perform | [`rust-effect`](https://docs.rs/rust-effect) | `#[mvl::effect(list)]` | |
 | Tainted/secret data is only declassified through a declared transition | [`rust-ifc`](https://docs.rs/rust-ifc) | `#[mvl::label]`, `#[mvl::relabel(...)]` | |
 
-`rust-limit` is the odd one out: it's not opt-in per function, because the
-other four tools' proofs assume the code they're looking at is already
-inside the subset they can reason about (no `unsafe`, no `dyn Trait`, no
-non-`'static`/`'_` explicit lifetimes). Run it first, and run it on
-everything.
+`rust-limit` and `rust-total` both run whole-file rather than opt-in per
+function — `rust-limit` because the other four tools' proofs assume the
+code they're looking at is already inside the subset they can reason about
+(no `unsafe`, no `dyn Trait`, no non-`'static`/`'_` explicit lifetimes);
+`rust-total` because every function must explicitly declare `#[mvl::total]`
+or `#[mvl::partial]` (ADR-0012) — there's no third, silently-unchecked
+state. Run `rust-limit` first, and run it on everything.
 
 ## Two facets, same tools
 

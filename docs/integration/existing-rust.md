@@ -1,7 +1,10 @@
 # Adopting mvl-rust in an existing codebase
 
-`mvl-rust`'s tools are opt-in per function (except `rust-limit`, see below),
-so there's no big-bang migration. A recommended order:
+Most of `mvl-rust`'s tools are opt-in per function or per attribute.
+`rust-limit` and `rust-total` are the two exceptions — both run whole-file
+(see below for each) — so plan for those two to require a one-time pass
+over an existing file rather than a purely incremental one. A recommended
+order:
 
 ## 1. Start with `rust-limit`, and expect friction once
 
@@ -22,14 +25,27 @@ lifetimes beyond `'static`/`'_` anywhere, you'll see violations immediately.
     mechanism today — treat a violation as "this function isn't a candidate
     for the other tools yet," not as a required fix.
 
-## 2. Add `#[mvl::total]` to your leaf functions first
+## 2. Add `#[mvl::total]` to your leaf functions first — and `#[mvl::partial]` to the rest
 
-Pure, non-recursive, panic-free functions near the bottom of your call graph
-are the cheapest place to start — `rust-total` needs nothing else to check
-them. Recursive functions need a `#[mvl::decreases(measure)]` alongside;
-if you can't name a strictly-decreasing measure, that's often a sign the
-function's termination argument is more subtle than it looks, not that the
-tool is wrong.
+`rust-total` is whole-file, like `rust-limit`: every `fn` item and `impl`
+method in a scanned file must carry exactly one of `#[mvl::total]` or
+`#[mvl::partial]` (ADR-0012) — there's no silently-unchecked third state.
+So the practical first pass over a file is two steps together, not one:
+
+1. Mark your pure, non-recursive, panic-free leaf functions `#[mvl::total]`
+   — `rust-total` needs nothing else to check them. Recursive functions
+   need a `#[mvl::decreases(measure)]` alongside; if you can't name a
+   strictly-decreasing measure, that's often a sign the function's
+   termination argument is more subtle than it looks, not that the tool is
+   wrong.
+2. Mark everything else in that file `#[mvl::partial]` — the explicit,
+   permanent "not making a totality claim here" declaration. This is not a
+   migration shim to remove later; it's the same two-state shape upstream
+   `mvl` itself uses (`total`/`partial`), and a function can move from
+   `partial` to `total` at any point once you're ready to check it.
+
+You don't have to run `rust-total` on every file in the crate at once —
+scope it to one file or module at a time, same as `rust-limit`.
 
 ## 3. Add `#[mvl::requires]`/`#[mvl::ensures]` where you already have doc-comment invariants
 

@@ -19,6 +19,15 @@ pub use predicate::Predicate;
 #[derive(Debug, Clone, Default)]
 pub struct TotalAttr;
 
+/// `#[mvl::partial]` on a `fn` declaration (#117, ADR-0012) — the explicit
+/// opposite of `#[mvl::total]`. Since ADR-0012, `rust-total` requires every
+/// function to carry exactly one of the two; `partial` is how a function
+/// declares that it does not claim panic-freedom/termination, rather than
+/// simply omitting `#[mvl::total]` (the pre-ADR-0012 behavior, which read
+/// as an invisible, unreviewable third state). Carries no arguments.
+#[derive(Debug, Clone, Default)]
+pub struct PartialAttr;
+
 /// `#[mvl::unchecked]` on a `fn` declaration — opts it out of `requires`/
 /// `ensures` runtime enforcement (`mvl-macros`, #53). Carries no arguments.
 ///
@@ -174,6 +183,7 @@ impl Parse for RelabelItem {
 #[derive(Debug, Clone)]
 pub enum MvlAttr {
     Total(TotalAttr),
+    Partial(PartialAttr),
     Unchecked(UncheckedAttr),
     Decreases(DecreasesAttr),
     Effect(EffectAttr),
@@ -193,6 +203,7 @@ impl MvlAttr {
         let last = attr.path().segments.last()?;
         let parsed = match last.ident.to_string().as_str() {
             "total" => Ok(MvlAttr::Total(TotalAttr)),
+            "partial" => Ok(MvlAttr::Partial(PartialAttr)),
             "unchecked" => Ok(MvlAttr::Unchecked(UncheckedAttr)),
             "decreases" => attr.parse_args::<DecreasesAttr>().map(MvlAttr::Decreases),
             "effect" => attr.parse_args::<EffectAttr>().map(MvlAttr::Effect),

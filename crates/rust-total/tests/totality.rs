@@ -1,4 +1,4 @@
-use rust_total::checks::check_source;
+use rust_total::checks::{check_source, check_source_with, CheckSet};
 
 #[test]
 fn compliant_total_function_has_no_diagnostics() {
@@ -16,18 +16,51 @@ fn compliant_total_function_has_no_diagnostics() {
 }
 
 #[test]
-fn non_total_functions_are_not_scanned_at_all() {
-    // Plenty of panic-risk constructs here, but with no #[mvl::total] this
-    // function is entirely out of scope for rust-total.
+fn an_undeclared_function_is_rejected() {
+    // ADR-0012: neither #[mvl::total] nor #[mvl::partial] present is now a
+    // hard error demanding an explicit declaration, not silence.
     let source = r#"
         fn f(v: Vec<i32>, i: usize) -> i32 {
             v[i].checked_add(1).unwrap()
         }
     "#;
     let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0]
+        .message
+        .contains("must be explicitly declared"));
+}
+
+#[test]
+fn a_function_declared_both_total_and_partial_is_rejected() {
+    let source = r#"
+        #[mvl::total]
+        #[mvl::partial]
+        fn f() {}
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0]
+        .message
+        .contains("cannot be both `#[mvl::total]` and `#[mvl::partial]`"));
+}
+
+#[test]
+fn a_partial_function_is_exempt_from_every_check() {
+    // Plenty of panic-risk constructs here, but #[mvl::partial] is the
+    // explicit, declared opt-out -- no diagnostics, same as the old
+    // "unannotated" behavior, but now a stated choice rather than a default.
+    let source = r#"
+        #[mvl::partial]
+        fn f(v: Vec<i32>, i: usize) -> i32 {
+            let _ = v[i].checked_add(1).unwrap();
+            v[i]
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
     assert!(
         diagnostics.is_empty(),
-        "expected no diagnostics for a non-#[total] function, got {diagnostics:?}"
+        "expected no diagnostics for a #[mvl::partial] function, got {diagnostics:?}"
     );
 }
 
@@ -286,6 +319,19 @@ fn todo_and_unimplemented_are_rejected() {
     assert_eq!(diagnostics.len(), 2);
     assert!(diagnostics[0].message.contains("todo!"));
     assert!(diagnostics[1].message.contains("unimplemented!"));
+}
+
+#[test]
+fn unreachable_is_rejected() {
+    let source = r#"
+        #[mvl::total]
+        fn f() -> i32 {
+            unreachable!()
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].message.contains("unreachable!"));
 }
 
 #[test]
@@ -637,7 +683,7 @@ fn a_panicking_total_impl_method_is_flagged() {
 }
 
 #[test]
-fn a_non_total_impl_method_is_not_scanned() {
+fn an_undeclared_impl_method_is_rejected() {
     let source = r#"
         struct Calc;
         impl Calc {
@@ -647,8 +693,192 @@ fn a_non_total_impl_method_is_not_scanned() {
         }
     "#;
     let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0]
+        .message
+        .contains("must be explicitly declared"));
+}
+
+#[test]
+fn a_partial_impl_method_is_exempt() {
+    let source = r#"
+        struct Calc;
+        impl Calc {
+            #[mvl::partial]
+            fn first(v: Vec<i32>) -> i32 {
+                v[0]
+            }
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
     assert!(
         diagnostics.is_empty(),
-        "expected no diagnostics for a non-#[total] impl method, got {diagnostics:?}"
+        "expected no diagnostics for a #[mvl::partial] impl method, got {diagnostics:?}"
     );
+}
+
+#[test]
+fn let_underscore_call_is_rejected() {
+    let source = r#"
+        #[mvl::total]
+        fn f() {
+            let _ = write_config();
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].message.contains("silently discards"));
+}
+
+#[test]
+fn let_underscore_bare_variable_is_not_rejected() {
+    // Not a call -- discarding an already-bound value isn't swallowing a
+    // fallible result, it's just an unused-binding pattern.
+    let source = r#"
+        #[mvl::total]
+        fn f(x: i32) {
+            let _ = x;
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert!(
+        diagnostics.is_empty(),
+        "expected no diagnostics for `let _ = <bare ident>`, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn drop_of_a_call_result_is_rejected() {
+    let source = r#"
+        #[mvl::total]
+        fn f() {
+            drop(write_config());
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].message.contains("silently discards"));
+}
+
+#[test]
+fn mem_drop_of_a_call_result_is_rejected() {
+    let source = r#"
+        #[mvl::total]
+        fn f() {
+            std::mem::drop(write_config());
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].message.contains("silently discards"));
+}
+
+#[test]
+fn map_discarding_closure_is_rejected() {
+    let source = r#"
+        #[mvl::total]
+        fn f(r: Result<i32, String>) {
+            r.map(|_| ());
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0]
+        .message
+        .contains("discards the wrapped value"));
+}
+
+#[test]
+fn map_with_real_transform_is_not_rejected() {
+    let source = r#"
+        #[mvl::total]
+        fn f(r: Result<i32, String>) -> Result<i32, String> {
+            r.map(|x| x + 1)
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert!(
+        diagnostics.is_empty(),
+        "expected no diagnostics for a real `.map` transform, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn swallow_check_does_not_scan_a_partial_function() {
+    let source = r#"
+        #[mvl::partial]
+        fn f() {
+            let _ = write_config();
+            drop(write_config());
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert!(
+        diagnostics.is_empty(),
+        "expected no diagnostics for a #[mvl::partial] function, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn check_set_parse_accepts_a_single_name() {
+    let set = CheckSet::parse("panic").unwrap();
+    assert!(set.panic);
+    assert!(!set.termination);
+    assert!(!set.swallow);
+}
+
+#[test]
+fn check_set_parse_accepts_a_comma_separated_subset() {
+    let set = CheckSet::parse("termination,swallow").unwrap();
+    assert!(!set.panic);
+    assert!(set.termination);
+    assert!(set.swallow);
+}
+
+#[test]
+fn check_set_parse_rejects_an_unknown_name() {
+    assert!(CheckSet::parse("pnaic").is_err());
+}
+
+#[test]
+fn check_source_with_panic_only_skips_swallow_violations() {
+    let source = r#"
+        #[mvl::total]
+        fn f() {
+            let _ = write_config();
+            some_call().unwrap();
+        }
+    "#;
+    let diagnostics = check_source_with(source, CheckSet::parse("panic").unwrap()).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].message.contains("unwrap"));
+}
+
+#[test]
+fn check_source_with_swallow_only_skips_panic_violations() {
+    let source = r#"
+        #[mvl::total]
+        fn f() {
+            let _ = write_config();
+            some_call().unwrap();
+        }
+    "#;
+    let diagnostics = check_source_with(source, CheckSet::parse("swallow").unwrap()).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].message.contains("silently discards"));
+}
+
+#[test]
+fn check_source_with_all_matches_check_source() {
+    let source = r#"
+        #[mvl::total]
+        fn f() {
+            let _ = write_config();
+            some_call().unwrap();
+        }
+    "#;
+    let via_default = check_source(source).unwrap();
+    let via_explicit_all = check_source_with(source, CheckSet::ALL).unwrap();
+    assert_eq!(via_default.len(), via_explicit_all.len());
+    assert_eq!(via_default.len(), 2);
 }

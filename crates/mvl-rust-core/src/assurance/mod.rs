@@ -5,5 +5,6 @@
 //! validates against.
 
 pub mod report;
+pub mod sarif;
 pub mod schema;
 pub mod version;

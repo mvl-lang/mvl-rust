@@ -1,6 +1,6 @@
 //! Flags panic-risk constructs inside `#[mvl::total]` functions: `.unwrap()`,
-//! `.expect(...)`, `panic!(...)`/`todo!()`/`unimplemented!()`, raw indexing,
-//! and division/modulo (divide-by-zero risk).
+//! `.expect(...)`, `panic!(...)`/`todo!()`/`unimplemented!()`/`unreachable!()`,
+//! raw indexing, and division/modulo (divide-by-zero risk).
 //!
 //! Deliberately does **not** flag general arithmetic (`+`/`-`/`*`) for
 //! overflow — without type information, that would flag nearly all numeric
@@ -48,7 +48,7 @@ use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
 use syn::{BinOp, ExprBinary, ExprIndex, ExprMethodCall, ItemFn, Macro};
 
-const PANICKING_MACROS: &[&str] = &["panic", "todo", "unimplemented"];
+const PANICKING_MACROS: &[&str] = &["panic", "todo", "unimplemented", "unreachable"];
 
 struct PanicFreedomVisitor<'d> {
     diagnostics: &'d mut Vec<Diagnostic>,
