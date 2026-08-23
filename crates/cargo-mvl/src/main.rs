@@ -13,10 +13,10 @@ use mvl_rust_core::diagnostics::Level;
 /// Assurance subcommands with no implementation yet -- `coverage` needs
 /// `cargo-llvm-cov` (an external tool with its own install/toolchain
 /// story), tracked by its own ticket (#15). `mcdc`'s obligation-scan half
-/// is implemented below (`rust-mcdc::scanner`); its mutation-discharge
-/// half needs a `--run-dir` and shells out to `cargo test` per mutant, so
-/// it's only exposed via the standalone `cargo mvl-mcdc discharge` binary
-/// (#85), not through this in-process, source-text-only dispatcher.
+/// is implemented below (`rust-mcdc::scanner`); its tagged-test discharge
+/// half needs a `--run-dir` and shells out to `cargo test`, so it's only
+/// exposed via the standalone `cargo mvl-mcdc harvest` binary (#85), not
+/// through this in-process, source-text-only dispatcher.
 const UNIMPLEMENTED_SUBCOMMANDS: &[&str] = &["coverage"];
 
 fn main() -> ExitCode {
@@ -70,8 +70,7 @@ fn print_usage() {
     eprintln!("  assurance <FILE>...   aggregates check + prove + test");
     eprintln!("  mcdc <FILE>...     rust-mcdc's obligation scan; discharge it with:");
     eprintln!("                       cargo mvl-mcdc generate --obligations=FILE   (list the ids/vectors to write tests against)");
-    eprintln!("                       cargo mvl-mcdc harvest  --obligations=FILE   (join tagged tests -- the default path)");
-    eprintln!("                       cargo mvl-mcdc discharge <FILE>...           (mutation testing -- expensive, no tagging needed)");
+    eprintln!("                       cargo mvl-mcdc harvest  --obligations=FILE   (join tagged tests against cargo test's output)");
     eprintln!("  coverage           not yet implemented -- see #15 (needs cargo-llvm-cov)");
 }
 
@@ -196,23 +195,33 @@ fn run_single(tool: &str, files: &[PathBuf]) -> ExitCode {
 /// `covered` here means **compiler-void** (an exhaustive `match`), not
 /// "discharged" -- a real boolean decision always reports `covered:
 /// false` from this scan alone, regardless of how well-tested it is.
-/// Neither discharge path (mutation or tagged-test) runs here: both need
-/// a `--run-dir` and shell out to `cargo test`, so they stay on the
-/// standalone `cargo-mvl-mcdc` binary. The tagged-test path is the
-/// intended default -- `cargo-mvl-mcdc generate` lists what to write
-/// tests against, `cargo-mvl-mcdc harvest` joins them. `cargo-mvl-mcdc
-/// discharge` (mutation) is the fully-automatic but expensive
-/// alternative, not a replacement for it.
+/// Tagged-test discharge doesn't run here: it needs a `--run-dir` and
+/// shells out to `cargo test`, so it stays on the standalone
+/// `cargo-mvl-mcdc` binary -- `generate` lists what to write tests
+/// against, `harvest` joins them.
 ///
-/// A subcommand keyword (`scan`/`discharge`/`harvest`/`generate`)
-/// mistakenly passed as a path here is caught explicitly below --
-/// otherwise it silently fails to read as a file with a confusing error,
-/// which is exactly what previously made `cargo mvl mcdc discharge
-/// <FILE>` look like discharge wasn't implemented at all.
+/// A subcommand keyword (`scan`/`harvest`/`generate`) mistakenly passed
+/// as a path here is caught explicitly below -- otherwise it silently
+/// fails to read as a file with a confusing error, which is exactly what
+/// previously made `cargo mvl mcdc discharge <FILE>` look like discharge
+/// wasn't implemented at all. `discharge` itself gets its own message:
+/// the condition-mutation engine still exists as a library
+/// (`rust_mcdc::discharge`/`mutate`) but isn't wired into any CLI --
+/// re-running the whole suite once per mutant, with no per-mutant
+/// timeout, was too disruptive for everyday use (see
+/// `crates/rust-mcdc/src/lib.rs`).
 fn run_mcdc(raw_args: &[String], files: &[PathBuf]) -> ExitCode {
     use mvl_rust_core::assurance::schema::{McdcCondition, McdcSection};
 
-    const STANDALONE_SUBCOMMANDS: &[&str] = &["scan", "discharge", "harvest", "generate"];
+    if raw_args.first().map(String::as_str) == Some("discharge") {
+        eprintln!(
+            "cargo mvl mcdc discharge: not available -- the condition-mutation engine is a library-only capability (rust_mcdc::discharge/mutate), not wired into any CLI."
+        );
+        eprintln!("  use the tagged-test path instead: `cargo-mvl-mcdc generate`/`cargo-mvl-mcdc harvest`");
+        return ExitCode::from(2);
+    }
+
+    const STANDALONE_SUBCOMMANDS: &[&str] = &["scan", "harvest", "generate"];
     if let Some(keyword) = raw_args
         .first()
         .map(String::as_str)
@@ -221,7 +230,6 @@ fn run_mcdc(raw_args: &[String], files: &[PathBuf]) -> ExitCode {
         eprintln!(
             "cargo mvl mcdc: `{keyword}` needs a --run-dir and shells out to `cargo test`, so it's only available as `cargo-mvl-mcdc {keyword}` (the standalone binary), not `cargo mvl mcdc {keyword}`."
         );
-        eprintln!("  the tagged-test path is the default -- see `cargo-mvl-mcdc generate`/`cargo-mvl-mcdc harvest`");
         return ExitCode::from(2);
     }
 
@@ -259,7 +267,7 @@ fn run_mcdc(raw_args: &[String], files: &[PathBuf]) -> ExitCode {
         conditions,
         // Fraction that are compiler-void, NOT a discharge/coverage
         // percentage -- see the function doc. Run `cargo-mvl-mcdc
-        // harvest` (default) or `discharge` (mutation) for that.
+        // harvest` for that.
         coverage_pct: if total == 0 {
             100.0
         } else {

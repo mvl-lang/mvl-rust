@@ -1,7 +1,7 @@
 .PHONY: help build test check fmt fmt-check clippy examples examples-verbose clean \
-	test-core test-limit test-total test-refine test-effect test-ifc test-cargo-mvl test-z3 \
+	test-core test-limit test-total test-refine test-effect test-ifc test-cargo-mvl test-mcdc test-z3 \
 	coverage assurance assurance-gate compile verify evidence traceability all \
-	mcdc mcdc-scan mcdc-run mcdc-harvest mcdc-generate mcdc-discharge test-mcdc
+	mcdc mcdc-scan mcdc-run mcdc-harvest mcdc-generate
 
 help:
 	@echo "Targets:"
@@ -14,7 +14,7 @@ help:
 	@echo "  test-effect        test rust-effect only"
 	@echo "  test-ifc           test rust-ifc only"
 	@echo "  test-cargo-mvl     test cargo-mvl only"
-	@echo "  test-mcdc          rust-mcdc dogfooding itself via mutation discharge (slow, not part of check)"
+	@echo "  test-mcdc          test rust-mcdc only (includes real discharge/harvest fixtures)"
 	@echo "  test-z3            test with L5/Z3 dispatch enabled (#37) -- requires Z3 installed"
 	@echo "  fmt                cargo fmt (workspace + example crates)"
 	@echo "  fmt-check          cargo fmt --check (workspace + example crates)"
@@ -34,6 +34,13 @@ help:
 	@echo "  compile            fail fast: does the workspace compile at all?"
 	@echo "  coverage           cargo llvm-cov line/function coverage (cached in target/llvm-cov.json)"
 	@echo "  clean              cargo clean (workspace + example crates)"
+	@echo ""
+	@echo "MC/DC (rust-mcdc, #85) -- scan -> generate -> run -> harvest, against MCDC_SRC/MCDC_RUN_DIR:"
+	@echo "  mcdc               full pipeline: mcdc-scan mcdc-run mcdc-harvest"
+	@echo "  mcdc-scan          obligation scan -> target/mcdc/obligations.json"
+	@echo "  mcdc-generate      list obligations + the mcdc__<id>__v<N> tagging convention"
+	@echo "  mcdc-run           cargo test in MCDC_RUN_DIR"
+	@echo "  mcdc-harvest       join obligations.json against tagged test outcomes"
 
 build:
 	cargo build --workspace --all-targets
@@ -62,13 +69,8 @@ test-ifc:
 test-cargo-mvl:
 	cargo test -p cargo-mvl
 
-# rust-mcdc dogfooding itself, mutation-discharge path (no tagging
-# convention needed, unlike `mcdc-harvest`) -- not part of `check`/`test`:
-# it re-runs `cargo test -p rust-mcdc` once per mutant, so it's slow.
-test-mcdc: build
-	@mkdir -p target/mcdc
-	./target/debug/cargo-mvl-mcdc scan -o target/mcdc/rust-mcdc-obligations.json $(shell find crates/rust-mcdc/src -name '*.rs')
-	./target/debug/cargo-mvl-mcdc discharge --run-dir=crates/rust-mcdc $(shell find crates/rust-mcdc/src -name '*.rs')
+test-mcdc:
+	cargo test -p rust-mcdc
 
 # #37: L5/Z3 dispatch, feature-gated and default-off -- requires Z3
 # installed (e.g. `brew install z3` / `apt install libz3-dev`). Not part of
@@ -310,17 +312,19 @@ all: check verify evidence assurance-gate ## Hygiene + all three levels + the ga
 
 # === MC/DC (rust-mcdc, #85) ===
 #
-# Two independent discharge paths over the same obligations.json:
-#   mcdc-harvest    tagged tests (mcdc__<id>__v<N>), a human/Claude writes the vectors
-#   mcdc-discharge  condition mutation, fully automatic but re-runs `cargo test` per mutant
+# Tagged-test discharge over obligations.json: a human/Claude writes tests
+# named mcdc__<id>__v<N>, mcdc-harvest joins them against cargo test's
+# output. (A condition-mutation engine also lives in rust-mcdc as a
+# library, but isn't wired into this CLI -- re-running the whole suite
+# once per mutant with no per-mutant timeout was too disruptive for
+# everyday use; see crates/rust-mcdc/src/lib.rs.)
 #
-# MCDC_SRC/MCDC_RUN_DIR name the *target* codebase to scan/discharge --
-# this workspace builds the tool, it is deliberately not its own default
-# target (mcdc-discharge mutates real files on disk; the last thing that
-# should default to is rust-mcdc's own source). Both are required:
+# MCDC_SRC/MCDC_RUN_DIR name the *target* codebase to scan/harvest -- this
+# workspace builds the tool, it is deliberately not its own default target.
+# Both are required:
 #   make mcdc MCDC_SRC="$$(find ../sqlite-rs/src -name '*.rs')" MCDC_RUN_DIR=../sqlite-rs
 ifndef MCDC_SRC
-mcdc mcdc-scan mcdc-discharge:
+mcdc mcdc-scan:
 	@echo "MCDC_SRC is required, e.g.:" >&2
 	@echo "  make mcdc-scan MCDC_SRC=\"\$$(find ../sqlite-rs/src -name '*.rs')\"" >&2
 	@exit 2
@@ -331,12 +335,6 @@ mcdc-scan: build
 	@mkdir -p target/mcdc
 	./target/debug/cargo-mvl-mcdc scan -o target/mcdc/obligations.json $(MCDC_SRC)
 	@echo "obligations written to target/mcdc/obligations.json"
-
-# Mutation discharge: no tagging convention needed, but re-runs `cargo test`
-# once per mutant -- expensive, and mutates the file on disk one mutant at a
-# time (restored after each run). MCDC_SRC must be exactly one file here.
-mcdc-discharge: build
-	./target/debug/cargo-mvl-mcdc discharge --run-dir=$(MCDC_RUN_DIR) $(MCDC_SRC)
 endif
 
 mcdc-generate: build
