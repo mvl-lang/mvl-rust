@@ -73,8 +73,40 @@
 //!   nothing is claimed about it either way.
 //! - A postcondition over a term containing a **call** (`ensures(result ==
 //!   g(a))`) falls to a runtime check: L1 reflexivity is gated to call-free
-//!   terms because it is unsound for an impure term (#44). #45 tracks the
-//!   purity signal that would lift this.
+//!   terms because it is unsound for an impure term (#44). The narrow
+//!   exception is ADR-0011's resolved-pure closure licence, below.
+//!
+//! ## The resolved-pure closure licence (#110, ADR-0011)
+//!
+//! At the call-site ([`CallSiteScan::obligations_for_call`]) and
+//! postcondition-propagation ([`CallSiteScan::propagate_postcondition`])
+//! lookup sites, a same-file call `g(…)` is rewritten into a single opaque
+//! symbol ([`license_pure_calls`]) — before, not instead of,
+//! [`substitute_exprs`] — when `g` carries an explicit, empty
+//! `#[mvl::effect()]`, its own body has zero unresolved same-file calls
+//! (computed identically to `rust-effect`'s own count, #67), and its
+//! declared return type is not `f32`/`f64`. Two occurrences of the same
+//! call rewrite to the same symbol, so `is_call_free`-gated reflexivity can
+//! now discharge a term built from them — e.g. `span(gen(), gen())` against
+//! `requires(lo <= hi)`, ADR-0008 §3's own motivating example.
+//!
+//! **This licence assumes `rust-limit` and `rust-effect` have already
+//! gated the file** (`cargo mvl check`'s fixed order:
+//! `limit → total → refine → effect → ifc`). It is not code-enforced here —
+//! `rust-refine`'s `check_source`/`find_obligations` take only source text,
+//! with no channel for "the other gates already ran" — so a standalone
+//! `cargo mvl-refine` invocation on source that has not itself passed
+//! `rust-limit` (no `unsafe`) and `rust-effect` (zero propagation errors)
+//! must not be trusted to license this correctly: an `unsafe` block or an
+//! effect-propagation violation elsewhere in the file are exactly the
+//! channels this licence assumes are already closed off. ADR-0011's own
+//! consequences section records this as a new, explicit cross-tool
+//! ordering dependency that did not exist before (every tool here was
+//! previously safe to run standalone or in any order, ADR-0001 §3).
+//!
+//! `native.rs`'s `is_call_free` and the solver it gates are untouched by
+//! this — the licence is `rust-refine` choosing to present a different,
+//! already-call-free term, per ADR-0008 §5's mechanism.
 //!
 //! Predicates are plain comparison/boolean expressions, or a bounded
 //! quantifier (`forall`/`exists i in [lo..hi]. pred`) — see
@@ -429,6 +461,22 @@ struct FnFacts {
     /// `ensures` on it inject nothing (`mvl-macros`, #53), so its contract
     /// is declared but not actually backed by a runtime check.
     unchecked: bool,
+    /// Whether this function carries an explicit, empty `#[mvl::effect()]`
+    /// (ADR-0011 condition 2) — distinct from *absent*, which is never read
+    /// as a licence (ADR-0008 §2's tri-state).
+    effect_pure: bool,
+    /// Same-file calls this function's body cannot resolve, computed
+    /// identically to `rust-effect`'s `CallVisitor` (#67, ADR-0011 condition
+    /// 3): a single-segment `Expr::Path` call to a same-file function
+    /// counts as resolved, a method call or anything else always counts
+    /// against it. Left at its `Default` of `0` until [`find_obligations`]'s
+    /// second pass fills it in — every function's name has to be known
+    /// first, which a single bottom-up construction can't guarantee.
+    unresolved_calls: usize,
+    /// Whether the declared return type is `f32`/`f64`, read syntactically
+    /// with no inference (ADR-0011 condition 4) — reflexivity is unsound
+    /// for floats (`x == x` is `false` for `NaN`).
+    float_return: bool,
 }
 
 impl FnFacts {
@@ -458,10 +506,21 @@ impl FnFacts {
                 Some(Ok(MvlAttr::Requires(requires))) => facts.requires.push(requires.predicate),
                 Some(Ok(MvlAttr::Ensures(ensures))) => facts.ensures.push(ensures.predicate),
                 Some(Ok(MvlAttr::Unchecked(_))) => facts.unchecked = true,
+                Some(Ok(MvlAttr::Effect(effect))) => facts.effect_pure = effect.effects.is_empty(),
                 _ => {}
             }
         }
+        facts.float_return = is_float_return(&sig.output);
         facts
+    }
+
+    /// ADR-0011's licence: an explicit empty `#[mvl::effect()]`, every
+    /// same-file call inside it already resolved, and a return type that
+    /// can't be `f32`/`f64`. Determinism (the licence's fourth condition)
+    /// is not separately checked here — it follows from these three by
+    /// construction, per the ADR's own argument.
+    fn licensed(&self) -> bool {
+        self.effect_pure && self.unresolved_calls == 0 && !self.float_return
     }
 
     /// Whether this function's `ensures` is actually backed by a runtime
@@ -526,6 +585,36 @@ fn unsigned_type_width(ty: &Type) -> Option<u32> {
         "u64" | "usize" => Some(64),
         "u128" => Some(128),
         _ => None,
+    }
+}
+
+/// Whether `ty` is `f32`/`f64`, matched conservatively on the last path
+/// segment — the same shape as [`unsigned_type_width`], and the same
+/// limitation: no type inference, so a generic or type-aliased float isn't
+/// caught (ADR-0011's stated, accepted cost — understated rather than
+/// overstated safety, per ADR-0001 §5).
+fn is_float_type(ty: &Type) -> bool {
+    let Type::Path(type_path) = ty else {
+        return false;
+    };
+    matches!(
+        type_path
+            .path
+            .segments
+            .last()
+            .map(|s| s.ident.to_string())
+            .as_deref(),
+        Some("f32" | "f64")
+    )
+}
+
+/// [`is_float_type`], lifted over a function's declared return type — a
+/// function with no return type (`ReturnType::Default`, i.e. `-> ()`)
+/// can't be `f32`/`f64`.
+fn is_float_return(output: &syn::ReturnType) -> bool {
+    match output {
+        syn::ReturnType::Type(_, ty) => is_float_type(ty),
+        syn::ReturnType::Default => false,
     }
 }
 
@@ -989,7 +1078,10 @@ impl CallSiteScan<'_> {
                 kind: ObligationKind::CallSite {
                     callee: callee.clone(),
                 },
-                predicate: substitute_exprs(requires, &bindings),
+                predicate: license_pure_calls_predicate(
+                    substitute_exprs(requires, &bindings),
+                    self.functions,
+                ),
                 hypotheses: self.gamma.clone(),
                 hypothesis_provenance: self.gamma_provenance.clone(),
                 enforced,
@@ -1059,7 +1151,9 @@ impl CallSiteScan<'_> {
         bindings.insert("result".to_string(), ident_expr(&binding));
 
         for ensures in &facts.ensures {
-            if let Predicate::Expr(expr) = substitute_exprs(ensures, &bindings) {
+            let predicate =
+                license_pure_calls_predicate(substitute_exprs(ensures, &bindings), self.functions);
+            if let Predicate::Expr(expr) = predicate {
                 self.gamma.push(expr);
                 self.gamma_provenance.push(taint.clone());
             }
@@ -1557,6 +1651,157 @@ fn ident_expr(name: &str) -> Expr {
     })
 }
 
+/// Counts, over one function body, the same-file calls [`FnFacts::licensed`]
+/// treats as unresolved (ADR-0011 condition 3) — identically to
+/// `rust-effect`'s `CallVisitor` (#67): a single-segment `Expr::Path` call
+/// resolved against `known` (this file's function names) counts as
+/// resolved, a method call or anything else always counts against it.
+///
+/// A deliberate copy of `rust-effect`'s algorithm rather than a shared
+/// import (ADR-0011's own consequences section flags the copy-drift risk;
+/// [`mvl_rust_core::impl_methods`] is this workspace's precedent for
+/// extracting a genuinely shared boundary, and this one wasn't judged
+/// worth it yet at this scope).
+struct UnresolvedCallCounter<'a> {
+    known: &'a std::collections::HashSet<String>,
+    count: usize,
+}
+
+impl<'ast> Visit<'ast> for UnresolvedCallCounter<'_> {
+    fn visit_expr_call(&mut self, node: &'ast ExprCall) {
+        let resolved = called_fn_name(&node.func).is_some_and(|name| self.known.contains(&name));
+        if !resolved {
+            self.count += 1;
+        }
+        visit::visit_expr_call(self, node);
+    }
+
+    fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+        self.count += 1;
+        visit::visit_expr_method_call(self, node);
+    }
+}
+
+fn count_unresolved_calls(block: &Block, known: &std::collections::HashSet<String>) -> usize {
+    let mut counter = UnresolvedCallCounter { known, count: 0 };
+    counter.visit_block(block);
+    counter.count
+}
+
+/// A stable, valid-identifier symbol for `call`, keyed on its own token
+/// text so two occurrences of the *same* call (same callee, same argument
+/// expressions — exactly the `span(gen(), gen())` shape ADR-0008 §3
+/// worried about) rewrite to the *same* opaque symbol. That's what makes
+/// the rewrite sound rather than merely permissive: reflexivity over two
+/// occurrences of a licensed, deterministic call is genuinely valid, and
+/// collapsing them to one symbol is what lets [`is_call_free`]-gated
+/// structural equality see that.
+///
+/// [`is_call_free`]: mvl_rust_core::solver::native
+fn opaque_symbol_for_call(call: &ExprCall) -> Expr {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    quote::quote!(#call).to_string().hash(&mut hasher);
+    ident_expr(&format!("__mvl_pure_call_{:x}", hasher.finish()))
+}
+
+/// Rewrites every same-file call to a [`FnFacts::licensed`] pure function
+/// (ADR-0011) into its [`opaque_symbol_for_call`], recursing through the
+/// same comparison/arithmetic shape [`strip_safe_widening_casts`] does
+/// (plus `Field`/`Index`, which a substituted argument can introduce) so a
+/// licensed call is found wherever it ends up sitting in a built predicate
+/// — not only at the term's top level.
+///
+/// This is `rust-refine`'s own term rewrite (ADR-0008 §5): `native.rs`'s
+/// `is_call_free` and the solver it gates are untouched. A term this
+/// function has run over is call-free *because* every call left in it was
+/// either unlicensed (left as `Expr::Call`, still call-bearing, still
+/// correctly denied reflexivity) or licensed and erased.
+fn license_pure_calls(expr: &Expr, functions: &HashMap<String, FnFacts>) -> Expr {
+    match expr {
+        Expr::Call(call) => {
+            let licensed = called_fn_name(&call.func)
+                .and_then(|name| functions.get(&name))
+                .is_some_and(FnFacts::licensed);
+            if licensed {
+                opaque_symbol_for_call(call)
+            } else {
+                let mut call = call.clone();
+                call.args = call
+                    .args
+                    .iter()
+                    .map(|arg| license_pure_calls(arg, functions))
+                    .collect();
+                Expr::Call(call)
+            }
+        }
+        Expr::Binary(bin) => {
+            let mut bin = bin.clone();
+            bin.left = Box::new(license_pure_calls(&bin.left, functions));
+            bin.right = Box::new(license_pure_calls(&bin.right, functions));
+            Expr::Binary(bin)
+        }
+        Expr::Unary(unary) => {
+            let mut unary = unary.clone();
+            unary.expr = Box::new(license_pure_calls(&unary.expr, functions));
+            Expr::Unary(unary)
+        }
+        Expr::Paren(paren) => {
+            let mut paren = paren.clone();
+            paren.expr = Box::new(license_pure_calls(&paren.expr, functions));
+            Expr::Paren(paren)
+        }
+        Expr::Group(group) => {
+            let mut group = group.clone();
+            group.expr = Box::new(license_pure_calls(&group.expr, functions));
+            Expr::Group(group)
+        }
+        Expr::Field(field) => {
+            let mut field = field.clone();
+            field.base = Box::new(license_pure_calls(&field.base, functions));
+            Expr::Field(field)
+        }
+        Expr::Index(index) => {
+            let mut index = index.clone();
+            index.expr = Box::new(license_pure_calls(&index.expr, functions));
+            index.index = Box::new(license_pure_calls(&index.index, functions));
+            Expr::Index(index)
+        }
+        Expr::Cast(cast) => {
+            let mut cast = cast.clone();
+            cast.expr = Box::new(license_pure_calls(&cast.expr, functions));
+            Expr::Cast(cast)
+        }
+        other => other.clone(),
+    }
+}
+
+/// [`license_pure_calls`], lifted over a whole [`Predicate`] — applied
+/// *after* [`substitute_exprs`], the same ordering [`strip_safe_widening_casts_predicate`]
+/// uses and for the same reason: a licensed call can equally arrive
+/// through the substituted argument as through the callee's own
+/// `requires`/`ensures` text.
+fn license_pure_calls_predicate(
+    pred: Predicate,
+    functions: &HashMap<String, FnFacts>,
+) -> Predicate {
+    match pred {
+        Predicate::Expr(expr) => Predicate::Expr(license_pure_calls(&expr, functions)),
+        Predicate::Forall { var, lo, hi, body } => Predicate::Forall {
+            var,
+            lo,
+            hi,
+            body: Box::new(license_pure_calls_predicate(*body, functions)),
+        },
+        Predicate::Exists { var, lo, hi, body } => Predicate::Exists {
+            var,
+            lo,
+            hi,
+            body: Box::new(license_pure_calls_predicate(*body, functions)),
+        },
+    }
+}
+
 /// `!cond`, kept in a form the solver can still read where possible: a
 /// comparison flips its operator (`x > 0` → `x <= 0`), a double negation
 /// cancels, and anything else becomes a plain `!(…)`.
@@ -1744,6 +1989,27 @@ pub fn find_obligations(source: &str) -> Result<Vec<FoundObligation>, CheckError
     }
     for (name, method) in impl_methods(&file) {
         functions.insert(name, FnFacts::of_method(method));
+    }
+
+    // A second pass, once every function's name is known: `unresolved_calls`
+    // (ADR-0011 condition 3) needs the full same-file name set to tell a
+    // resolvable call from an unresolvable one, which a single bottom-up
+    // walk building `functions` can't provide for a callee declared later
+    // in the file.
+    let known: std::collections::HashSet<String> = functions.keys().cloned().collect();
+    for item in flatten_items(&file) {
+        if let Item::Fn(item_fn) = item {
+            let count = count_unresolved_calls(&item_fn.block, &known);
+            if let Some(facts) = functions.get_mut(&item_fn.sig.ident.to_string()) {
+                facts.unresolved_calls = count;
+            }
+        }
+    }
+    for (name, method) in impl_methods(&file) {
+        let count = count_unresolved_calls(&method.block, &known);
+        if let Some(facts) = functions.get_mut(&name) {
+            facts.unresolved_calls = count;
+        }
     }
 
     let closed = return_site_closure(&file, &functions);

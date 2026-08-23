@@ -459,6 +459,91 @@ fn an_arity_mismatch_produces_no_obligation() {
     .is_empty());
 }
 
+// ── ADR-0011: the resolved-pure closure licence (#110) ────────────────────
+
+#[test]
+fn a_resolved_pure_helper_licenses_reflexivity_over_two_identical_calls() {
+    // The exact shape ADR-0008 §3 worried about (`span(gen(), gen())`
+    // against `requires(lo <= hi)`), now with `gen` meeting all of ADR-0011's
+    // conditions: explicit empty `#[mvl::effect()]`, zero unresolved calls,
+    // non-float return. Both call-site arguments rewrite to the identical
+    // opaque symbol, so `lo <= hi` becomes `x <= x` -- proven by L1
+    // reflexivity, not merely left undecided.
+    let result = only_call_site(
+        "#[mvl::effect()]\n\
+         fn gen() -> i64 { 42 }\n\
+         #[mvl::requires(lo <= hi)]\n\
+         fn span(lo: i64, hi: i64) -> i64 { hi - lo }\n\
+         fn caller() -> i64 { span(gen(), gen()) }",
+    );
+    assert_proven_at(&result, Layer::L1);
+}
+
+#[test]
+fn an_effect_pure_function_with_an_unresolved_call_is_not_licensed() {
+    // `wall_clock` carries the explicit empty annotation but calls a
+    // multi-segment path (`SystemTime::now`), which is always unresolved
+    // (ADR-0008 §3's own counterexample) -- `unresolved_calls > 0` denies
+    // the licence, so the call stays a call and reflexivity cannot fire.
+    let result = only_call_site(
+        "#[mvl::effect()]\n\
+         fn wall_clock() -> i64 {\n\
+           std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64\n\
+         }\n\
+         #[mvl::requires(lo <= hi)]\n\
+         fn span(lo: i64, hi: i64) -> i64 { hi - lo }\n\
+         fn caller() -> i64 { span(wall_clock(), wall_clock()) }",
+    );
+    assert_eq!(result, DischargeResult::Runtime);
+}
+
+#[test]
+fn an_effect_pure_function_with_a_method_call_is_not_licensed() {
+    // `counter` carries the explicit empty annotation but its body is all
+    // method calls (`c.get`/`c.set`), always unresolved regardless of
+    // target -- same denial, different reason (ADR-0008 §3's other
+    // counterexample).
+    let result = only_call_site(
+        "#[mvl::effect()]\n\
+         fn counter(c: &std::cell::Cell<i64>) -> i64 {\n\
+           c.set(c.get() + 1);\n\
+           c.get()\n\
+         }\n\
+         #[mvl::requires(lo <= hi)]\n\
+         fn span(lo: i64, hi: i64) -> i64 { hi - lo }\n\
+         fn caller(c: &std::cell::Cell<i64>) -> i64 { span(counter(c), counter(c)) }",
+    );
+    assert_eq!(result, DischargeResult::Runtime);
+}
+
+#[test]
+fn a_float_returning_pure_function_is_not_licensed() {
+    // Meets every other condition, but ADR-0011 condition 4 denies any
+    // `f32`/`f64` return syntactically -- `x == x` is `false` for `NaN`.
+    let result = only_call_site(
+        "#[mvl::effect()]\n\
+         fn gen() -> f64 { 42.0 }\n\
+         #[mvl::requires(lo <= hi)]\n\
+         fn span(lo: f64, hi: f64) -> f64 { hi - lo }\n\
+         fn caller() -> f64 { span(gen(), gen()) }",
+    );
+    assert_eq!(result, DischargeResult::Runtime);
+}
+
+#[test]
+fn an_implicitly_pure_function_without_the_explicit_attribute_is_not_licensed() {
+    // Absence is never read as a licence (ADR-0008 §2's tri-state,
+    // unchanged by ADR-0011): `gen` is call-free and would otherwise
+    // qualify, but it never wrote `#[mvl::effect()]`.
+    let result = only_call_site(
+        "fn gen() -> i64 { 42 }\n\
+         #[mvl::requires(lo <= hi)]\n\
+         fn span(lo: i64, hi: i64) -> i64 { hi - lo }\n\
+         fn caller() -> i64 { span(gen(), gen()) }",
+    );
+    assert_eq!(result, DischargeResult::Runtime);
+}
+
 #[test]
 fn a_nested_fn_does_not_inherit_the_enclosing_gamma() {
     // `inner`'s call must NOT be provable: the `x > 0` belongs to `outer`'s
