@@ -665,3 +665,102 @@ fn a_non_total_impl_method_is_not_scanned() {
         "expected no diagnostics for a non-#[total] impl method, got {diagnostics:?}"
     );
 }
+
+#[test]
+fn let_underscore_call_is_rejected() {
+    let source = r#"
+        #[mvl::total]
+        fn f() {
+            let _ = write_config();
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].message.contains("silently discards"));
+}
+
+#[test]
+fn let_underscore_bare_variable_is_not_rejected() {
+    // Not a call -- discarding an already-bound value isn't swallowing a
+    // fallible result, it's just an unused-binding pattern.
+    let source = r#"
+        #[mvl::total]
+        fn f(x: i32) {
+            let _ = x;
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert!(
+        diagnostics.is_empty(),
+        "expected no diagnostics for `let _ = <bare ident>`, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn drop_of_a_call_result_is_rejected() {
+    let source = r#"
+        #[mvl::total]
+        fn f() {
+            drop(write_config());
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].message.contains("silently discards"));
+}
+
+#[test]
+fn mem_drop_of_a_call_result_is_rejected() {
+    let source = r#"
+        #[mvl::total]
+        fn f() {
+            std::mem::drop(write_config());
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].message.contains("silently discards"));
+}
+
+#[test]
+fn map_discarding_closure_is_rejected() {
+    let source = r#"
+        #[mvl::total]
+        fn f(r: Result<i32, String>) {
+            r.map(|_| ());
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].message.contains("discards the wrapped value"));
+}
+
+#[test]
+fn map_with_real_transform_is_not_rejected() {
+    let source = r#"
+        #[mvl::total]
+        fn f(r: Result<i32, String>) -> Result<i32, String> {
+            r.map(|x| x + 1)
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert!(
+        diagnostics.is_empty(),
+        "expected no diagnostics for a real `.map` transform, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn swallow_check_does_not_scan_non_total_functions() {
+    let source = r#"
+        fn f() {
+            let _ = write_config();
+            drop(write_config());
+        }
+    "#;
+    let diagnostics = check_source(source).unwrap();
+    assert!(
+        diagnostics.is_empty(),
+        "expected no diagnostics for a non-#[total] function, got {diagnostics:?}"
+    );
+}

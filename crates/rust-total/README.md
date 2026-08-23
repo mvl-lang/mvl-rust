@@ -1,11 +1,12 @@
 # rust-total
 
 `#[mvl::total]` verifier for [mvl-rust](https://github.com/mvl-lang/mvl-rust):
-a syntactic panic-risk scan, plus a `decreases`-measure provability check on
-direct recursion (spec 003 Requirement 3, ADR-0009) and on `while`/`loop`
-(spec 003 Requirement 6, ADR-0010). Only functions carrying `#[mvl::total]`
-are scanned; everything else is untouched. This is still weaker than the
-name suggests — see
+a syntactic panic-risk scan, a silent-swallow scan for discarded call
+results (spec 003 Requirement 7, #117), plus a `decreases`-measure
+provability check on direct recursion (spec 003 Requirement 3, ADR-0009)
+and on `while`/`loop` (spec 003 Requirement 6, ADR-0010). Only functions
+carrying `#[mvl::total]` are scanned; everything else is untouched. This is
+still weaker than the name suggests — see
 [Known Limitations](https://github.com/mvl-lang/mvl-rust/blob/main/.openspec/specs/003-function-contracts/spec.md#known-limitations)
 for what is and isn't proved, including how this differs from MVL's own
 `total fn`.
@@ -14,7 +15,7 @@ for what is and isn't proved, including how this differs from MVL's own
 
 | Attribute | Meaning |
 |---|---|
-| `#[mvl::total]` | Claims the function is panic-free and terminates. The tool checks for syntactically obvious panic constructs and, on direct recursion or a `while`/`loop`, that a decreasing measure is present and provably decreases — it does not prove panic-freedom. |
+| `#[mvl::total]` | Claims the function is panic-free and terminates. The tool checks for syntactically obvious panic constructs, silent discarding of a call's result (`let _ = <call>;`, `drop(<call>)`, `.map(\|_\| ())`), and, on direct recursion or a `while`/`loop`, that a decreasing measure is present and provably decreases — it does not prove panic-freedom. |
 | `#[mvl::decreases(measure)]` | Required on recursive `#[mvl::total]` functions. `measure` must be a bare parameter identifier; every direct recursive call's argument for it must discharge `<argument> < <measure>` as `Proven` through the native linear-arithmetic solver `rust-refine` also uses (subtraction of a literal or a `requires`-bounded amount qualifies; division/modulo never does) — anything unproven is rejected (ADR-0009). |
 | `mvl::loop_decreases!(measure)` | Required as the first statement of any `while`/`loop` body in a `#[mvl::total]` function. A **function-like macro**, not an attribute — a real attribute macro cannot legally attach to a loop expression on stable Rust (ADR-0010). Same provability rule as `decreases`, applied to the loop's one, unconditional, top-level assignment of `measure`. |
 

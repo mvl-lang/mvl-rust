@@ -1,5 +1,5 @@
 //! Entry point: finds every `#[mvl::total]`-annotated function in a source
-//! file and runs both checks (panic-freedom, termination) against it.
+//! file and runs all checks (panic-freedom, termination, swallow) against it.
 //! Functions without `#[mvl::total]` aren't scanned at all — rust-total's
 //! checks are opt-in per function, not file-wide.
 //!
@@ -26,6 +26,7 @@
 
 mod loop_termination;
 mod panic_freedom;
+mod swallow;
 mod termination;
 
 use mvl_rust_core::attrs::{MvlAttr, Predicate};
@@ -94,6 +95,7 @@ fn check_total_item(item_fn: &ItemFn, diagnostics: &mut Vec<Diagnostic>) {
         panic_freedom::check(item_fn, diagnostics);
         termination::check(item_fn, decreases.as_ref(), &requires, diagnostics);
         loop_termination::check(item_fn, &requires, diagnostics);
+        swallow::check(item_fn, diagnostics);
     }
 }
 
