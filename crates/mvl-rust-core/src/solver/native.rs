@@ -1173,7 +1173,53 @@ fn classify_clause(expr: &Expr) -> Clause {
         Expr::Paren(paren) => classify_clause(&paren.expr),
         Expr::Group(group) => classify_clause(&group.expr),
         Expr::Binary(bin) => classify_comparison(bin),
+        Expr::MethodCall(_) => match fold_known_shape_result_option_method(expr) {
+            Some(value) => Clause::Constant(value),
+            None => Clause::Unknown,
+        },
         _ => Clause::Unknown,
+    }
+}
+
+/// Constant-folds a syntactically known-shape `Result`/`Option` inspector
+/// method call (`Ok(x).is_ok()`, `None.is_none()`, ...) to its literal
+/// bool, purely from AST shape -- `x`/`e` are never evaluated, and no type
+/// information is used or needed (#97).
+///
+/// Matches on the receiver's constructor path's *last segment* only, same
+/// convention as [`is_call_free`]/[`ident_name`] elsewhere in this file, so
+/// `Ok(x)`, `Result::Ok(x)`, and `std::result::Result::Ok(x)` are all
+/// recognized alike.
+fn fold_known_shape_result_option_method(expr: &Expr) -> Option<bool> {
+    let Expr::MethodCall(call) = expr else {
+        return None;
+    };
+    if !call.args.is_empty() {
+        return None;
+    }
+    let receiver = ungroup(&call.receiver);
+    let variant = match receiver {
+        Expr::Call(c) if c.args.len() == 1 => {
+            let Expr::Path(p) = ungroup(&c.func) else {
+                return None;
+            };
+            if p.qself.is_some() {
+                return None;
+            }
+            p.path.segments.last()?.ident.to_string()
+        }
+        Expr::Path(p) if p.qself.is_none() => p.path.segments.last()?.ident.to_string(),
+        _ => return None,
+    };
+    let method = call.method.to_string();
+    match (variant.as_str(), method.as_str()) {
+        ("Ok", "is_ok") | ("Err", "is_err") | ("Some", "is_some") | ("None", "is_none") => {
+            Some(true)
+        }
+        ("Ok", "is_err") | ("Err", "is_ok") | ("Some", "is_none") | ("None", "is_some") => {
+            Some(false)
+        }
+        _ => None,
     }
 }
 
@@ -1424,6 +1470,85 @@ mod tests {
             discharge("false"),
             DischargeResult::Violated { .. }
         ));
+    }
+
+    #[test]
+    fn ok_is_ok_folds_to_l1() {
+        assert_eq!(
+            discharge("Ok(5).is_ok()"),
+            DischargeResult::Proven { layer: Layer::L1 }
+        );
+    }
+
+    #[test]
+    fn ok_is_err_folds_to_violated() {
+        assert!(matches!(
+            discharge("Ok(5).is_err()"),
+            DischargeResult::Violated { .. }
+        ));
+    }
+
+    #[test]
+    fn err_is_err_folds_to_l1() {
+        assert_eq!(
+            discharge("Err(5).is_err()"),
+            DischargeResult::Proven { layer: Layer::L1 }
+        );
+    }
+
+    #[test]
+    fn err_is_ok_folds_to_violated() {
+        assert!(matches!(
+            discharge("Err(5).is_ok()"),
+            DischargeResult::Violated { .. }
+        ));
+    }
+
+    #[test]
+    fn some_is_some_folds_to_l1() {
+        assert_eq!(
+            discharge("Some(5).is_some()"),
+            DischargeResult::Proven { layer: Layer::L1 }
+        );
+    }
+
+    #[test]
+    fn some_is_none_folds_to_violated() {
+        assert!(matches!(
+            discharge("Some(5).is_none()"),
+            DischargeResult::Violated { .. }
+        ));
+    }
+
+    #[test]
+    fn none_is_none_folds_to_l1() {
+        assert_eq!(
+            discharge("None.is_none()"),
+            DischargeResult::Proven { layer: Layer::L1 }
+        );
+    }
+
+    #[test]
+    fn none_is_some_folds_to_violated() {
+        assert!(matches!(
+            discharge("None.is_some()"),
+            DischargeResult::Violated { .. }
+        ));
+    }
+
+    #[test]
+    fn qualified_result_ok_path_still_folds() {
+        assert_eq!(
+            discharge("Result::Ok(5).is_ok()"),
+            DischargeResult::Proven { layer: Layer::L1 }
+        );
+    }
+
+    #[test]
+    fn method_call_on_variable_receiver_is_not_folded() {
+        // Receiver isn't a syntactically known Ok/Err/Some/None shape --
+        // must fall through to Runtime, not be guessed at.
+        assert_eq!(discharge("x.is_ok()"), DischargeResult::Runtime);
     }
 
     #[test]

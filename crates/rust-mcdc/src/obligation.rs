@@ -16,6 +16,11 @@ pub struct ObligationRecord {
     pub conditions: usize,
     pub vectors_required: usize,
     pub compiler_void: bool,
+    /// `true` if this is an exhaustive `match` whose exhaustiveness relies
+    /// on a `_`/catch-all arm rather than every variant being named --
+    /// `syn` has no type info, so this flags any catch-all arm regardless
+    /// of the scrutinee's actual type (issue #96).
+    pub wildcard_risk: bool,
 }
 
 /// A stable, filesystem- and test-name-safe obligation id: the file's

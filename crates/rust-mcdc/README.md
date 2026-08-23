@@ -8,7 +8,12 @@ halves and maps each onto tools this workspace already has:
   condition, or a `match` guard -- flattened into its leaf conditions and
   the `&&`/`||` operators joining them. An exhaustive `match` itself is
   recorded as compiler-void: no test obligation, since Rust's exhaustiveness
-  check already covers every arm.
+  check already covers every arm. If that exhaustiveness comes from a `_`
+  catch-all rather than every variant being named, the obligation is also
+  flagged `wildcard_risk` -- compiler-void still holds (no test can add
+  more coverage than the compiler already guarantees), but a `_` arm can
+  silently absorb a variant added later with no compiler signal, so it's
+  surfaced as a totality-hiding risk distinct from a fully-named match.
 
 Discharge has **two independent paths** over the same `obligations.json`:
 
