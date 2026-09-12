@@ -88,17 +88,57 @@ A `let` pattern (`if let`/`while let`, or one leaf of a `&&`-joined let-chain) M
 
 Every decision MUST be representable as a serializable `ObligationRecord` — `id`, `file`, `line`, `decision` (source text), `conditions` (leaf count), `vectors_required`, `compiler_void`, `wildcard_risk` — independent of the in-process `Decision` type a scan produces, so `obligations.json` can be written by one process invocation and read by another (scan and harvest are separate invocations by design).
 
-An obligation's `id` MUST be derived from the file's stem and the decision's line number (e.g. `delete_60` for `btree/delete.rs:60`), slugifying any non-alphanumeric stem character to `_`. This id format is NOT guaranteed unique across two files sharing a stem (e.g. two `mod.rs`s) — a caller scanning a whole crate that cares about that collision MUST qualify further itself.
+An obligation's `id` MUST be `<module-slug>_<fn>_<decision-hash>` (#121), e.g. `btree_delete_remove_f97051a9` for `a && b` inside `fn remove` in `src/btree/delete.rs`; `<fn>` is the slugified name of the innermost enclosing free function, `impl` method or trait default method, and is omitted for a decision outside any `fn`. The module slug is every path component after the last `src` component (the whole path if there is none), with `mod.rs` collapsing to its directory and `lib.rs`/`main.rs` kept as-is; each component is slugified (non-alphanumeric → `_`) and the components are joined with `_`. The decision hash is 8 hex chars of FNV-1a (64-bit, folded to 32) over the decision's source text with whitespace runs collapsed to one space. The id MUST NOT depend on the line number, so edits elsewhere in the file do not retag a decision; it changes exactly when the decision text changes. Two decisions with the same base id (same file, same `fn`, same text) MUST be disambiguated with an occurrence suffix (`_2`, `_3`, …) in source order, so distinct decisions under one `src` tree never share an id.
 
-**Implementation:** `crates/rust-mcdc/src/obligation.rs`, `crates/rust-mcdc/src/scanner.rs::Decision::to_record`
+**Implementation:** `crates/rust-mcdc/src/obligation.rs`, `crates/rust-mcdc/src/scanner.rs::to_records`
 
-#### Scenario: An obligation id is the file stem plus line number, slugified
+#### Scenario: An obligation id is the module slug plus a decision-text hash
 
-- GIVEN a decision at `src/btree/delete.rs:60`
-- WHEN its id is computed
-- THEN the id is `delete_60`
+- GIVEN files `src/btree/delete.rs`, `src/vm/batch.rs`, `src/codegen/batch.rs`, `src/storage/row/vfs/mod.rs` and `src/types.rs`
+- WHEN their module slugs are computed
+- THEN they are `btree_delete`, `vm_batch`, `codegen_batch`, `storage_row_vfs` and `types` respectively, and the same decision text in `vm/batch.rs` and `codegen/batch.rs` yields distinct ids
 
-**Tests:** `crates/rust-mcdc/src/obligation.rs::tests::obligation_id_uses_the_file_stem_and_line`, `::obligation_id_slugifies_non_alphanumeric_stem_characters`
+**Tests:** `crates/rust-mcdc/src/obligation.rs::tests::module_slug_uses_the_module_path`, `::module_slug_keeps_top_level_files_unqualified`, `::module_slug_collapses_mod_rs_to_its_directory`, `::module_slug_uses_the_last_src_component`, `::module_slug_uses_the_whole_path_without_a_src_component`, `::module_slug_slugifies_non_alphanumeric_components`, `::obligation_id_is_module_slug_fn_and_decision_hash`
+
+#### Scenario: The decision hash is line-independent and whitespace-insensitive
+
+- GIVEN the decision texts `a && b`, `a &&\n    b` and `a || b`
+- WHEN their hashes are computed
+- THEN the first two are equal 8-hex-char strings and the third differs
+
+**Tests:** `crates/rust-mcdc/src/obligation.rs::tests::decision_hash_is_eight_hex_chars_and_deterministic`, `::decision_hash_ignores_whitespace_differences`
+
+#### Scenario: The id carries the innermost enclosing fn
+
+- GIVEN `src/code.rs` with `if a && b || c` in `fn bla_bla`, `if a` in an `impl` method `m`, `if a` in a trait default method `d`, and an `if` in a `const` initializer
+- WHEN its records are built
+- THEN the ids start `code_bla_bla_`, `code_m_`, `code_d_` and `code_` respectively, the two `if a`s differ without an occurrence suffix, and a decision in a nested `fn` attributes to the inner one
+
+**Tests:** `crates/rust-mcdc/src/scanner.rs::tests::to_records_qualifies_by_enclosing_fn`, `::nested_fns_attribute_to_the_innermost`
+
+#### Scenario: Repeated decisions in one fn get occurrence suffixes
+
+- GIVEN a `fn` with `if a`, `if a`, `if !a` in that order
+- WHEN its records are built
+- THEN the second `if a` gets id `<first id>_2` and `if !a` gets a distinct unsuffixed id
+
+**Tests:** `crates/rust-mcdc/src/scanner.rs::tests::to_records_suffixes_repeated_decisions_in_source_order`
+
+#### Scenario: Ids survive line shifts and reformatting but not decision edits
+
+- GIVEN `if a && b` in a file
+- WHEN lines are inserted above it and the condition is reformatted across lines, and separately when the condition is edited to `if a || b`
+- THEN the id is unchanged in the first case and different in the second
+
+**Tests:** `crates/rust-mcdc/src/scanner.rs::tests::to_records_ids_survive_line_shifts_and_reformatting`
+
+#### Scenario: Same-stem files do not share obligations at harvest
+
+- GIVEN `src/vm/batch.rs` and `src/codegen/batch.rs` each holding a decision on the same line, and tests tagged `mcdc__vm_batch_decide_503cd493__v1..3` plus `mcdc__codegen_batch_decide_503cd493__v1`
+- WHEN the obligations are harvested
+- THEN the `vm` obligation is discharged with 3 vectors and the `codegen` one is undischarged with 1
+
+**Tests:** `crates/rust-mcdc/tests/harvest.rs::same_stem_files_get_distinct_ids_and_vectors_attribute_to_the_right_one`
 
 ---
 

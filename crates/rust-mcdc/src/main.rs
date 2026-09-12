@@ -105,7 +105,7 @@ fn run_scan(args: &[String]) -> ExitCode {
             }
         };
         let file = path.display().to_string();
-        obligations.extend(decisions.iter().map(|d| d.to_record(&file)));
+        obligations.extend(scanner::to_records(&file, &decisions));
     }
 
     let json = serde_json::to_string_pretty(&obligations).expect("obligations always serialize");
@@ -136,7 +136,7 @@ fn run_generate(args: &[String]) -> ExitCode {
 
     println!("Tag each generated test with `mcdc__<id>__v<N>` (N = 1..=vectors_required), e.g.:");
     println!("  #[test]");
-    println!("  fn mcdc__delete_60__v1_leaf_a_true() {{ /* ... */ }}");
+    println!("  fn mcdc__btree_delete_remove_f97051a9__v1_leaf_a_true() {{ /* ... */ }}");
     println!();
     for obligation in &obligations {
         if obligation.compiler_void {

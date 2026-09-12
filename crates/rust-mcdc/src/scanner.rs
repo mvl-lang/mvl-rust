@@ -45,6 +45,10 @@ pub struct DecisionOp {
 pub struct Decision {
     pub site: Span,
     pub text: String,
+    /// Name of the innermost enclosing `fn` (free function, `impl` method
+    /// or trait default method), `None` at module level (e.g. a `const`
+    /// initializer). Part of the obligation id (#121).
+    pub enclosing_fn: Option<String>,
     /// Empty for a compiler-void decision (an exhaustive `match`).
     pub leaves: Vec<Span>,
     pub ops: Vec<DecisionOp>,
@@ -76,22 +80,36 @@ impl Decision {
     pub fn line(&self) -> usize {
         self.site.start().line
     }
+}
 
-    /// The serializable [`crate::obligation::ObligationRecord`] for this
-    /// decision, `file` as given by the caller (a `Span` carries no
-    /// filename of its own).
-    pub fn to_record(&self, file: &str) -> crate::obligation::ObligationRecord {
-        crate::obligation::ObligationRecord {
-            id: crate::obligation::obligation_id(file, self.line()),
-            file: file.to_string(),
-            line: self.line(),
-            decision: self.text.clone(),
-            conditions: self.leaves.len(),
-            vectors_required: self.vectors_required(),
-            compiler_void: self.compiler_void,
-            wildcard_risk: self.wildcard_risk,
-        }
-    }
+/// The serializable [`crate::obligation::ObligationRecord`]s for every
+/// decision scanned from one file, `file` as given by the caller (a
+/// `Span` carries no filename of its own). Ids are
+/// [`crate::obligation::obligation_id`]s; when two decisions in the file
+/// have identical text inside the same `fn` (so identical base ids) the
+/// second and later ones get an occurrence suffix in source order --
+/// `vm_batch_flush_f97051a9`, `vm_batch_flush_f97051a9_2`, ... -- so ids stay unique per file (#121).
+pub fn to_records(file: &str, decisions: &[Decision]) -> Vec<crate::obligation::ObligationRecord> {
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    decisions
+        .iter()
+        .map(|d| {
+            let base = crate::obligation::obligation_id(file, d.enclosing_fn.as_deref(), &d.text);
+            let n = seen.entry(base.clone()).or_insert(0);
+            *n += 1;
+            let id = if *n == 1 { base } else { format!("{base}_{n}") };
+            crate::obligation::ObligationRecord {
+                id,
+                file: file.to_string(),
+                line: d.line(),
+                decision: d.text.clone(),
+                conditions: d.leaves.len(),
+                vectors_required: d.vectors_required(),
+                compiler_void: d.compiler_void,
+                wildcard_risk: d.wildcard_risk,
+            }
+        })
+        .collect()
 }
 
 pub fn slice(source: &str, span: Span) -> &str {
@@ -102,6 +120,8 @@ pub fn slice(source: &str, span: Span) -> &str {
 struct Collector<'s> {
     source: &'s str,
     decisions: Vec<Decision>,
+    /// Stack of enclosing `fn` names, innermost last.
+    fn_stack: Vec<String>,
 }
 
 /// Unwraps `Expr::Paren`/`Expr::Group` (grouping only, no semantic effect
@@ -142,6 +162,7 @@ fn boolean_decision(source: &str, cond: &Expr) -> Option<Decision> {
     Some(Decision {
         site: cond.span(),
         text: slice(source, cond.span()).to_string(),
+        enclosing_fn: None,
         leaves: leaves.iter().map(|e| e.span()).collect(),
         ops,
         compiler_void: false,
@@ -166,17 +187,42 @@ fn is_wildcard_arm(arm: &syn::Arm) -> bool {
     arm.guard.is_none() && matches!(arm.pat, syn::Pat::Wild(_))
 }
 
+impl Collector<'_> {
+    fn push(&mut self, mut decision: Decision) {
+        decision.enclosing_fn = self.fn_stack.last().cloned();
+        self.decisions.push(decision);
+    }
+}
+
 impl<'ast> Visit<'ast> for Collector<'_> {
+    fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+        self.fn_stack.push(node.sig.ident.to_string());
+        visit::visit_item_fn(self, node);
+        self.fn_stack.pop();
+    }
+
+    fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
+        self.fn_stack.push(node.sig.ident.to_string());
+        visit::visit_impl_item_fn(self, node);
+        self.fn_stack.pop();
+    }
+
+    fn visit_trait_item_fn(&mut self, node: &'ast syn::TraitItemFn) {
+        self.fn_stack.push(node.sig.ident.to_string());
+        visit::visit_trait_item_fn(self, node);
+        self.fn_stack.pop();
+    }
+
     fn visit_expr_if(&mut self, node: &'ast ExprIf) {
         if let Some(decision) = boolean_decision(self.source, &node.cond) {
-            self.decisions.push(decision);
+            self.push(decision);
         }
         visit::visit_expr_if(self, node);
     }
 
     fn visit_expr_while(&mut self, node: &'ast ExprWhile) {
         if let Some(decision) = boolean_decision(self.source, &node.cond) {
-            self.decisions.push(decision);
+            self.push(decision);
         }
         visit::visit_expr_while(self, node);
     }
@@ -187,6 +233,7 @@ impl<'ast> Visit<'ast> for Collector<'_> {
         self.decisions.push(Decision {
             site: node.match_token.span(),
             text: slice(self.source, node.span()).to_string(),
+            enclosing_fn: self.fn_stack.last().cloned(),
             leaves: Vec::new(),
             ops: Vec::new(),
             compiler_void: true,
@@ -195,7 +242,7 @@ impl<'ast> Visit<'ast> for Collector<'_> {
         for arm in &node.arms {
             if let Some((_, guard)) = &arm.guard {
                 if let Some(decision) = boolean_decision(self.source, guard) {
-                    self.decisions.push(decision);
+                    self.push(decision);
                 }
             }
         }
@@ -209,6 +256,7 @@ pub fn scan_source(source: &str) -> Result<Vec<Decision>, ScanError> {
     let mut collector = Collector {
         source,
         decisions: Vec::new(),
+        fn_stack: Vec::new(),
     };
     collector.visit_file(&file);
     Ok(collector.decisions)
@@ -335,5 +383,78 @@ mod tests {
         assert_eq!(decisions[0].leaf_texts(source), vec!["a", "b", "c"]);
         assert!(decisions[0].ops[0].is_and);
         assert!(!decisions[0].ops[1].is_and);
+    }
+
+    #[test]
+    fn to_records_suffixes_repeated_decisions_in_source_order() {
+        let source = "fn f(a: bool) { if a { } if a { } if !a { } }";
+        let decisions = scan_source(source).unwrap();
+        let records = to_records("src/x.rs", &decisions);
+        let ids: Vec<&str> = records.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids[0],
+            &format!("x_f_{}", crate::obligation::decision_hash("a"))
+        );
+        assert_eq!(ids[1], format!("{}_2", ids[0]));
+        assert_ne!(ids[2], ids[0]);
+        assert!(!ids[2].ends_with("_2"));
+    }
+
+    #[test]
+    fn to_records_ids_survive_line_shifts_and_reformatting() {
+        let before = "fn f(a: bool, b: bool) { if a && b { } }";
+        let after = "// new comment\n\nuse std::fmt;\n\nfn f(a: bool, b: bool) {\n    if a\n        && b\n    {\n    }\n}";
+        let id_before = to_records("src/x.rs", &scan_source(before).unwrap())[0]
+            .id
+            .clone();
+        let shifted = to_records("src/x.rs", &scan_source(after).unwrap());
+        assert_eq!(shifted[0].id, id_before);
+        assert_ne!(shifted[0].line, 1, "the decision really did move");
+        // Editing the decision itself does retag.
+        let edited = to_records(
+            "src/x.rs",
+            &scan_source("fn f(a: bool, b: bool) { if a || b { } }").unwrap(),
+        );
+        assert_ne!(edited[0].id, id_before);
+    }
+
+    #[test]
+    fn to_records_qualifies_by_enclosing_fn() {
+        let source = "fn bla_bla(a: bool, b: bool, c: bool) { if a && b || c { } }\n\
+                      struct S; impl S { fn m(&self, a: bool) { if a { } } }\n\
+                      trait T { fn d(&self, a: bool) { if a { } } }\n\
+                      const K: bool = if true { true } else { false };";
+        let decisions = scan_source(source).unwrap();
+        let fns: Vec<Option<&str>> = decisions
+            .iter()
+            .map(|d| d.enclosing_fn.as_deref())
+            .collect();
+        assert_eq!(fns, vec![Some("bla_bla"), Some("m"), Some("d"), None]);
+        let records = to_records("src/code.rs", &decisions);
+        assert_eq!(
+            records[0].id,
+            format!(
+                "code_bla_bla_{}",
+                crate::obligation::decision_hash("a && b || c")
+            )
+        );
+        assert_eq!(records[0].vectors_required, 4);
+        assert!(records[1].id.starts_with("code_m_"));
+        assert!(records[2].id.starts_with("code_d_"));
+        assert!(records[3].id.starts_with("code_"));
+        // Same `if a` in two different fns: distinct ids, no occurrence suffix.
+        assert_ne!(records[1].id, records[2].id);
+        assert!(!records[1].id.ends_with("_2") && !records[2].id.ends_with("_2"));
+    }
+
+    #[test]
+    fn nested_fns_attribute_to_the_innermost() {
+        let source = "fn outer(a: bool) { fn inner(b: bool) { if b { } } if a { } }";
+        let decisions = scan_source(source).unwrap();
+        let fns: Vec<Option<&str>> = decisions
+            .iter()
+            .map(|d| d.enclosing_fn.as_deref())
+            .collect();
+        assert_eq!(fns, vec![Some("inner"), Some("outer")]);
     }
 }

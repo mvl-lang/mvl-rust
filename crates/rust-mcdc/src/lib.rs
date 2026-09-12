@@ -7,7 +7,10 @@
 //!   `ObligationRecord`, the shared JSON artifact).
 //! - [`harvest`] is the CLI-exposed discharge path (scan → generate → run →
 //!   harvest, issue #85): join `obligations.json` against tests explicitly
-//!   tagged `mcdc__<id>__v<N>` -- trusts a human/LLM wrote the vector, just
+//!   tagged `mcdc__<id>__v<N>` (id = module path + enclosing fn +
+//!   decision-text hash, e.g. `btree_delete_remove_f97051a9` for `if a && b`
+//!   in `fn remove` of `src/btree/delete.rs`; line-independent so unrelated
+//!   edits don't retag) -- trusts a human/LLM wrote the vector, just
 //!   counts which ones pass. This is a real reporting tool against an
 //!   *already-existing* test suite once its relevant tests carry that tag,
 //!   not merely a fallback for people who forgot to tag.
