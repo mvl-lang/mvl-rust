@@ -365,4 +365,22 @@ mod tests {
         assert_ne!(ids[2], ids[0]);
         assert!(!ids[2].ends_with("_2"));
     }
+
+    #[test]
+    fn to_records_ids_survive_line_shifts_and_reformatting() {
+        let before = "fn f(a: bool, b: bool) { if a && b { } }";
+        let after = "// new comment\n\nuse std::fmt;\n\nfn f(a: bool, b: bool) {\n    if a\n        && b\n    {\n    }\n}";
+        let id_before = to_records("src/x.rs", &scan_source(before).unwrap())[0]
+            .id
+            .clone();
+        let shifted = to_records("src/x.rs", &scan_source(after).unwrap());
+        assert_eq!(shifted[0].id, id_before);
+        assert_ne!(shifted[0].line, 1, "the decision really did move");
+        // Editing the decision itself does retag.
+        let edited = to_records(
+            "src/x.rs",
+            &scan_source("fn f(a: bool, b: bool) { if a || b { } }").unwrap(),
+        );
+        assert_ne!(edited[0].id, id_before);
+    }
 }

@@ -116,6 +116,14 @@ An obligation's `id` MUST be `<module-slug>_<decision-hash>` (#121), e.g. `btree
 
 **Tests:** `crates/rust-mcdc/src/scanner.rs::tests::to_records_suffixes_repeated_decisions_in_source_order`
 
+#### Scenario: Ids survive line shifts and reformatting but not decision edits
+
+- GIVEN `if a && b` in a file
+- WHEN lines are inserted above it and the condition is reformatted across lines, and separately when the condition is edited to `if a || b`
+- THEN the id is unchanged in the first case and different in the second
+
+**Tests:** `crates/rust-mcdc/src/scanner.rs::tests::to_records_ids_survive_line_shifts_and_reformatting`
+
 #### Scenario: Same-stem files do not share obligations at harvest
 
 - GIVEN `src/vm/batch.rs` and `src/codegen/batch.rs` each holding a decision on the same line, and tests tagged `mcdc__vm_batch_503cd493__v1..3` plus `mcdc__codegen_batch_503cd493__v1`
