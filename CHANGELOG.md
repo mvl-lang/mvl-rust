@@ -8,6 +8,12 @@ below backfills everything merged while the workspace sat at that version.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-12
+
+### Changed
+
+- **BREAKING** `rust-mcdc` (#121): obligation ids are now `<module-slug>_<decision-hash>` instead of `<file-stem>_<line>`. The module slug (path after the last `src`, `mod.rs` collapsed to its directory) fixes cross-file collisions — `src/vm/batch.rs` and `src/codegen/batch.rs` used to share `batch_1359`, and `harvest` joins tags to obligations by id alone, so vectors were silently misattributed. The 8-hex FNV-1a hash of the whitespace-normalized decision text replaces the line number, so inserting or deleting code above a decision no longer retags it; the id changes exactly when the decision text changes. Identical decisions in one file get `_2`, `_3` suffixes in source order. `Decision::to_record` is replaced by `scanner::to_records(file, &decisions)`, which assigns those suffixes. Every existing `mcdc__<id>__v<N>` tag changes id: consumers need a one-time `scan` snapshot regeneration and mechanical re-tag (by decision text) when bumping their pinned `MVL_RUST_REV`.
+
 ## [0.9.0] - 2026-08-23
 
 ### Added

@@ -76,22 +76,36 @@ impl Decision {
     pub fn line(&self) -> usize {
         self.site.start().line
     }
+}
 
-    /// The serializable [`crate::obligation::ObligationRecord`] for this
-    /// decision, `file` as given by the caller (a `Span` carries no
-    /// filename of its own).
-    pub fn to_record(&self, file: &str) -> crate::obligation::ObligationRecord {
-        crate::obligation::ObligationRecord {
-            id: crate::obligation::obligation_id(file, self.line()),
-            file: file.to_string(),
-            line: self.line(),
-            decision: self.text.clone(),
-            conditions: self.leaves.len(),
-            vectors_required: self.vectors_required(),
-            compiler_void: self.compiler_void,
-            wildcard_risk: self.wildcard_risk,
-        }
-    }
+/// The serializable [`crate::obligation::ObligationRecord`]s for every
+/// decision scanned from one file, `file` as given by the caller (a
+/// `Span` carries no filename of its own). Ids are
+/// [`crate::obligation::obligation_id`]s; when two decisions in the file
+/// have identical text (so identical base ids) the second and later ones
+/// get an occurrence suffix in source order -- `vm_batch_f97051a9`,
+/// `vm_batch_f97051a9_2`, ... -- so ids stay unique per file (#121).
+pub fn to_records(file: &str, decisions: &[Decision]) -> Vec<crate::obligation::ObligationRecord> {
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    decisions
+        .iter()
+        .map(|d| {
+            let base = crate::obligation::obligation_id(file, &d.text);
+            let n = seen.entry(base.clone()).or_insert(0);
+            *n += 1;
+            let id = if *n == 1 { base } else { format!("{base}_{n}") };
+            crate::obligation::ObligationRecord {
+                id,
+                file: file.to_string(),
+                line: d.line(),
+                decision: d.text.clone(),
+                conditions: d.leaves.len(),
+                vectors_required: d.vectors_required(),
+                compiler_void: d.compiler_void,
+                wildcard_risk: d.wildcard_risk,
+            }
+        })
+        .collect()
 }
 
 pub fn slice(source: &str, span: Span) -> &str {
@@ -335,5 +349,20 @@ mod tests {
         assert_eq!(decisions[0].leaf_texts(source), vec!["a", "b", "c"]);
         assert!(decisions[0].ops[0].is_and);
         assert!(!decisions[0].ops[1].is_and);
+    }
+
+    #[test]
+    fn to_records_suffixes_repeated_decisions_in_source_order() {
+        let source = "fn f(a: bool) { if a { } if a { } if !a { } }";
+        let decisions = scan_source(source).unwrap();
+        let records = to_records("src/x.rs", &decisions);
+        let ids: Vec<&str> = records.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids[0],
+            &format!("x_{}", crate::obligation::decision_hash("a"))
+        );
+        assert_eq!(ids[1], format!("{}_2", ids[0]));
+        assert_ne!(ids[2], ids[0]);
+        assert!(!ids[2].ends_with("_2"));
     }
 }
