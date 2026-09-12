@@ -10,7 +10,7 @@
 //!
 //! ```text
 //! #[test]
-//! fn mcdc__btree_delete_f97051a9__v1_leaf_a_true_leaf_b_false() { ... }
+//! fn mcdc__btree_delete_remove_f97051a9__v1_leaf_a_true_leaf_b_false() { ... }
 //! ```
 //!
 //! `harvest` trusts the tag -- it does not verify the test actually
@@ -153,16 +153,16 @@ mod tests {
     #[test]
     fn parse_tag_extracts_id_and_vector_ignoring_trailing_description() {
         assert_eq!(
-            parse_tag("mcdc__btree_delete_f97051a9__v1_leaf_a_true"),
-            Some(("btree_delete_f97051a9".to_string(), 1))
+            parse_tag("mcdc__btree_delete_remove_f97051a9__v1_leaf_a_true"),
+            Some(("btree_delete_remove_f97051a9".to_string(), 1))
         );
     }
 
     #[test]
     fn parse_tag_handles_module_qualified_names() {
         assert_eq!(
-            parse_tag("btree::tests::mcdc__btree_delete_f97051a9__v2"),
-            Some(("btree_delete_f97051a9".to_string(), 2))
+            parse_tag("btree::tests::mcdc__btree_delete_remove_f97051a9__v2"),
+            Some(("btree_delete_remove_f97051a9".to_string(), 2))
         );
     }
 

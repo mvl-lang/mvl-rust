@@ -24,15 +24,24 @@ const LIB: &str = r#"pub fn decide(a: bool, b: bool) -> bool {
 /// per file -- `mcdc__<id>__v<N>` tags below are built from these so the
 /// fixtures track the id scheme (#121).
 const DECISION: &str = "a || b";
-const LIB_ID: &str = "lib_503cd493";
-const VM_ID: &str = "vm_batch_503cd493";
-const CODEGEN_ID: &str = "codegen_batch_503cd493";
+const LIB_ID: &str = "lib_decide_503cd493";
+const VM_ID: &str = "vm_batch_decide_503cd493";
+const CODEGEN_ID: &str = "codegen_batch_decide_503cd493";
 
 #[test]
 fn fixture_ids_match_the_id_scheme() {
-    assert_eq!(obligation_id("src/lib.rs", DECISION), LIB_ID);
-    assert_eq!(obligation_id("src/vm/batch.rs", DECISION), VM_ID);
-    assert_eq!(obligation_id("src/codegen/batch.rs", DECISION), CODEGEN_ID);
+    assert_eq!(
+        obligation_id("src/lib.rs", Some("decide"), DECISION),
+        LIB_ID
+    );
+    assert_eq!(
+        obligation_id("src/vm/batch.rs", Some("decide"), DECISION),
+        VM_ID
+    );
+    assert_eq!(
+        obligation_id("src/codegen/batch.rs", Some("decide"), DECISION),
+        CODEGEN_ID
+    );
 }
 
 fn scaffold(dir: &std::path::Path, tests: &str) {
@@ -54,11 +63,11 @@ fn all_three_vectors_tagged_and_passing_discharges_the_obligation() {
         &dir,
         r#"
         #[test]
-        fn mcdc__lib_503cd493__v1() { assert!(mcdc_harvest_fixture::decide(true, false)); }
+        fn mcdc__lib_decide_503cd493__v1() { assert!(mcdc_harvest_fixture::decide(true, false)); }
         #[test]
-        fn mcdc__lib_503cd493__v2() { assert!(!mcdc_harvest_fixture::decide(false, false)); }
+        fn mcdc__lib_decide_503cd493__v2() { assert!(!mcdc_harvest_fixture::decide(false, false)); }
         #[test]
-        fn mcdc__lib_503cd493__v3() { assert!(mcdc_harvest_fixture::decide(false, true)); }
+        fn mcdc__lib_decide_503cd493__v3() { assert!(mcdc_harvest_fixture::decide(false, true)); }
         "#,
     );
 
@@ -81,7 +90,7 @@ fn a_missing_vector_leaves_the_obligation_undischarged() {
         &dir,
         r#"
         #[test]
-        fn mcdc__lib_503cd493__v1() { assert!(mcdc_harvest_fixture::decide(true, false)); }
+        fn mcdc__lib_decide_503cd493__v1() { assert!(mcdc_harvest_fixture::decide(true, false)); }
         "#,
     );
 
@@ -129,13 +138,13 @@ fn same_stem_files_get_distinct_ids_and_vectors_attribute_to_the_right_one() {
         &dir,
         r#"
         #[test]
-        fn mcdc__vm_batch_503cd493__v1() { assert!(mcdc_harvest_fixture::vm::batch::decide(true, false)); }
+        fn mcdc__vm_batch_decide_503cd493__v1() { assert!(mcdc_harvest_fixture::vm::batch::decide(true, false)); }
         #[test]
-        fn mcdc__vm_batch_503cd493__v2() { assert!(!mcdc_harvest_fixture::vm::batch::decide(false, false)); }
+        fn mcdc__vm_batch_decide_503cd493__v2() { assert!(!mcdc_harvest_fixture::vm::batch::decide(false, false)); }
         #[test]
-        fn mcdc__vm_batch_503cd493__v3() { assert!(mcdc_harvest_fixture::vm::batch::decide(false, true)); }
+        fn mcdc__vm_batch_decide_503cd493__v3() { assert!(mcdc_harvest_fixture::vm::batch::decide(false, true)); }
         #[test]
-        fn mcdc__codegen_batch_503cd493__v1() { assert!(mcdc_harvest_fixture::codegen::batch::decide(true, false)); }
+        fn mcdc__codegen_batch_decide_503cd493__v1() { assert!(mcdc_harvest_fixture::codegen::batch::decide(true, false)); }
         "#,
     );
     // Replace the flat lib with two same-stem modules holding the same decision.

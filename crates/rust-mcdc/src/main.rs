@@ -136,7 +136,7 @@ fn run_generate(args: &[String]) -> ExitCode {
 
     println!("Tag each generated test with `mcdc__<id>__v<N>` (N = 1..=vectors_required), e.g.:");
     println!("  #[test]");
-    println!("  fn mcdc__btree_delete_f97051a9__v1_leaf_a_true() {{ /* ... */ }}");
+    println!("  fn mcdc__btree_delete_remove_f97051a9__v1_leaf_a_true() {{ /* ... */ }}");
     println!();
     for obligation in &obligations {
         if obligation.compiler_void {

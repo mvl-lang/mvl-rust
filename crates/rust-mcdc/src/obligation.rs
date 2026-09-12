@@ -24,15 +24,17 @@ pub struct ObligationRecord {
 }
 
 /// A stable, filesystem- and test-name-safe obligation id: the file's
-/// module path plus a short content hash of the decision's source text,
-/// e.g. `btree_delete_f97051a9` for the `if a && b` at
-/// `src/btree/delete.rs:60` (issue #121).
+/// module path, the enclosing `fn` name, and a short content hash of the
+/// decision's source text, e.g. `btree_delete_remove_f97051a9` for the
+/// `if a && b` inside `fn remove` in `src/btree/delete.rs` (issue #121).
+/// A decision outside any `fn` (a `const` initializer, say) has no fn
+/// segment: `btree_delete_f97051a9`.
 ///
 /// Neither half depends on the line number, so inserting or deleting
 /// code above a decision does not retag it; the id changes exactly when
 /// the decision's own text changes, which is when its vectors need
-/// revisiting anyway. Two identical decisions in one file get the same
-/// base id -- [`crate::scanner::to_records`] disambiguates those with an
+/// revisiting anyway. Renaming or moving the enclosing `fn` does retag.
+/// Two identical decisions in one `fn` get the same base id -- [`crate::scanner::to_records`] disambiguates those with an
 /// occurrence suffix (`_2`, `_3`, ...) in source order.
 ///
 /// The module path is every path component after the *last* `src`
@@ -43,8 +45,22 @@ pub struct ObligationRecord {
 /// module paths are unique within a crate, so two files under one `src`
 /// tree can never share an id -- the earlier stem-only scheme collided on
 /// any `vm/batch.rs` + `codegen/batch.rs` style layout.
-pub fn obligation_id(file: &str, decision: &str) -> String {
-    format!("{}_{}", module_slug(file), decision_hash(decision))
+pub fn obligation_id(file: &str, enclosing_fn: Option<&str>, decision: &str) -> String {
+    match enclosing_fn {
+        Some(name) => format!(
+            "{}_{}_{}",
+            module_slug(file),
+            slugify(name),
+            decision_hash(decision)
+        ),
+        None => format!("{}_{}", module_slug(file), decision_hash(decision)),
+    }
+}
+
+fn slugify(part: &str) -> String {
+    part.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
 }
 
 /// The module-path half of an [`obligation_id`]; see there for the rule.
@@ -75,11 +91,7 @@ pub fn module_slug(file: &str) -> String {
     }
     let slug: String = parts
         .iter()
-        .map(|part| {
-            part.chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-                .collect::<String>()
-        })
+        .map(|part| slugify(part))
         .collect::<Vec<_>>()
         .join("_");
     if slug.is_empty() {
@@ -168,16 +180,29 @@ mod tests {
     }
 
     #[test]
-    fn obligation_id_is_module_slug_plus_decision_hash() {
+    fn obligation_id_is_module_slug_fn_and_decision_hash() {
         assert_eq!(
-            obligation_id("src/btree/delete.rs", "a && b"),
+            obligation_id("src/btree/delete.rs", Some("remove"), "a && b"),
+            format!("btree_delete_remove_{}", decision_hash("a && b"))
+        );
+        assert_eq!(
+            obligation_id("src/btree/delete.rs", None, "a && b"),
             format!("btree_delete_{}", decision_hash("a && b"))
+        );
+        // Raw identifiers slugify like everything else.
+        assert_eq!(
+            obligation_id("src/x.rs", Some("r#match"), "a"),
+            format!("x_r_match_{}", decision_hash("a"))
         );
         // Same decision text in same-stem files: distinct ids.
         assert_ne!(
-            obligation_id("src/vm/batch.rs", "x > 0"),
-            obligation_id("src/codegen/batch.rs", "x > 0")
+            obligation_id("src/vm/batch.rs", Some("f"), "x > 0"),
+            obligation_id("src/codegen/batch.rs", Some("f"), "x > 0")
         );
-        // Line-independent by construction: no line argument at all.
+        // Same decision text in different fns of one file: distinct ids.
+        assert_ne!(
+            obligation_id("src/vm/batch.rs", Some("f"), "x > 0"),
+            obligation_id("src/vm/batch.rs", Some("g"), "x > 0")
+        );
     }
 }
