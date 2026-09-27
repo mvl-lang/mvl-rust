@@ -8,6 +8,12 @@ below backfills everything merged while the workspace sat at that version.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-27
+
+### Added
+
+- `cargo-mvl` (#124): a successful `cargo mvl check` prints one summary line to stderr (`mvl check: 25 files · limit total refine effect ifc · ok`; single tools print `mvl limit: 25 files · ok`), so a green run no longer looks like it did nothing; `-q`/`--quiet` keeps the old silent behaviour. `-h`/`--help` now prints usage for `cargo mvl` and every subcommand, and an unknown `-`-prefixed argument exits 2 with `unknown option` instead of a file-read error. `cargo mvl test` still forwards everything except a help flag ahead of `--` to `cargo test`; assurance-JSON stdout is unchanged.
+
 ## [0.10.0] - 2026-09-12
 
 ### Changed

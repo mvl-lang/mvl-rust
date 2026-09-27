@@ -179,6 +179,16 @@ The meta-command MUST run the five tools in the order `limit → total → refin
 
 **Tests:** `crates/cargo-mvl/tests/check.rs::tool_order_is_limit_total_refine_effect_ifc`, `::check_source_runs_all_five_tools_in_order`
 
+#### Scenario: A green run is visibly distinct from one that did nothing
+
+- GIVEN files on which every tool reports no errors
+- WHEN `cargo mvl check` or a single-tool subcommand runs without `-q`
+- THEN it MUST print one summary line to stderr naming the file count and the tools run, and exit 0
+- AND with `-q` it MUST print nothing
+- AND an unrecognised `-`-prefixed argument MUST be rejected as an unknown option, not read as a file path
+
+**Tests:** `crates/cargo-mvl/tests/cli.rs::check_prints_a_summary_line_on_success`, `::a_single_tool_prints_its_own_summary_line`, `::quiet_suppresses_the_summary_line`, `::a_failing_check_prints_diagnostics_and_no_summary_line`, `::every_subcommand_prints_its_usage_on_help`, `::an_unknown_option_is_rejected_not_read_as_a_file`
+
 ---
 
 ## Known Limitations

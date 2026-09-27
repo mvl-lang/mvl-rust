@@ -34,15 +34,36 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     };
     let rest = &args[1..];
-    let files: Vec<PathBuf> = rest.iter().map(PathBuf::from).collect();
 
+    // `test` forwards its arguments to `cargo test`, so only a help flag
+    // ahead of `--` is ours; everything else (`--release`, ...) passes through.
+    if subcommand == "test" {
+        if rest
+            .iter()
+            .take_while(|arg| *arg != "--")
+            .any(|arg| is_help(arg))
+        {
+            print!("{}", subcommand_usage("test"));
+            return ExitCode::SUCCESS;
+        }
+        return run_test(rest);
+    }
+
+    let parse = |sub: &str| parse_args(sub, rest);
     match subcommand.as_str() {
-        "check" => run_check(&files),
-        "prove" => run_prove(&files),
-        "test" => run_test(rest),
-        "assurance" => run_assurance(&files),
-        "mcdc" => run_mcdc(rest, &files),
-        _ if check::TOOL_ORDER.contains(&subcommand.as_str()) => run_single(&subcommand, &files),
+        "-h" | "--help" => {
+            print!("{USAGE}");
+            ExitCode::SUCCESS
+        }
+        "check" => parse("check").map_or_else(|code| code, |opts| run_check(&opts)),
+        "prove" => parse("prove").map_or_else(|code| code, |opts| run_prove(&opts.files)),
+        "assurance" => {
+            parse("assurance").map_or_else(|code| code, |opts| run_assurance(&opts.files))
+        }
+        "mcdc" => parse("mcdc").map_or_else(|code| code, |opts| run_mcdc(rest, &opts.files)),
+        tool if check::TOOL_ORDER.contains(&tool) => {
+            parse(tool).map_or_else(|code| code, |opts| run_single(tool, &opts))
+        }
         _ if UNIMPLEMENTED_SUBCOMMANDS.contains(&subcommand.as_str()) => {
             eprintln!(
                 "cargo mvl {subcommand}: not yet implemented -- tracked by #15 (needs cargo-llvm-cov)"
@@ -57,21 +78,118 @@ fn main() -> ExitCode {
     }
 }
 
+const USAGE: &str = "\
+usage: cargo mvl <SUBCOMMAND> [OPTIONS] <FILE>...
+       cargo mvl <SUBCOMMAND> --help
+
+Gate subcommands (print a summary line on success; -q to suppress):
+  check              run every tool
+  limit|total|refine|effect|ifc   run a single tool
+
+Assurance subcommands (emit assurance-JSON to stdout):
+  prove <FILE>...    rust-refine's obligation trace
+  test [-- ARGS]     runs `cargo test`, parses pass/fail/ignored
+  assurance <FILE>...   aggregates check + prove + test
+  mcdc <FILE>...     rust-mcdc's obligation scan; discharge it with:
+                       cargo mvl-mcdc generate --obligations=FILE   (list the ids/vectors to write tests against)
+                       cargo mvl-mcdc harvest  --obligations=FILE   (join tagged tests against cargo test's output)
+  coverage           not yet implemented -- see #15 (needs cargo-llvm-cov)
+";
+
+const GATE_OPTIONS: &str = "\
+Options:
+  -q, --quiet   print nothing on success (exit code only)
+  -h, --help    print this help
+";
+
+const HELP_OPTION: &str = "\
+Options:
+  -h, --help    print this help
+";
+
 fn print_usage() {
-    eprintln!("usage: cargo mvl <SUBCOMMAND> <FILE>...");
-    eprintln!();
-    eprintln!("Gate subcommands:");
-    eprintln!("  check              run every tool");
-    eprintln!("  limit|total|refine|effect|ifc   run a single tool");
-    eprintln!();
-    eprintln!("Assurance subcommands (emit assurance-JSON to stdout):");
-    eprintln!("  prove <FILE>...    rust-refine's obligation trace");
-    eprintln!("  test [-- ARGS]     runs `cargo test`, parses pass/fail/ignored");
-    eprintln!("  assurance <FILE>...   aggregates check + prove + test");
-    eprintln!("  mcdc <FILE>...     rust-mcdc's obligation scan; discharge it with:");
-    eprintln!("                       cargo mvl-mcdc generate --obligations=FILE   (list the ids/vectors to write tests against)");
-    eprintln!("                       cargo mvl-mcdc harvest  --obligations=FILE   (join tagged tests against cargo test's output)");
-    eprintln!("  coverage           not yet implemented -- see #15 (needs cargo-llvm-cov)");
+    eprint!("{USAGE}");
+}
+
+fn subcommand_usage(subcommand: &str) -> String {
+    match subcommand {
+        "check" => format!(
+            "usage: cargo mvl check [-q] <FILE>...\n\n\
+             Runs every Gate tool ({}) and prints a summary line on success.\n\n{GATE_OPTIONS}",
+            check::TOOL_ORDER.join(" → ")
+        ),
+        "prove" => format!(
+            "usage: cargo mvl prove <FILE>...\n\n\
+             Emits rust-refine's obligation trace as assurance-JSON on stdout.\n\n{HELP_OPTION}"
+        ),
+        "test" => "usage: cargo mvl test [CARGO-TEST-ARGS]... [-- TEST-ARGS]...\n\n\
+                   Runs `cargo test` and emits pass/fail/ignored as assurance-JSON on stdout.\n\
+                   Every argument is passed to `cargo test`, except -h/--help ahead of `--`.\n"
+            .to_string(),
+        "assurance" => format!(
+            "usage: cargo mvl assurance <FILE>...\n\n\
+             Aggregates check + prove + test into one assurance-JSON report on stdout.\n\n{HELP_OPTION}"
+        ),
+        "mcdc" => format!(
+            "usage: cargo mvl mcdc <FILE>...\n\n\
+             Emits rust-mcdc's obligation scan as assurance-JSON on stdout.\n\
+             Discharge it with `cargo mvl-mcdc generate`/`cargo mvl-mcdc harvest`.\n\n{HELP_OPTION}"
+        ),
+        tool => format!(
+            "usage: cargo mvl {tool} [-q] <FILE>...\n\n\
+             Runs rust-{tool} only and prints a summary line on success.\n\n{GATE_OPTIONS}"
+        ),
+    }
+}
+
+fn is_help(arg: &str) -> bool {
+    arg == "-h" || arg == "--help"
+}
+
+fn is_gate(subcommand: &str) -> bool {
+    subcommand == "check" || check::TOOL_ORDER.contains(&subcommand)
+}
+
+struct Options {
+    quiet: bool,
+    files: Vec<PathBuf>,
+}
+
+/// Splits a file-taking subcommand's arguments into options and files.
+/// `Err` carries the exit code when parsing already finished the command:
+/// `--help` was printed (0), or an unknown option was rejected (2) --
+/// rather than being misread as a file path.
+fn parse_args(subcommand: &str, args: &[String]) -> Result<Options, ExitCode> {
+    let mut options = Options {
+        quiet: false,
+        files: Vec::new(),
+    };
+    for arg in args {
+        match arg.as_str() {
+            help if is_help(help) => {
+                print!("{}", subcommand_usage(subcommand));
+                return Err(ExitCode::SUCCESS);
+            }
+            "-q" | "--quiet" if is_gate(subcommand) => options.quiet = true,
+            option if option.starts_with('-') => {
+                eprintln!("cargo mvl {subcommand}: unknown option `{option}`");
+                eprint!("{}", subcommand_usage(subcommand));
+                return Err(ExitCode::from(2));
+            }
+            file => options.files.push(PathBuf::from(file)),
+        }
+    }
+    Ok(options)
+}
+
+/// One stderr line so a green run is visibly distinct from "did nothing".
+fn print_summary(subcommand: &str, file_count: usize, tools: &[&str]) {
+    let files = if file_count == 1 { "file" } else { "files" };
+    let mut line = format!("mvl {subcommand}: {file_count} {files}");
+    if !tools.is_empty() {
+        line.push_str(&format!(" · {}", tools.join(" ")));
+    }
+    eprintln!("{line} · ok");
 }
 
 fn read_source(path: &PathBuf) -> Result<String, ExitCode> {
@@ -103,7 +221,8 @@ fn current_timestamp() -> String {
         .to_string()
 }
 
-fn run_check(files: &[PathBuf]) -> ExitCode {
+fn run_check(options: &Options) -> ExitCode {
+    let files = &options.files;
     if files.is_empty() {
         print_usage();
         return ExitCode::from(2);
@@ -147,11 +266,15 @@ fn run_check(files: &[PathBuf]) -> ExitCode {
     if had_diagnostics {
         ExitCode::FAILURE
     } else {
+        if !options.quiet {
+            print_summary("check", files.len(), check::TOOL_ORDER);
+        }
         ExitCode::SUCCESS
     }
 }
 
-fn run_single(tool: &str, files: &[PathBuf]) -> ExitCode {
+fn run_single(tool: &str, options: &Options) -> ExitCode {
+    let files = &options.files;
     if files.is_empty() {
         print_usage();
         return ExitCode::from(2);
@@ -186,6 +309,9 @@ fn run_single(tool: &str, files: &[PathBuf]) -> ExitCode {
     if had_diagnostics {
         ExitCode::FAILURE
     } else {
+        if !options.quiet {
+            print_summary(tool, files.len(), &[]);
+        }
         ExitCode::SUCCESS
     }
 }

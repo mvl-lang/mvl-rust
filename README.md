@@ -38,6 +38,11 @@ cargo install cargo-mvl
 cargo mvl check src/main.rs
 ```
 
+On success it prints one summary line to stderr
+(`mvl check: 1 file · limit total refine effect ifc · ok`); pass `-q` to keep
+it silent for scripts. `cargo mvl <SUBCOMMAND> --help` prints each
+subcommand's usage.
+
 Add attributes to the functions you want checked, then re-run. Most tools are
 opt-in per function or per attribute; `rust-limit` (the qualified-subset
 lint) and `rust-total` (panic-freedom/termination) are both whole-file —
