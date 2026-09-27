@@ -15,6 +15,10 @@ use mvl_rust_core::assurance::schema::{TestRecord, TestSection, TestSummary};
 
 /// Spawns `cargo test <extra_args>` in the current working directory and
 /// parses its output.
+///
+/// Failing tests are findings, returned in the section. A non-zero exit
+/// with no test lines at all (a build failure, a bad argument) is an
+/// error instead -- otherwise it would read as a clean "0 tests" run.
 pub fn run_cargo_test(extra_args: &[String]) -> Result<TestSection, String> {
     let output = Command::new("cargo")
         .arg("test")
@@ -23,7 +27,17 @@ pub fn run_cargo_test(extra_args: &[String]) -> Result<TestSection, String> {
         .map_err(|err| format!("failed to spawn `cargo test`: {err}"))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(parse_test_output(&stdout))
+    let section = parse_test_output(&stdout);
+    if !output.status.success() && section.tests.is_empty() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let lines: Vec<&str> = stderr.lines().collect();
+        let tail = lines[lines.len().saturating_sub(10)..].join("\n");
+        return Err(format!(
+            "`cargo test` {} without running any tests:\n{tail}",
+            output.status
+        ));
+    }
+    Ok(section)
 }
 
 fn parse_test_output(stdout: &str) -> TestSection {
