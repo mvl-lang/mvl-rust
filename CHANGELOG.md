@@ -8,6 +8,8 @@ below backfills everything merged while the workspace sat at that version.
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-09-27
+
 ### Fixed
 
 - `cargo-mvl` (#126): the `assurance` integration test ran `cargo test` from the `cargo-mvl` package itself, which re-ran the same test and spawned processes without end until the OS process limit. It stopped only after about 15 minutes locally. The tests that reach `cargo test` now run in a throwaway fixture crate and check real pass/fail counts. `cargo mvl test`/`assurance` now report a `cargo test` that exits non-zero without running any test (for example a build failure) as an error instead of an empty test section.
