@@ -285,6 +285,15 @@ Each tool MUST ship a paired example: one crate that passes cleanly and one that
 
 **Tests:** `crates/cargo-mvl/tests/subcommands.rs::prove_emits_a_prove_section_with_no_check_or_test`
 
+#### Scenario: `cargo mvl test` separates failing tests from a broken run
+
+- GIVEN a crate with one passing and one failing test
+- WHEN `cargo mvl test` runs
+- THEN the test section MUST record one passed and one failed test, and the command MUST exit 0
+- AND if `cargo test` exits non-zero without running any test (e.g. a build failure), the command MUST exit non-zero instead of emitting an empty test section
+
+**Tests:** `crates/cargo-mvl/tests/subcommands.rs::test_reports_failing_tests_in_the_section_and_still_exits_zero`, `::test_reports_a_build_failure_as_an_error_not_an_empty_section`, `::assurance_aggregates_check_prove_and_test_sections`
+
 ### Requirement 10: Ferrocene compatibility [SHOULD]
 
 The workspace SHOULD build and test green under the Ferrocene toolchain, so that certified-domain adoption can ride Ferrocene's existing qualification rather than requiring a new one.
