@@ -1,4 +1,4 @@
-.PHONY: help build test check fmt fmt-check clippy examples examples-verbose clean \
+.PHONY: help version build test check fmt fmt-check clippy examples examples-verbose clean \
 	test-core test-limit test-total test-refine test-effect test-ifc test-cargo-mvl test-mcdc test-z3 \
 	coverage assurance assurance-gate compile verify evidence traceability all \
 	mcdc mcdc-scan mcdc-run mcdc-harvest mcdc-generate
@@ -17,6 +17,7 @@ help:
 	@printf "  $(GRN)%-16s$(RESET) %s\n" "fmt-check"        "cargo fmt --check (workspace + example crates)"
 	@printf "  $(GRN)%-16s$(RESET) %s\n" "clippy"           "cargo clippy --workspace --all-targets"
 	@printf "  $(GRN)%-16s$(RESET) %s\n" "clean"            "cargo clean (workspace + example crates)"
+	@printf "  $(GRN)%-16s$(RESET) %s\n" "version"          "show the workspace version (Cargo.toml)"
 	@printf "\n$(BOLD)$(CYAN)Test$(RESET)\n"
 	@printf "  $(GRN)%-16s$(RESET) %s\n" "test"             "cargo test --workspace"
 	@printf "  $(GRN)%-16s$(RESET) %s\n" "test-core"        "test mvl-rust-core only"
@@ -47,6 +48,9 @@ help:
 	@printf "  $(GRN)%-16s$(RESET) %s\n" "mcdc-generate"    "list obligations + the mcdc__<id>__v<N> tagging convention"
 	@printf "  $(GRN)%-16s$(RESET) %s\n" "mcdc-run"         "cargo test in MCDC_RUN_DIR"
 	@printf "  $(GRN)%-16s$(RESET) %s\n" "mcdc-harvest"     "join obligations.json against tagged test outcomes"
+
+version: ## Show current workspace version
+	@grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/'
 
 build:
 	cargo build --workspace --all-targets
