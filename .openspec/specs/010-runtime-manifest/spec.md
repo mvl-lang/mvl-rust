@@ -276,6 +276,20 @@ Each package MUST get its own record after a `packages_count` summary. The envir
 
 **Tests:** `crates/mvl-manifest/src/env.rs::main_program_and_vdso_are_not_libraries`, `::loaded_libraries_exclude_the_executable`, `crates/mvl-manifest/src/warn.rs::local_dependency_listed_once_and_workspace_members_skipped`
 
+### Requirement 15: The binary carries a verification record [MUST]
+
+The generated manifest MUST include `record`: the join fields (`app`, `app_version`, `vcs_commit`, `vcs_dirty`, `lockfile_digest`, `source_digest`, `auditable`, `reproducible`) as one `mvl-manifest-record/v1;…;end` string, so a verifier (spec 011) can read them without running the program. `log_manifest` MUST keep it in the binary under optimisation.
+
+**Implementation:** `crates/mvl-manifest/src/record.rs`, `crates/mvl-manifest/src/build/codegen.rs`
+
+#### Scenario: Record survives a release build
+
+- GIVEN the fixture built with `--release`
+- WHEN the binary's bytes are scanned
+- THEN they contain the record marker
+
+**Tests:** `crates/mvl-manifest/tests/fixture.rs::reproducible_builds_from_different_directories_are_byte_identical`, `crates/mvl-manifest/src/build/mod.rs::generates_manifest_for_this_crate`, `crates/mvl-manifest/src/record.rs::render_and_parse_round_trip`, `::incomplete_record_does_not_parse`
+
 ---
 
 ## Known Limitations

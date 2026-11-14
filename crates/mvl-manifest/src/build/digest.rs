@@ -27,8 +27,78 @@ fn is_generated(rel: &str) -> bool {
     )
 }
 
-/// Files Cargo would package for `pkg`, as paths relative to its directory.
+/// The files of `pkg` that go into the digest, relative to its directory.
+/// Workspace members: exactly what Cargo would package. Path dependencies
+/// outside the workspace: their tracked and untracked-but-not-ignored files
+/// (`git ls-files`), or a directory walk without git; always the same method
+/// for the same package, so the digest stays deterministic.
 fn package_files(cargo: &str, pkg: &LocalPackage) -> Result<Vec<String>> {
+    if pkg.member {
+        return cargo_package_files(cargo, pkg);
+    }
+    let dir = pkg.manifest_path.parent().unwrap_or(Path::new("."));
+    Ok(tree_files(dir))
+}
+
+/// `git ls-files` under `dir`, or a walk when `dir` is not in a git checkout.
+/// `target/` and hidden entries are skipped either way.
+fn tree_files(dir: &Path) -> Vec<String> {
+    let git = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ])
+        .output()
+        .ok()
+        .filter(|o| o.status.success());
+    let mut files: Vec<String> = match git {
+        Some(o) => String::from_utf8_lossy(&o.stdout)
+            .split('\0')
+            .filter(|f| !f.is_empty())
+            .map(str::to_string)
+            .collect(),
+        None => {
+            let mut out = Vec::new();
+            walk(dir, Path::new(""), &mut out);
+            out
+        }
+    };
+    files.retain(|f| {
+        !Path::new(f).components().any(|c| {
+            let c = c.as_os_str().to_string_lossy();
+            c == "target" || c.starts_with('.')
+        })
+    });
+    files.sort();
+    files.dedup();
+    files
+}
+
+fn walk(root: &Path, rel: &Path, out: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(root.join(rel)) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || name == "target" {
+            continue;
+        }
+        let path = rel.join(&name);
+        match e.file_type() {
+            Ok(t) if t.is_dir() => walk(root, &path, out),
+            Ok(t) if t.is_file() => out.push(path.to_string_lossy().into_owned()),
+            _ => {}
+        }
+    }
+}
+
+/// What `cargo package --list` reports, minus files Cargo generates.
+fn cargo_package_files(cargo: &str, pkg: &LocalPackage) -> Result<Vec<String>> {
     let out = run(Command::new(cargo)
         .args(["package", "--list", "--offline", "--allow-dirty"])
         .arg("--manifest-path")
@@ -128,6 +198,51 @@ mod tests {
         assert!(is_generated("Cargo.lock"));
         assert!(!is_generated("Cargo.toml"));
         assert!(!is_generated("src/main.rs"));
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let d =
+            std::env::temp_dir().join(format!("mvl-manifest-digest-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        for f in ["Cargo.toml", "src/lib.rs", "target/debug/junk", ".hidden/x"] {
+            let p = d.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, f).unwrap();
+        }
+        d
+    }
+
+    #[test]
+    fn walk_skips_target_and_hidden_entries() {
+        let d = scratch("walk");
+        let mut out = Vec::new();
+        walk(&d, Path::new(""), &mut out);
+        out.sort();
+        assert_eq!(out, ["Cargo.toml", "src/lib.rs"]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn git_listing_respects_ignore_and_skips_target() {
+        let d = scratch("git");
+        std::fs::write(d.join(".gitignore"), "ignored.txt\n").unwrap();
+        std::fs::write(d.join("ignored.txt"), "x").unwrap();
+        std::fs::write(d.join("untracked.rs"), "x").unwrap();
+        let ok = Command::new("git")
+            .arg("-C")
+            .arg(&d)
+            .args(["init", "-q"])
+            .status()
+            .is_ok_and(|s| s.success());
+        if ok {
+            let _ = Command::new("git")
+                .arg("-C")
+                .arg(&d)
+                .args(["add", "Cargo.toml", "src/lib.rs"])
+                .status();
+            assert_eq!(tree_files(&d), ["Cargo.toml", "src/lib.rs", "untracked.rs"]);
+        }
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

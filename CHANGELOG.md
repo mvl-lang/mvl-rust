@@ -8,6 +8,18 @@ below backfills everything merged while the workspace sat at that version.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-14
+
+### Added
+
+- `mvl-attest` (#131, ADR-0014): signed build provenance and verification for mvl-rust binaries.
+  - `cargo mvl attest` prints the build-environment predicate for CI to sign next to the SLSA provenance.
+  - `cargo mvl verify` checks both GitHub artifact attestations through `gh attestation verify`. It then cross-checks the signer (repository, workflow, ref), the binary's embedded manifest record (clean and auditable build), the commit, the lockfile at the signed commit, and every cargo-auditable package.
+  - `.github/workflows/attest.yml` signs and verifies an example binary, and serves as the template for apps.
+  - `docs/attestation.md` covers the threat model and how to verify.
+- `mvl-manifest`: the binary carries a verification record (`mvl-manifest-record/v1`) that verifiers read without running it.
+
+
 ## [0.12.1] - 2026-11-14
 
 ### Fixed

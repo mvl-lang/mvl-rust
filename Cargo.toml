@@ -12,11 +12,12 @@ members = [
     "crates/rust-mcdc",
     "crates/cargo-mvl",
     "crates/mvl-manifest",
+    "crates/mvl-attest",
 ]
 exclude = ["examples"]
 
 [workspace.package]
-version = "0.12.1"
+version = "0.13.0"
 edition = "2021"
 rust-version = "1.85"
 license = "Apache-2.0"

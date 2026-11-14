@@ -1,0 +1,97 @@
+name: attest
+
+# ADR-0014: sign build provenance for an example binary with the workflow's
+# own identity (keyless, Sigstore via GitHub artifact attestations), then
+# verify it with `cargo mvl verify` -- and check that verification fails for
+# a modified binary, the wrong repository and the wrong ref.
+#
+# This file doubles as the template for apps: copy the build, attest and
+# verify steps, pointing them at your own binary and lockfile.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write      # keyless signing: the workflow's OIDC identity
+  attestations: write  # record the attestations
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN: examples/mvl-manifest-demo/target/release/mvl-manifest-demo
+  LOCK: examples/mvl-manifest-demo/Cargo.lock
+
+jobs:
+  attest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: install cargo-auditable
+        run: cargo install cargo-auditable --locked
+
+      # A clean, auditable, reproducible release build.
+      - name: build the artifact
+        working-directory: examples/mvl-manifest-demo
+        run: |
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=/build"
+          cargo auditable build --release --locked
+
+      - name: build cargo-mvl
+        run: cargo build --release --locked -p cargo-mvl
+
+      - name: build-environment predicate
+        run: ./target/release/cargo-mvl attest "$BIN" --lockfile "$LOCK" | tee "$RUNNER_TEMP/build-env.json"
+
+      - name: attest SLSA provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ env.BIN }}
+
+      - name: attest build environment
+        uses: actions/attest@v2
+        with:
+          subject-path: ${{ env.BIN }}
+          predicate-type: https://mvl-lang.org/attest/build-env/v1
+          predicate-path: ${{ runner.temp }}/build-env.json
+
+      - name: verify (must pass)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ./target/release/cargo-mvl verify "$BIN" \
+            --repo "${{ github.repository }}" \
+            --workflow .github/workflows/attest.yml \
+            --ref "${{ github.ref }}" \
+            --source .
+
+      - name: verify fails for a modified binary, the wrong repo, the wrong ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          cp "$BIN" "$RUNNER_TEMP/tampered"
+          printf '\x00' | dd of="$RUNNER_TEMP/tampered" bs=1 seek=4096 conv=notrunc 2>/dev/null
+          fail=0
+          expect_fail() {
+            if "$@"; then echo "::error::verification passed but must fail: $*"; fail=1; fi
+          }
+          expect_fail ./target/release/cargo-mvl verify "$RUNNER_TEMP/tampered" \
+            --repo "${{ github.repository }}" --workflow .github/workflows/attest.yml \
+            --ref "${{ github.ref }}" --source .
+          expect_fail ./target/release/cargo-mvl verify "$BIN" \
+            --repo octocat/hello-world --workflow .github/workflows/attest.yml \
+            --ref "${{ github.ref }}" --source .
+          expect_fail ./target/release/cargo-mvl verify "$BIN" \
+            --repo "${{ github.repository }}" --workflow .github/workflows/attest.yml \
+            --ref "refs/tags/does-not-exist" --source .
+          exit $fail
+
+      # The end-to-end test needs cargo-auditable, installed above.
+      - name: mvl-attest tests, including the cargo-auditable end-to-end test
+        run: cargo test --locked -p mvl-attest -- --include-ignored

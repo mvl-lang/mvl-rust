@@ -30,6 +30,9 @@ pub struct Manifest {
     pub source_digest: &'static str,
     /// Phase 2: always empty.
     pub native_deps: &'static [NativeDep],
+    /// The verification record ([`crate::record`]): the join fields as one
+    /// string a verifier finds in the binary without running it.
+    pub record: &'static str,
 }
 
 /// How a package takes part in the build.

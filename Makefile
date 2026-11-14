@@ -1,5 +1,5 @@
 .PHONY: help version build test check fmt fmt-check clippy examples examples-verbose clean \
-	test-core test-limit test-total test-refine test-effect test-ifc test-cargo-mvl test-mcdc test-manifest test-z3 \
+	test-core test-limit test-total test-refine test-effect test-ifc test-cargo-mvl test-mcdc test-manifest test-attest test-z3 \
 	coverage assurance assurance-gate compile verify evidence traceability all \
 	mcdc mcdc-scan mcdc-run mcdc-harvest mcdc-generate
 
@@ -28,6 +28,7 @@ help:
 	@printf "  $(GRN)%-16s$(RESET) %s\n" "test-refine"      "test rust-refine only"
 	@printf "  $(GRN)%-16s$(RESET) %s\n" "test-total"       "test rust-total only"
 	@printf "  $(GRN)%-16s$(RESET) %s\n" "test-manifest"    "test mvl-manifest only (includes fixture-workspace builds)"
+	@printf "  $(YEL)%-16s$(RESET) %s\n" "test-attest"      "test mvl-attest, incl. the end-to-end test (needs cargo-auditable)"
 	@printf "  $(YEL)%-16s$(RESET) %s\n" "test-mcdc"        "test rust-mcdc only (includes real discharge/harvest fixtures)"
 	@printf "  $(YEL)%-16s$(RESET) %s\n" "test-z3"          "test with L5/Z3 dispatch enabled (#37) -- requires Z3 installed"
 	@printf "\n$(BOLD)$(CYAN)Examples / CI gate$(RESET)\n"
@@ -85,6 +86,10 @@ test-mcdc:
 
 test-manifest:
 	cargo test -p mvl-manifest
+
+# Includes the end-to-end test, which needs cargo-auditable on PATH.
+test-attest:
+	cargo test -p mvl-attest -- --include-ignored
 
 # #37: L5/Z3 dispatch, feature-gated and default-off -- requires Z3
 # installed (e.g. `brew install z3` / `apt install libz3-dev`). Not part of

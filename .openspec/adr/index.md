@@ -15,3 +15,4 @@
 | [0011](0011-resolved-pure-closure-licence.md) | A Sound Purity Licence for the "Resolved-Pure Closure" Subset | Accepted |
 | [0012](0012-mandatory-total-or-partial-declaration.md) | `mvl-total` Requires an Explicit `#[mvl::total]` or `#[mvl::partial]` Declaration, Whole-File | Accepted |
 | [0013](0013-runtime-manifest.md) | `mvl-manifest` — Log Bound Packages and Build Provenance at Startup | Accepted |
+| [0014](0014-mvl-attest.md) | `mvl-attest` — Signed Build Provenance and Verification | Accepted |

@@ -1,0 +1,16 @@
+[package]
+name = "mvl-attest"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Verify mvl-rust binaries against signed CI build provenance: GitHub artifact attestations plus cross-checks of the embedded mvl-manifest record, cargo-auditable data and the lockfile at the signed commit (ADR-0014)."
+readme = "README.md"
+
+[dependencies]
+mvl-manifest = { path = "../mvl-manifest", version = "0.13.0" }
+auditable-info = { version = "0.10", default-features = false }
+serde_json = "1"
+sha2 = "0.10"
+toml = "0.8"
