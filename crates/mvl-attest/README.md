@@ -17,7 +17,8 @@ cargo mvl verify ./my-app --repo my-org/my-app \
   --workflow .github/workflows/release.yml --ref 'refs/tags/v*'
 ```
 
-`verify` calls `gh attestation verify` for the signatures, then cross-checks
+`verify` calls `gh attestation verify` for the signatures (or, with
+`--key <public key or KMS URI>`, `cosign verify-blob-attestation`), then cross-checks
 the embedded `mvl-manifest` record, the `cargo auditable` dependency data and
 the lockfile at the signed commit. See [docs/attestation.md](../../docs/attestation.md)
 for the threat model and the full workflow. This crate is never linked into an

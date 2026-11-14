@@ -132,6 +132,7 @@ fn real_auditable_binary_verifies_and_a_modified_copy_does_not() {
         source: Some(root.clone()),
         lockfile: None,
         gh: gh.clone(),
+        key: None,
     };
 
     let report = verify(&opts(bin.clone()));
@@ -169,4 +170,138 @@ fn real_auditable_binary_verifies_and_a_modified_copy_does_not() {
         report.checks
     );
     assert!(!report.ok());
+}
+
+/// Run cosign with a throwaway key's password; panics with its stderr on failure.
+fn cosign(dir: &Path, args: &[&str]) {
+    let out = Command::new("cosign")
+        .current_dir(dir)
+        .env("COSIGN_PASSWORD", "test")
+        .args(args)
+        .output()
+        .expect("run cosign (is it installed?)");
+    assert!(
+        out.status.success(),
+        "cosign {args:?} failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+#[ignore = "needs cargo-auditable and cosign; run with --include-ignored"]
+fn key_mode_with_real_cosign_verifies_and_rejects_tampering_wrong_key_and_wrong_repo() {
+    use mvl_attest::predicate::{slsa, SlsaParams};
+    use mvl_attest::verify::KeyMode;
+
+    let tmp = Path::new(env!("CARGO_TARGET_TMPDIR")).join("attest-key-mode");
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(&tmp).unwrap();
+    let built = build_demo(&Path::new(env!("CARGO_TARGET_TMPDIR")).join("attest-demo-target"));
+    let bin = tmp.join("app");
+    fs::copy(&built, &bin).unwrap();
+    let record = mvl_attest::record::find(&fs::read(&bin).unwrap()).unwrap();
+    let commit = record.get("vcs_commit").to_string();
+
+    // Two throwaway key pairs: the signer's, and a stranger's.
+    cosign(
+        &tmp,
+        &["generate-key-pair", "--output-key-prefix", "signer"],
+    );
+    cosign(
+        &tmp,
+        &["generate-key-pair", "--output-key-prefix", "stranger"],
+    );
+
+    // What CI would sign: our own SLSA predicate and the build environment.
+    let root = repo_root();
+    let env_pred = {
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&root).unwrap();
+        let p = mvl_attest::predicate::generate(&bin, LOCK);
+        std::env::set_current_dir(prev).unwrap();
+        p.unwrap()
+    };
+    let slsa_pred = slsa(&SlsaParams {
+        repo: Some(REPO.into()),
+        workflow: Some(WF.into()),
+        git_ref: Some(REF.into()),
+        commit: Some(commit.clone()),
+    })
+    .unwrap();
+    fs::write(tmp.join("slsa.json"), slsa_pred.to_string()).unwrap();
+    fs::write(tmp.join("env.json"), env_pred.to_string()).unwrap();
+    for (pred, ty, bundle) in [
+        ("slsa.json", SLSA, "app.slsa.bundle"),
+        ("env.json", BUILD_ENV, "app.build-env.bundle"),
+    ] {
+        cosign(
+            &tmp,
+            &[
+                "attest-blob",
+                "--key",
+                "signer.key",
+                "--predicate",
+                pred,
+                "--type",
+                ty,
+                "--bundle",
+                bundle,
+                "--use-signing-config=false",
+                "--tlog-upload=false",
+                "--yes",
+                "app",
+            ],
+        );
+    }
+
+    let opts = |artifact: PathBuf, key: &str, repo: &str| {
+        let (slsa_bundle, build_env_bundle) = KeyMode::bundles_next_to(&tmp.join("app"));
+        Options {
+            artifact,
+            policy: Policy {
+                repo: repo.into(),
+                workflow: WF.into(),
+                ref_pattern: "refs/heads/*".into(),
+            },
+            source: Some(root.clone()),
+            lockfile: None,
+            gh: PathBuf::from("gh-must-not-be-called"),
+            key: Some(KeyMode {
+                key: tmp.join(key).display().to_string(),
+                cosign: PathBuf::from("cosign"),
+                slsa_bundle,
+                build_env_bundle,
+                tlog: false,
+            }),
+        }
+    };
+    // A local tree may be dirty; that and the committed lockfile are the only
+    // legitimate local differences (as in the keyless test above).
+    let tolerated =
+        |n: &&str| record.get("vcs_dirty") == "true" && (*n == "clean-build" || *n == "lockfile");
+
+    let report = verify(&opts(bin.clone(), "signer.pub", REPO));
+    let failed: Vec<&str> = report
+        .failed()
+        .into_iter()
+        .filter(|n| !tolerated(n))
+        .collect();
+    assert!(failed.is_empty(), "{:#?}", report.checks);
+
+    // A modified binary: cosign finds the digest does not match the statement.
+    let mut bytes = fs::read(&bin).unwrap();
+    let n = bytes.len() / 2;
+    bytes[n] ^= 0xff;
+    let tampered = tmp.join("tampered");
+    fs::write(&tampered, &bytes).unwrap();
+    let r = verify(&opts(tampered, "signer.pub", REPO));
+    assert!(r.failed().contains(&"signature"), "{:#?}", r.checks);
+
+    // The wrong key: the signature does not verify.
+    let r = verify(&opts(bin.clone(), "stranger.pub", REPO));
+    assert!(r.failed().contains(&"signature"), "{:#?}", r.checks);
+
+    // The wrong repository: the signed predicate names another one.
+    let r = verify(&opts(bin, "signer.pub", "someone/else"));
+    assert!(r.failed().contains(&"repository"), "{:#?}", r.checks);
 }

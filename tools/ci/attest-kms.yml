@@ -1,0 +1,83 @@
+# Template: sign release builds with a key held in a KMS (ADR-0014, key/KMS
+# mode). Copy to .github/workflows/ and adapt BIN, LOCK and KEY.
+#
+# Choose this over keyless signing (.github/workflows/attest.yml) when the
+# verifier cannot reach GitHub or the public Sigstore instance (air-gapped or
+# regulated environments), or when policy requires a key under your own
+# control. The KMS never releases the private key: CI asks it to sign.
+#
+# Do NOT put a private key file in a repository secret instead: whoever can
+# read the secret (or run a workflow that echoes it) can sign anything, and
+# nothing records that they did.
+#
+# Verify with:
+#   cargo mvl verify <BINARY> --key <KEY> --repo <OWNER/REPO> \
+#     --workflow .github/workflows/release.yml --ref 'refs/tags/v*'
+# where KEY is the same KMS URI or the exported public key
+# (`cosign public-key --key <KMS URI> > release.pub`).
+
+name: release (KMS-signed)
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write  # upload the binary and bundles to the release
+  id-token: write  # cloud credentials for the KMS via OIDC (no stored secret)
+
+env:
+  BIN: target/release/my-app
+  LOCK: Cargo.lock
+  KEY: awskms:///arn:aws:kms:eu-west-1:111122223333:alias/release-signing
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: sigstore/cosign-installer@v4.1.3
+        with:
+          cosign-release: v3.1.4
+      - run: cargo install cargo-auditable --locked
+      - run: cargo install --locked --git https://github.com/mvl-lang/mvl-rust --tag v0.14.0 cargo-mvl
+
+      # Exchange the workflow's OIDC token for short-lived KMS credentials.
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::111122223333:role/release-signer
+          aws-region: eu-west-1
+
+      - name: build (clean, auditable, reproducible)
+        run: |
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=/build"
+          cargo auditable build --release --locked
+
+      - name: predicates
+        run: |
+          cargo mvl attest --slsa > "$RUNNER_TEMP/slsa.json"
+          cargo mvl attest "$BIN" --lockfile "$LOCK" > "$RUNNER_TEMP/build-env.json"
+
+      # Records each signature in the public transparency log (Rekor). For an
+      # air-gapped signer, pass a --signing-config without a log and verify
+      # with --no-tlog.
+      - name: sign
+        run: |
+          cosign attest-blob --yes --key "$KEY" \
+            --type https://slsa.dev/provenance/v1 --predicate "$RUNNER_TEMP/slsa.json" \
+            --bundle "$BIN.slsa.bundle" "$BIN"
+          cosign attest-blob --yes --key "$KEY" \
+            --type https://mvl-lang.org/attest/build-env/v1 --predicate "$RUNNER_TEMP/build-env.json" \
+            --bundle "$BIN.build-env.bundle" "$BIN"
+
+      - name: verify before publishing
+        run: |
+          cargo mvl verify "$BIN" --key "$KEY" --repo "${{ github.repository }}" \
+            --workflow .github/workflows/release.yml --ref "${{ github.ref }}" --source .
+
+      - name: publish binary and bundles
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.ref_name }}" "$BIN" "$BIN.slsa.bundle" "$BIN.build-env.bundle"

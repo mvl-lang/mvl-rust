@@ -80,6 +80,39 @@ Enforce it **outside** the binary: in a deploy step, a Kubernetes admission
 controller, or a launcher that verifies before `exec`. A binary that checks
 its own signature can be patched to skip the check.
 
+## Key/KMS mode
+
+Keyless signing needs the verifier to reach GitHub and the public Sigstore
+instance, and trusts GitHub's OIDC identity. When neither fits (air-gapped or
+regulated environments, or a policy that requires a key under your control),
+sign with a key held in a KMS instead. Start from
+[`tools/ci/attest-kms.yml`](../tools/ci/attest-kms.yml):
+
+1. `cargo mvl attest --slsa > slsa.json` and
+   `cargo mvl attest <binary> --lockfile Cargo.lock > build-env.json`
+2. `cosign attest-blob --key <KMS URI> --type https://slsa.dev/provenance/v1 --predicate slsa.json --bundle <binary>.slsa.bundle <binary>`,
+   and the same for `build-env.json` with
+   `--type https://mvl-lang.org/attest/build-env/v1 --bundle <binary>.build-env.bundle`
+3. Ship the two bundles next to the binary.
+
+Verify with the same command plus the key:
+
+```bash
+cargo mvl verify ./my-app --key awskms:///alias/release-signing \
+  --repo my-org/my-app --workflow .github/workflows/release.yml --ref 'refs/tags/v*'
+```
+
+What changes: there is no certificate, so `repository`, `workflow` and `ref`
+are read from the signed SLSA predicate. They hold as far as you trust
+everyone who can use the key. Every other check is identical. The
+transparency log is still required; `--no-tlog` turns that off for a signer
+with no log.
+
+**Keep the key in a KMS or HSM**, and give CI access to it through OIDC, not
+a stored credential. A private key in a file or a CI secret can be copied by
+anyone who can read the secret or run a workflow that prints it, and they can
+then sign anything without leaving a trace.
+
 ## Checking a reproducible rebuild by hand
 
 The signature proves *who* built the binary. A rebuild proves *what* it is

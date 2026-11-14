@@ -8,6 +8,17 @@ below backfills everything merged while the workspace sat at that version.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-14
+
+### Added
+
+- `mvl-attest` (#137): key/KMS verification mode.
+  - `cargo mvl verify --key <public key or KMS URI>` checks both attestations with `cosign verify-blob-attestation` against `<binary>.slsa.bundle` / `<binary>.build-env.bundle`, then applies the same cross-checks as keyless mode.
+  - The transparency log is required unless `--no-tlog` is given.
+  - `cargo mvl attest --slsa` builds the SLSA predicate for signers that can't use `actions/attest-build-provenance`.
+  - `tools/ci/attest-kms.yml` is a CI template for KMS signing.
+
+
 ## [0.13.0] - 2026-11-14
 
 ### Added
