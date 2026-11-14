@@ -8,6 +8,26 @@ below backfills everything merged while the workspace sat at that version.
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-11-14
+
+### Fixed
+
+- `mvl-manifest`: `runtime` reports the Rust standard library version as `std-<rustc release>` (e.g. `runtime=std-1.99.1`) instead of the `mvl` crate's version, which was always empty for apps that don't link `mvl`.
+- `mvl-manifest` (#136): fixes from a real deployment.
+  - `debug_assertions` is now evaluated in the app crate; it was always `false`.
+  - The main program and the vDSO are no longer listed as loaded libraries.
+  - Workspace members get source kind `workspace` and no longer trigger `path_or_git_dependency`, which now lists each package once.
+
+### Changed
+
+- `mvl-manifest` (#136): the log records are bounded and parseable.
+  - One record per package, after a `packages_count` summary.
+  - The environment record shows `libraries_count`, `libraries_sha256` and only non-system libraries; `MVL_MANIFEST_LIBRARIES=all` prints them all.
+  - Empty fields are left out of logfmt and the block format.
+  - Lists use `,`, with `,` and spaces inside entries percent-encoded; counts are named `<list>_count`.
+  - Shared fields appear in the first record only.
+
+
 ## [0.12.0] - 2026-11-14
 
 ### Added
