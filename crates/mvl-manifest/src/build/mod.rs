@@ -165,12 +165,20 @@ pub(crate) fn run(cmd: &mut Command) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// Profile directory name from `OUT_DIR` (`<target>/<profile>/build/<pkg>/out`).
-/// `PROFILE` only says debug or release; the directory carries custom names.
+/// Profile directory name from `OUT_DIR`. `PROFILE` only says debug or release;
+/// the directory carries custom names.
+///
+/// Two layouts exist: `<profile>/build/<pkg>-<hash>/out` (older cargo) and
+/// `<profile>/build/<pkg>/<hash>/out` (cargo 1.100+). The profile is the parent
+/// of the `build` directory, which sits 2 to 4 levels above `out`. The highest
+/// match wins, so a package named `build` does not hide the real one.
 pub(crate) fn profile_dir_from_out_dir(out_dir: &Path) -> Option<String> {
     out_dir
         .ancestors()
-        .nth(3)
+        .enumerate()
+        .filter(|(depth, p)| (2..=4).contains(depth) && p.file_name().is_some_and(|n| n == "build"))
+        .last()
+        .and_then(|(_, build)| build.parent())
         .and_then(|p| p.file_name())
         .map(|s| s.to_string_lossy().into_owned())
 }
@@ -438,5 +446,10 @@ mod tests {
         assert_eq!(profile_dir_from_out_dir(p).as_deref(), Some("release-lto"));
         let p = Path::new("/t/target/debug/build/app-0123/out");
         assert_eq!(profile_dir_from_out_dir(p).as_deref(), Some("debug"));
+        // cargo 1.100+: <profile>/build/<pkg>/<hash>/out
+        let p = Path::new("/t/target/debug/build/app/bed09f59b07c2f1a/out");
+        assert_eq!(profile_dir_from_out_dir(p).as_deref(), Some("debug"));
+        let p = Path::new("/t/target/release-lto/build/build/0123/out");
+        assert_eq!(profile_dir_from_out_dir(p).as_deref(), Some("release-lto"));
     }
 }

@@ -68,6 +68,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # The generator runs `cargo metadata --offline --frozen` over the whole
+      # workspace, so the registry cache must hold every package first.
+      - run: cargo fetch --locked
       - run: cargo test -p mvl-manifest
 
   verification-z3:

@@ -352,29 +352,26 @@ fn staleness_rebuild_picks_up_source_commit_lockfile_and_config_changes() {
     assert_eq!(m2["build"]["vcs_dirty"], false);
 
     // 3. Changing Cargo.lock changes lockfile_digest and source_digest.
-    // Move `log` to another version already in the local cache.
-    let log_now = pkg(&m2["packages"], "log")["version"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let other = ["0.4.33", "0.4.29", "0.4.21"]
-        .into_iter()
-        .find(|v| *v != log_now)
-        .unwrap();
-    check(
-        cargo(&dir)
-            .args(["update", "--offline", "-p", "log", "--precise", other])
-            .output()
-            .unwrap(),
-        "cargo update --precise",
-    );
+    // Add a local path dependency: Cargo.lock changes, and no download is needed.
+    let cargo_toml = dir.join("Cargo.toml");
+    let text = fs::read_to_string(&cargo_toml).unwrap();
+    fs::write(
+        &cargo_toml,
+        text.replace(
+            "[dependencies]\n",
+            "[dependencies]\nextra2 = { path = \"extra2\" }\n",
+        ),
+    )
+    .unwrap();
+    write(&dir.join("extra2/Cargo.toml"), &crate_toml("extra2", ""));
+    write(&dir.join("extra2/src/lib.rs"), "");
     let m3 = manifest(&build(&dir, &target, &[], &[]));
     assert_ne!(
         m2["build"]["lockfile_digest"],
         m3["build"]["lockfile_digest"]
     );
     assert_ne!(digest(&m2), digest(&m3));
-    assert_eq!(pkg(&m3["packages"], "log")["version"], other);
+    assert!(names(&m3["packages"]).contains(&"extra2".to_string()));
 
     // 4. Changing .cargo/config.toml changes source_digest.
     let cfg = dir.join(".cargo/config.toml");
