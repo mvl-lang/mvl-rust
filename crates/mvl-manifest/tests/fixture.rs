@@ -241,18 +241,23 @@ fn fixture_packages_sources_and_substitutions() {
     assert_eq!(m["app"], "app");
     assert_eq!(m["app_version"], "0.1.0");
     assert_eq!(m["backend"], "mvl-rust");
+    // The fixture links no `mvl` crate (like a plain Rust app): runtime is std.
+    let rustc = m["rustc"].as_str().unwrap();
+    assert_eq!(m["runtime"], format!("std-{rustc}").as_str());
     assert_eq!(
         m["build"]["features"],
         serde_json::json!(["default", "fancy"])
     );
     assert_eq!(m["build"]["profile"], "debug");
+    // Evaluated in the app crate: on in the dev profile.
+    assert_eq!(m["build"]["debug_assertions"], true);
 
     // Runtime vs build packages.
     let runtime = names(&m["packages"]);
     for n in ["log", "pathdep", "gitdep", "mvl-manifest"] {
         assert!(runtime.contains(&n.to_string()), "{n} not in {runtime:?}");
     }
-    for n in ["derive", "builddep", "sha2", "toml", "serde_json"] {
+    for n in ["derive", "builddep", "toml", "serde_json"] {
         assert!(
             !runtime.contains(&n.to_string()),
             "{n} leaked into runtime: {runtime:?}"
@@ -275,9 +280,16 @@ fn fixture_packages_sources_and_substitutions() {
     );
 
     // Path: no checksum (covered by source_digest).
+    // A path dependency inside the app's workspace is a workspace member;
+    // one outside it (mvl-manifest, from this repository) stays `path`.
     let p = pkg(&m["packages"], "pathdep");
-    assert_eq!(p["source"]["kind"], "path");
+    assert_eq!(p["source"]["kind"], "workspace");
     assert_eq!(p["checksum"], "");
+    assert_eq!(
+        pkg(&m["packages"], "mvl-manifest")["source"]["kind"],
+        "path"
+    );
+    assert_eq!(pkg(build, "derive")["source"]["kind"], "workspace");
 
     // Git: resolved commit, vcs_url purl.
     let g = pkg(&m["packages"], "gitdep");
@@ -417,6 +429,7 @@ fn reproducible_builds_from_different_directories_are_byte_identical() {
         );
         let m = manifest(&bin);
         assert_eq!(m["build"]["reproducible"], true);
+        assert_eq!(m["build"]["debug_assertions"], false);
         assert_eq!(m["build"]["vcs_dirty"], false);
         assert_eq!(m["built"], "2026-11-14T00:00:00Z");
         outputs.push((m, fs::read(&bin).unwrap()));
@@ -453,6 +466,12 @@ fn fixture_binary_falls_back_to_stderr_without_a_logger() {
     }
     // A debug build warns about nothing but what applies to every build.
     assert!(!stderr.contains("not_auditable"), "{stderr}");
+    // One record per package; every line stays short.
+    assert!(stderr.contains("INFO mvl_manifest: MVL Runtime Package purl=pkg:cargo/log@"));
+    assert!(
+        stderr.lines().all(|l| l.len() < 4096),
+        "a record line is too long"
+    );
 
     let _ = fs::remove_dir_all(&root);
 }

@@ -158,7 +158,7 @@ The generator MUST emit `cargo:rerun-if-changed` for every hashed file, the sour
 - WHEN it is formatted as logfmt, JSON and block
 - THEN the output matches the golden text
 
-**Tests:** `crates/mvl-manifest/src/format.rs::golden_logfmt`, `::golden_json`, `::golden_block`, `::logfmt_quotes_only_when_needed`, `::json_escapes_control_and_quote`, `crates/mvl-manifest/src/build/codegen.rs::string_literals_are_escaped`, `::renders_package_with_git_source`
+**Tests:** `crates/mvl-manifest/src/format.rs::golden_logfmt`, `::golden_json`, `::golden_block`, `::logfmt_quotes_only_when_needed_and_drops_empty_values`, `::json_escapes_control_and_quote`, `crates/mvl-manifest/src/build/codegen.rs::string_literals_are_escaped`, `::renders_package_with_git_source`
 
 ### Requirement 9: log_manifest emits the ADR-0013 records [MUST]
 
@@ -172,7 +172,7 @@ The generator MUST emit `cargo:rerun-if-changed` for every hashed file, the sour
 - WHEN the records are built
 - THEN the five records come first, in order, followed by the warnings
 
-**Tests:** `crates/mvl-manifest/src/logging.rs::emits_five_records_in_order_then_warnings`, `::manifest_record_starts_with_app_version`, `::environment_record_lists_loaded_libraries`, `crates/mvl-manifest/src/format.rs::package_records_show_source_and_checksum`
+**Tests:** `crates/mvl-manifest/src/logging.rs::emits_records_in_order_then_warnings`, `::manifest_record_starts_with_app_version`, `::environment_record_lists_loaded_libraries`, `crates/mvl-manifest/src/format.rs::package_record_leaves_out_empty_checksum`
 
 #### Scenario: No logger installed
 
@@ -225,6 +225,56 @@ A WARN MUST be emitted for: a dirty tree; a non-stable toolchain; and, in releas
 - THEN they are `default` and `fancy-io`
 
 **Tests:** `crates/mvl-manifest/src/build/graph.rs::features_map_back_from_env`
+
+### Requirement 12: `runtime` reports the Rust standard library [MUST]
+
+`runtime_version` MUST be `std-<rustc release>`, taken from `rustc -vV`, for every app, whether or not it links the `mvl` crate. A linked `mvl` crate appears in `packages` like any other dependency.
+
+**Implementation:** `crates/mvl-manifest/src/build/mod.rs`
+
+#### Scenario: A plain Rust app reports its std version
+
+- GIVEN an app that links no `mvl` crate, built with rustc 1.99.1
+- WHEN the manifest is generated
+- THEN `runtime` is `std-1.99.1`, not empty
+
+**Tests:** `crates/mvl-manifest/src/build/mod.rs::runtime_is_the_rust_std_version`, `::generates_manifest_for_this_crate`, `crates/mvl-manifest/tests/fixture.rs::fixture_packages_sources_and_substitutions`
+
+### Requirement 13: Log records stay bounded and parseable [MUST]
+
+Each package MUST get its own record after a `packages_count` summary. The environment record MUST list only non-system libraries by default, with a count and a digest of the full list. Identity and join fields MUST appear in `MVL Runtime Manifest` only. In logfmt and the block format, empty fields MUST be left out, lists MUST be `,`-separated with `,` and spaces inside entries percent-encoded, and counts MUST be named `<list>_count`.
+
+**Implementation:** `crates/mvl-manifest/src/logging.rs`, `crates/mvl-manifest/src/format.rs`
+
+#### Scenario: Hundreds of macOS system libraries
+
+- GIVEN a process with 346 system libraries and one Homebrew library loaded
+- WHEN the environment record is built
+- THEN it is under 1 KB, lists only the Homebrew library, and its digest equals the digest of the full listing
+
+**Tests:** `crates/mvl-manifest/src/logging.rs::macos_environment_record_is_bounded`, `::static_binary_has_no_library_fields`, `::one_record_per_package_with_count_summary`, `::shared_fields_appear_in_one_record_only`, `crates/mvl-manifest/src/format.rs::list_entries_never_contain_the_separator_or_spaces`, `::logfmt_quotes_only_when_needed_and_drops_empty_values`, `::package_record_leaves_out_empty_checksum`, `::block_leaves_out_empty_rows`
+
+### Requirement 14: Values are right for the build that produced them [MUST]
+
+`debug_assertions` MUST reflect the app crate's own build. The main program and the vDSO MUST NOT be listed as loaded libraries. Workspace members MUST have source kind `workspace` and MUST NOT trigger `path_or_git_dependency`, which MUST list each package once.
+
+**Implementation:** `crates/mvl-manifest/src/build/codegen.rs`, `crates/mvl-manifest/src/env.rs`, `crates/mvl-manifest/src/build/graph.rs`, `crates/mvl-manifest/src/warn.rs`
+
+#### Scenario: Debug and release builds
+
+- GIVEN the fixture built in the dev profile and in release
+- WHEN each manifest is read
+- THEN `debug_assertions` is `true` and `false` respectively
+
+**Tests:** `crates/mvl-manifest/tests/fixture.rs::fixture_packages_sources_and_substitutions`, `::reproducible_builds_from_different_directories_are_byte_identical`
+
+#### Scenario: Static musl binary and workspace members
+
+- GIVEN `dl_iterate_phdr` reporting only `/proc/self/exe`, and a workspace member plus a crate used both at runtime and in build.rs
+- WHEN libraries and warnings are computed
+- THEN no library is listed, the member is not warned about, and the shared crate appears once
+
+**Tests:** `crates/mvl-manifest/src/env.rs::main_program_and_vdso_are_not_libraries`, `::loaded_libraries_exclude_the_executable`, `crates/mvl-manifest/src/warn.rs::local_dependency_listed_once_and_workspace_members_skipped`
 
 ---
 

@@ -12,7 +12,8 @@ pub struct Manifest {
     pub app_version: &'static str,
     /// Version of `mvl-manifest`.
     pub mvl_version: &'static str,
-    /// Resolved version of the `mvl` crate, or `""`.
+    /// The Rust runtime: the standard library version, which is the rustc
+    /// release (`std-1.99.1`). A linked `mvl` crate shows up in `packages`.
     pub runtime_version: &'static str,
     /// Runtime-linked crates (normal deps reachable for the target).
     pub packages: &'static [PackageInfo],
@@ -59,7 +60,10 @@ pub enum PackageSource {
         url: &'static str,
         commit: &'static str,
     },
+    /// A path dependency outside the app's workspace.
     Path,
+    /// A member of the app's own workspace (covered by `source_digest`).
+    Workspace,
 }
 
 impl PackageSource {
@@ -68,6 +72,7 @@ impl PackageSource {
             PackageSource::Registry { .. } => "registry",
             PackageSource::Git { .. } => "git",
             PackageSource::Path => "path",
+            PackageSource::Workspace => "workspace",
         }
     }
 
@@ -77,6 +82,7 @@ impl PackageSource {
             PackageSource::Registry { url } => format!("registry+{url}"),
             PackageSource::Git { url, commit } => format!("git+{url}#{commit}"),
             PackageSource::Path => "path".to_string(),
+            PackageSource::Workspace => "workspace".to_string(),
         }
     }
 }

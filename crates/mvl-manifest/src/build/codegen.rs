@@ -43,6 +43,7 @@ fn source(src: &OwnedSource) -> String {
             s(commit)
         ),
         OwnedSource::Path => format!("{P}::PackageSource::Path"),
+        OwnedSource::Workspace => format!("{P}::PackageSource::Workspace"),
     }
 }
 
@@ -90,7 +91,9 @@ pub fn render(m: &OwnedManifest) -> String {
     let _ = writeln!(o, "        cc_version: {},", s(&b.cc_version));
     let _ = writeln!(o, "        linker: {},", s(&b.linker));
     let _ = writeln!(o, "        opt_level: {},", s(&b.opt_level));
-    let _ = writeln!(o, "        debug_assertions: {},", b.debug_assertions);
+    // Cargo does not pass debug_assertions to build scripts; evaluate it in
+    // the app crate, where manifest!() expands.
+    o.push_str("        debug_assertions: cfg!(debug_assertions),\n");
     let _ = writeln!(o, "        panic: {},", s(&b.panic));
     let _ = writeln!(o, "        target_features: {},", list(&b.target_features));
     let _ = writeln!(o, "        overflow_checks: {},", b.overflow_checks);

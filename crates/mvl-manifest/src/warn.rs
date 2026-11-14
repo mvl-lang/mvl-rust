@@ -83,13 +83,17 @@ pub fn assurance_warnings(m: &Manifest) -> Vec<Warning> {
     if !b.is_release() {
         return out;
     }
-    let local: Vec<String> = m
+    // Workspace members are the app's own code, covered by source_digest. A
+    // crate used both at runtime and in build.rs is listed once.
+    let mut local: Vec<String> = m
         .packages
         .iter()
         .chain(m.build_packages.iter())
-        .filter(|p| !matches!(p.source, PackageSource::Registry { .. }))
+        .filter(|p| matches!(p.source, PackageSource::Path | PackageSource::Git { .. }))
         .map(|p| format!("{}@{} ({})", p.name, p.version, p.source.kind_str()))
         .collect();
+    local.sort();
+    local.dedup();
     if !local.is_empty() {
         out.push(Warning::PathOrGitDependency { packages: local });
     }
@@ -160,10 +164,47 @@ mod tests {
             w,
             [Warning::PathOrGitDependency {
                 packages: vec![
-                    "mvl@0.12.0 (path)".into(),
+                    "derive-demo@0.1.0 (path)".into(),
                     "gitdep@0.1.0 (git)".into(),
-                    "derive-demo@0.1.0 (path)".into()
+                    "mvl@0.12.0 (path)".into(),
                 ]
+            }]
+        );
+    }
+
+    #[test]
+    fn local_dependency_listed_once_and_workspace_members_skipped() {
+        use crate::types::{PackageInfo, PackageKind, PackageSource};
+        const SHARED: PackageInfo = PackageInfo {
+            name: "mvl-manifest",
+            version: "0.12.1",
+            purl: "pkg:cargo/mvl-manifest@0.12.1",
+            license: "",
+            kind: PackageKind::Runtime,
+            source: PackageSource::Git {
+                url: "https://example.com/m.git",
+                commit: "abc",
+            },
+            checksum: "",
+        };
+        const MEMBER: PackageInfo = PackageInfo {
+            name: "frank-core",
+            source: PackageSource::Workspace,
+            ..SHARED
+        };
+        const BUILD: PackageInfo = PackageInfo {
+            kind: PackageKind::Build,
+            ..SHARED
+        };
+        let m = Manifest {
+            packages: &[SHARED, MEMBER],
+            build_packages: &[BUILD],
+            ..clean_release()
+        };
+        assert_eq!(
+            assurance_warnings(&m),
+            [Warning::PathOrGitDependency {
+                packages: vec!["mvl-manifest@0.12.1 (git)".into()]
             }]
         );
     }

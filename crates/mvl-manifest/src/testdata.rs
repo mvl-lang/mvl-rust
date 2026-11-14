@@ -54,7 +54,7 @@ pub fn sample() -> Manifest {
         app_name: "demo",
         app_version: "1.2.3",
         mvl_version: "0.12.0",
-        runtime_version: "0.12.0",
+        runtime_version: "std-1.85.0",
         packages: PACKAGES,
         build_packages: BUILD_PACKAGES,
         ffi_bridges: &[],

@@ -68,7 +68,6 @@ pub struct OwnedBuild {
     pub cc_version: String,
     pub linker: String,
     pub opt_level: String,
-    pub debug_assertions: bool,
     pub panic: String,
     pub target_features: Vec<String>,
     pub overflow_checks: bool,
@@ -183,6 +182,14 @@ pub(crate) fn profile_dir_from_out_dir(out_dir: &Path) -> Option<String> {
         .map(|s| s.to_string_lossy().into_owned())
 }
 
+/// The Rust runtime is the standard library, which ships with the compiler:
+/// its version is the rustc release (`std-1.99.1`, `std-1.100.0-nightly`).
+pub(crate) fn std_runtime(rustc_release: Option<&str>) -> String {
+    rustc_release
+        .map(|r| format!("std-{r}"))
+        .unwrap_or_default()
+}
+
 /// Generate `$OUT_DIR/mvl_manifest.rs` and print the rerun directives.
 pub fn generate() -> std::result::Result<(), Error> {
     let directives = generate_with(Tracker::default())?;
@@ -274,8 +281,6 @@ fn collect(t: &mut Tracker) -> Result<OwnedManifest> {
     }
     let source_digest = digest::source_digest(t, &cargo, &g.local_packages, &extra)?;
 
-    let env_flag = |t: &mut Tracker, name: &str| t.env(name).is_some();
-    let debug_assertions = env_flag(t, "CARGO_CFG_DEBUG_ASSERTIONS");
     let target_features: Vec<String> = t
         .env("CARGO_CFG_TARGET_FEATURE")
         .map(|s| s.split(',').map(str::to_string).collect())
@@ -283,12 +288,7 @@ fn collect(t: &mut Tracker) -> Result<OwnedManifest> {
     let opt_level = t.env("OPT_LEVEL").unwrap_or_default();
     let panic = t.env("CARGO_CFG_PANIC").unwrap_or_default();
 
-    let runtime_version = g
-        .packages
-        .iter()
-        .find(|p| p.name == "mvl")
-        .map(|p| p.version.clone())
-        .unwrap_or_default();
+    let runtime_version = std_runtime(rustc_info.release.as_deref());
 
     Ok(OwnedManifest {
         app_name: required(t, "CARGO_PKG_NAME")?,
@@ -311,7 +311,6 @@ fn collect(t: &mut Tracker) -> Result<OwnedManifest> {
             cc_version,
             linker,
             opt_level,
-            debug_assertions,
             panic,
             target_features,
             overflow_checks: prof.overflow_checks,
@@ -381,6 +380,10 @@ mod tests {
 
         assert!(src.starts_with("// @generated"));
         assert!(src.contains("app_name: \"mvl-manifest\""));
+        assert!(
+            src.contains("runtime_version: \"std-1."),
+            "runtime is the Rust std"
+        );
         assert!(src.contains("profile: \"release-custom\""));
         assert!(src.contains("date: \"2026-11-14T00:00:00Z\""));
         assert!(src.contains("features: &[\"build\"]"));
@@ -428,6 +431,13 @@ mod tests {
             );
         }
         let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn runtime_is_the_rust_std_version() {
+        assert_eq!(std_runtime(Some("1.99.1")), "std-1.99.1");
+        assert_eq!(std_runtime(Some("1.100.0-nightly")), "std-1.100.0-nightly");
+        assert_eq!(std_runtime(None), "");
     }
 
     #[test]
