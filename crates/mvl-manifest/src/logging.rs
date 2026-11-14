@@ -176,6 +176,9 @@ pub fn log_manifest(m: &Manifest) {
 
 /// [`log_manifest`] with a caller-supplied environment.
 pub fn log_manifest_with_env(m: &Manifest, env: &RuntimeEnv) {
+    // Keep the verification record in the binary even under LTO: nothing
+    // else reads it at runtime, but `mvl-attest` scans for it.
+    std::hint::black_box(m.record);
     let recs = records(m, env, &LogOptions::from_env());
     if logger_accepts() {
         for r in &recs {

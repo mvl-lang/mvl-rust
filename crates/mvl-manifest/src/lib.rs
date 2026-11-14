@@ -29,8 +29,8 @@
 //! ```
 
 pub mod format;
-#[cfg(any(feature = "build", feature = "log"))]
-mod time;
+pub mod record;
+pub mod time;
 mod types;
 pub mod warn;
 

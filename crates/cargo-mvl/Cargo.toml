@@ -20,6 +20,7 @@ rust-refine = { path = "../rust-refine", version = "0.12.1" }
 rust-effect = { path = "../rust-effect", version = "0.12.1" }
 rust-ifc = { path = "../rust-ifc", version = "0.12.1" }
 rust-mcdc = { path = "../rust-mcdc", version = "0.12.1" }
+mvl-attest = { path = "../mvl-attest", version = "0.12.1" }
 serde_json = "1"
 
 [features]

@@ -120,6 +120,18 @@ pub fn render(m: &OwnedManifest) -> String {
     );
     let _ = writeln!(o, "    source_digest: {},", s(&m.source_digest));
     o.push_str("    native_deps: &[],\n");
+    let bool_s = |b: bool| if b { "true" } else { "false" };
+    let record = crate::record::render(&[
+        ("app", &m.app_name),
+        ("app_version", &m.app_version),
+        ("vcs_commit", &b.vcs_commit),
+        ("vcs_dirty", bool_s(b.vcs_dirty)),
+        ("lockfile_digest", &b.lockfile_digest),
+        ("source_digest", &m.source_digest),
+        ("auditable", bool_s(b.auditable)),
+        ("reproducible", bool_s(b.reproducible)),
+    ]);
+    let _ = writeln!(o, "    record: {},", s(&record));
     o.push_str("}\n");
     o
 }

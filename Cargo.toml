@@ -12,6 +12,7 @@ members = [
     "crates/rust-mcdc",
     "crates/cargo-mvl",
     "crates/mvl-manifest",
+    "crates/mvl-attest",
 ]
 exclude = ["examples"]
 

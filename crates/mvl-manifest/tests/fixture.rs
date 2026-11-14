@@ -432,7 +432,14 @@ fn reproducible_builds_from_different_directories_are_byte_identical() {
         assert_eq!(m["build"]["debug_assertions"], false);
         assert_eq!(m["build"]["vcs_dirty"], false);
         assert_eq!(m["built"], "2026-11-14T00:00:00Z");
-        outputs.push((m, fs::read(&bin).unwrap()));
+        let bytes = fs::read(&bin).unwrap();
+        // The verification record survives a release build (mvl-attest scans for it).
+        let marker = mvl_manifest::record::MARKER.as_bytes();
+        assert!(
+            bytes.windows(marker.len()).any(|w| w == marker),
+            "no verification record in the release binary"
+        );
+        outputs.push((m, bytes));
     }
     assert_eq!(outputs[0].0, outputs[1].0, "manifests differ");
     assert!(outputs[0].1 == outputs[1].1, "binaries differ");

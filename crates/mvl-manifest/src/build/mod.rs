@@ -384,6 +384,8 @@ mod tests {
             src.contains("runtime_version: \"std-1."),
             "runtime is the Rust std"
         );
+        assert!(src.contains("record: \"mvl-manifest-record/v1;app=mvl-manifest;"));
+        assert!(src.contains(";reproducible=true;end\""));
         assert!(src.contains("profile: \"release-custom\""));
         assert!(src.contains("date: \"2026-11-14T00:00:00Z\""));
         assert!(src.contains("features: &[\"build\"]"));

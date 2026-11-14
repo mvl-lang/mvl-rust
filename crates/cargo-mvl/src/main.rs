@@ -49,6 +49,14 @@ fn main() -> ExitCode {
         return run_test(rest);
     }
 
+    // Provenance subcommands (ADR-0014) take a binary, not source files, and
+    // parse their own options.
+    match subcommand.as_str() {
+        "attest" => return mvl_attest::cli::attest_main(rest),
+        "verify" => return mvl_attest::cli::verify_main(rest),
+        _ => {}
+    }
+
     let parse = |sub: &str| parse_args(sub, rest);
     match subcommand.as_str() {
         "-h" | "--help" => {
@@ -94,6 +102,11 @@ Assurance subcommands (emit assurance-JSON to stdout):
                        cargo mvl-mcdc generate --obligations=FILE   (list the ids/vectors to write tests against)
                        cargo mvl-mcdc harvest  --obligations=FILE   (join tagged tests against cargo test's output)
   coverage           not yet implemented -- see #15 (needs cargo-llvm-cov)
+
+Provenance subcommands (ADR-0014; take a binary):
+  attest <BINARY> --lockfile <PATH>    build-environment predicate JSON for CI to sign
+  verify <BINARY> --repo <O/R> --workflow <PATH> --ref <PATTERN>
+                     check the signed provenance and cross-check the binary
 ";
 
 const GATE_OPTIONS: &str = "\

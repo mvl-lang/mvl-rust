@@ -37,6 +37,10 @@ build configuration, source provenance, every linked and build-time package)
 and logs it at startup, so you can tell what is actually running
 ([ADR-0013](.openspec/adr/0013-runtime-manifest.md),
 [spec 010](.openspec/specs/010-runtime-manifest/spec.md)).
+[`mvl-attest`](crates/mvl-attest) turns that evidence into proof:
+`cargo mvl verify` checks a binary against build provenance signed by its CI
+workflow ([ADR-0014](.openspec/adr/0014-mvl-attest.md),
+[docs/attestation.md](docs/attestation.md)).
 
 ## Quick start
 

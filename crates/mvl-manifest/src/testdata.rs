@@ -92,6 +92,7 @@ pub fn sample() -> Manifest {
         assurance: AssuranceInfo::default(),
         source_digest: "bbbb",
         native_deps: &[],
+        record: "mvl-manifest-record/v1;app=demo;app_version=1.2.3;end",
     }
 }
 
