@@ -8,6 +8,10 @@ below backfills everything merged while the workspace sat at that version.
 
 ## [Unreleased]
 
+### Documentation
+
+- ADR-0013 (#129, Proposed): `mvl-manifest`, a runtime manifest crate that logs bound packages and build provenance at startup. It records the threat model (evidence, not proof), the build hook, the embedded fields, the log records and the Phase 2 extension. Signing and verification are deferred to `mvl-attest` (#131). Adds an ADR index at `.openspec/adr/index.md`.
+
 ## [0.11.1] - 2026-09-27
 
 ### Fixed
