@@ -226,6 +226,20 @@ A WARN MUST be emitted for: a dirty tree; a non-stable toolchain; and, in releas
 
 **Tests:** `crates/mvl-manifest/src/build/graph.rs::features_map_back_from_env`
 
+### Requirement 12: `runtime` reports the Rust standard library [MUST]
+
+`runtime_version` MUST be `std-<rustc release>`, taken from `rustc -vV`, for every app, whether or not it links the `mvl` crate. A linked `mvl` crate appears in `packages` like any other dependency.
+
+**Implementation:** `crates/mvl-manifest/src/build/mod.rs`
+
+#### Scenario: A plain Rust app reports its std version
+
+- GIVEN an app that links no `mvl` crate, built with rustc 1.99.1
+- WHEN the manifest is generated
+- THEN `runtime` is `std-1.99.1`, not empty
+
+**Tests:** `crates/mvl-manifest/src/build/mod.rs::runtime_is_the_rust_std_version`, `::generates_manifest_for_this_crate`, `crates/mvl-manifest/tests/fixture.rs::fixture_packages_sources_and_substitutions`
+
 ---
 
 ## Known Limitations

@@ -12,7 +12,8 @@ pub struct Manifest {
     pub app_version: &'static str,
     /// Version of `mvl-manifest`.
     pub mvl_version: &'static str,
-    /// Resolved version of the `mvl` crate, or `""`.
+    /// The Rust runtime: the standard library version, which is the rustc
+    /// release (`std-1.99.1`). A linked `mvl` crate shows up in `packages`.
     pub runtime_version: &'static str,
     /// Runtime-linked crates (normal deps reachable for the target).
     pub packages: &'static [PackageInfo],

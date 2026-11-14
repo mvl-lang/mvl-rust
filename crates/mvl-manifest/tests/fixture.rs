@@ -241,6 +241,9 @@ fn fixture_packages_sources_and_substitutions() {
     assert_eq!(m["app"], "app");
     assert_eq!(m["app_version"], "0.1.0");
     assert_eq!(m["backend"], "mvl-rust");
+    // The fixture links no `mvl` crate (like a plain Rust app): runtime is std.
+    let rustc = m["rustc"].as_str().unwrap();
+    assert_eq!(m["runtime"], format!("std-{rustc}").as_str());
     assert_eq!(
         m["build"]["features"],
         serde_json::json!(["default", "fancy"])
