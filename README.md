@@ -31,6 +31,13 @@ attributes above resolve on stable `rustc` and carries the IFC runtime types;
 [`mvl-macros`](crates/mvl-macros) and [`mvl-rust-core`](crates/mvl-rust-core)
 are internal — depend on `mvl`, not on those directly.
 
+[`mvl-manifest`](crates/mvl-manifest) is separate from the verification
+pipeline: it embeds a reproducible runtime manifest (app identity, toolchain,
+build configuration, source provenance, every linked and build-time package)
+and logs it at startup, so you can tell what is actually running
+([ADR-0013](.openspec/adr/0013-runtime-manifest.md),
+[spec 010](.openspec/specs/010-runtime-manifest/spec.md)).
+
 ## Quick start
 
 ```bash

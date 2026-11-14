@@ -1,0 +1,34 @@
+[package]
+name = "mvl-manifest"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Runtime manifest for mvl-rust binaries: embeds reproducible build provenance and bound packages at build time and logs them at startup (ADR-0013)."
+readme = "README.md"
+
+[features]
+default = []
+# Startup logging through the `log` facade, plus runtime-environment collection.
+log = ["dep:log", "dep:libc"]
+# sha256 of the running executable in the runtime-environment record (evidence only).
+exe-digest = ["log", "dep:sha2"]
+# The build.rs generator: `mvl_manifest::build::generate()`.
+build = ["dep:serde_json", "dep:toml", "dep:sha2"]
+
+[dependencies]
+log = { version = "0.4", optional = true }
+serde_json = { version = "1", optional = true }
+toml = { version = "0.8", optional = true }
+sha2 = { version = "0.10", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { version = "0.2", optional = true }
+
+[dev-dependencies]
+expect-test = "1"
+# Self dev-dependency: `cargo test --workspace` (CI, coverage) runs with every
+# feature on, so the generator, logging and fixture tests are never skipped.
+mvl-manifest = { path = ".", features = ["build", "log", "exe-digest"] }
+serde_json = "1"

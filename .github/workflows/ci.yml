@@ -59,6 +59,17 @@ jobs:
         if: matrix.rust == 'stable'
         run: make examples
 
+  verification-macos:
+    # #130: mvl-manifest reads loaded libraries through dyld on macOS and
+    # dl_iterate_phdr on Linux; each path needs its own runner. Its fixture
+    # tests also check byte-identical reproducible builds per platform.
+    name: verification (macos, mvl-manifest)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -p mvl-manifest
+
   verification-z3:
     # #37: L5/Z3 is feature-gated and default-off precisely so its absence
     # here wouldn't matter -- this job exists to prove the *presence* case

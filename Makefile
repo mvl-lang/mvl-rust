@@ -1,5 +1,5 @@
 .PHONY: help version build test check fmt fmt-check clippy examples examples-verbose clean \
-	test-core test-limit test-total test-refine test-effect test-ifc test-cargo-mvl test-mcdc test-z3 \
+	test-core test-limit test-total test-refine test-effect test-ifc test-cargo-mvl test-mcdc test-manifest test-z3 \
 	coverage assurance assurance-gate compile verify evidence traceability all \
 	mcdc mcdc-scan mcdc-run mcdc-harvest mcdc-generate
 
@@ -27,6 +27,7 @@ help:
 	@printf "  $(GRN)%-16s$(RESET) %s\n" "test-limit"       "test rust-limit only"
 	@printf "  $(GRN)%-16s$(RESET) %s\n" "test-refine"      "test rust-refine only"
 	@printf "  $(GRN)%-16s$(RESET) %s\n" "test-total"       "test rust-total only"
+	@printf "  $(GRN)%-16s$(RESET) %s\n" "test-manifest"    "test mvl-manifest only (includes fixture-workspace builds)"
 	@printf "  $(YEL)%-16s$(RESET) %s\n" "test-mcdc"        "test rust-mcdc only (includes real discharge/harvest fixtures)"
 	@printf "  $(YEL)%-16s$(RESET) %s\n" "test-z3"          "test with L5/Z3 dispatch enabled (#37) -- requires Z3 installed"
 	@printf "\n$(BOLD)$(CYAN)Examples / CI gate$(RESET)\n"
@@ -82,6 +83,9 @@ test-cargo-mvl:
 test-mcdc:
 	cargo test -p rust-mcdc
 
+test-manifest:
+	cargo test -p mvl-manifest
+
 # #37: L5/Z3 dispatch, feature-gated and default-off -- requires Z3
 # installed (e.g. `brew install z3` / `apt install libz3-dev`). Not part of
 # `test`/`check`/`all` on purpose: those must keep passing with no Z3 on
@@ -104,6 +108,7 @@ fmt:
 	cd examples/rust-effect-demo/violating && cargo fmt
 	cd examples/rust-ifc-demo/compliant && cargo fmt
 	cd examples/rust-ifc-demo/violating && cargo fmt
+	cd examples/mvl-manifest-demo && cargo fmt
 
 fmt-check:
 	cargo fmt --check
@@ -120,6 +125,7 @@ fmt-check:
 	cd examples/rust-effect-demo/violating && cargo fmt --check
 	cd examples/rust-ifc-demo/compliant && cargo fmt --check
 	cd examples/rust-ifc-demo/violating && cargo fmt --check
+	cd examples/mvl-manifest-demo && cargo fmt --check
 
 clippy:
 	cargo clippy --workspace --all-targets
@@ -199,6 +205,13 @@ examples: build
 	fi; \
 	count=$$(printf '%s\n' "$$output" | grep -c '^error:'); \
 	echo "rust-ifc violating example: OK ($$count diagnostics correctly rejected -- run 'make examples-verbose' to see them)"
+	@stderr=$$(cd examples/mvl-manifest-demo && cargo run --quiet 2>&1 >/dev/null); \
+	if ! printf '%s\n' "$$stderr" | grep -q '^INFO mvl_manifest: MVL Runtime Manifest app=mvl-manifest-demo app_version=0.1.0 '; then \
+		echo "FAIL: mvl-manifest-demo did not log its manifest to stderr:" >&2; \
+		printf '%s\n' "$$stderr" >&2; \
+		exit 1; \
+	fi
+	@echo "mvl-manifest-demo: OK (manifest logged to stderr without a logger)"
 	cargo build -p cargo-mvl --bin cargo-mvl
 	./target/debug/cargo-mvl mvl check examples/hello-world/src/main.rs
 	@echo "cargo mvl check (hello-world): OK (0 diagnostics -- all five tools real)"
@@ -371,3 +384,4 @@ clean:
 	cd examples/rust-effect-demo/violating && cargo clean
 	cd examples/rust-ifc-demo/compliant && cargo clean
 	cd examples/rust-ifc-demo/violating && cargo clean
+	cd examples/mvl-manifest-demo && cargo clean
