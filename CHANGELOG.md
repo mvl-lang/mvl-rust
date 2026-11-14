@@ -8,6 +8,15 @@ below backfills everything merged while the workspace sat at that version.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-14
+
+### Added
+
+- `mvl-manifest` (#130, ADR-0013 Phase 1): a new crate that embeds a reproducible runtime manifest at build time and logs it at startup.
+  - `build::generate()` in `build.rs` records app identity, toolchain, build configuration, source provenance (`vcs_commit`, `lockfile_digest`, `source_digest`) and every runtime-linked and build-time package, with source, checksum and purl.
+  - `log_manifest(&manifest!())` emits the manifest, build provenance, runtime packages, build packages and runtime environment (including loaded shared libraries) on log target `mvl_manifest`, then one WARN per assurance-weakening condition. It falls back to stderr when no logger would record it.
+  - Two release builds with `SOURCE_DATE_EPOCH` and `--remap-path-prefix`, from different directories, produce byte-identical binaries.
+
 ### Documentation
 
 - ADR-0013 (#129, Proposed): `mvl-manifest`, a runtime manifest crate that logs bound packages and build provenance at startup. It records the threat model (evidence, not proof), the build hook, the embedded fields, the log records and the Phase 2 extension. Signing and verification are deferred to `mvl-attest` (#131). Adds an ADR index at `.openspec/adr/index.md`.
