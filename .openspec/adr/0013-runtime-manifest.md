@@ -157,6 +157,15 @@ All records go to the dedicated log target **`mvl_manifest`**. If logging is dis
    - a release build without `cargo auditable`, or without `reproducible`
    - debug assertions on in a release build
 
+**Amendment (v0.12.1, #136): record layout, from a real deployment.** FRANK's logs showed the first layout breaking on line-limited log paths (podman's journald driver stores 8 KiB partial entries; journald splits lines over `LineMax`), and repeating fields. The records are now:
+
+- `MVL Runtime Packages` / `MVL Build Packages` carry only `packages_count`, followed by one `MVL Runtime Package` / `MVL Build Package` record per crate (`purl`, `kind` for build packages, `source`, `sha256`). No record grows with the dependency count.
+- `MVL Runtime Environment` carries `libraries_count` and `libraries_sha256` (a digest of the full sorted list) and lists only libraries outside the OS's own locations (`/System/`, `/usr/lib/` on macOS), with `system_libraries_omitted`. `MVL_MANIFEST_LIBRARIES=all` prints the full list. The main program and the vDSO are not libraries.
+- The identity and join fields (`backend`, `target`, `profile`, `built`, `vcs_commit`, `lockfile_digest`, `source_digest`) appear in `MVL Runtime Manifest` only.
+- In logfmt and the block format, empty fields are left out; a list is `,`-separated with `,` and spaces inside an entry percent-encoded; counts are named `<list>_count`. JSON keeps every field.
+
+Two value fixes in the same release: `debug_assertions` is evaluated with `cfg!(debug_assertions)` in the app crate (Cargo does not pass it to build scripts), and workspace members get their own source kind, `workspace`, which does not trigger the path/git-dependency warning.
+
 ## Phase 2 extension (recorded here; implemented in later tickets)
 
 | Field | Source in mvl-rust | mvl-lang equivalent |

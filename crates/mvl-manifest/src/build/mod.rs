@@ -68,7 +68,6 @@ pub struct OwnedBuild {
     pub cc_version: String,
     pub linker: String,
     pub opt_level: String,
-    pub debug_assertions: bool,
     pub panic: String,
     pub target_features: Vec<String>,
     pub overflow_checks: bool,
@@ -282,8 +281,6 @@ fn collect(t: &mut Tracker) -> Result<OwnedManifest> {
     }
     let source_digest = digest::source_digest(t, &cargo, &g.local_packages, &extra)?;
 
-    let env_flag = |t: &mut Tracker, name: &str| t.env(name).is_some();
-    let debug_assertions = env_flag(t, "CARGO_CFG_DEBUG_ASSERTIONS");
     let target_features: Vec<String> = t
         .env("CARGO_CFG_TARGET_FEATURE")
         .map(|s| s.split(',').map(str::to_string).collect())
@@ -314,7 +311,6 @@ fn collect(t: &mut Tracker) -> Result<OwnedManifest> {
             cc_version,
             linker,
             opt_level,
-            debug_assertions,
             panic,
             target_features,
             overflow_checks: prof.overflow_checks,

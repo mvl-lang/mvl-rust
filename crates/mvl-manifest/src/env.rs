@@ -97,14 +97,16 @@ fn loaded_libraries() -> Vec<String> {
     ) -> libc::c_int {
         // SAFETY: `data` is the `&mut Vec<String>` passed below, alive for the
         // whole `dl_iterate_phdr` call; `info` is valid for this callback.
+        // Every entry is kept, in order, so the filter can drop the first.
         let out = &mut *(data as *mut Vec<String>);
         let name = (*info).dlpi_name;
-        if !name.is_null() {
-            let s = std::ffi::CStr::from_ptr(name).to_string_lossy();
-            if !s.is_empty() {
-                out.push(s.into_owned());
-            }
-        }
+        out.push(if name.is_null() {
+            String::new()
+        } else {
+            std::ffi::CStr::from_ptr(name)
+                .to_string_lossy()
+                .into_owned()
+        });
         0
     }
     let mut out: Vec<String> = Vec::new();
@@ -115,7 +117,28 @@ fn loaded_libraries() -> Vec<String> {
             &mut out as *mut Vec<String> as *mut libc::c_void,
         );
     }
-    out
+    shared_objects(out)
+}
+
+/// `dl_iterate_phdr` entries → shared libraries. The first entry is always the
+/// main program (glibc names it `""`, static musl `/proc/self/exe`), and the
+/// kernel's vDSO is not a file, so both are dropped.
+#[cfg_attr(
+    not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    )),
+    allow(dead_code)
+)]
+fn shared_objects(entries: Vec<String>) -> Vec<String> {
+    entries
+        .into_iter()
+        .skip(1)
+        .filter(|n| !n.is_empty() && !n.starts_with("linux-vdso") && !n.starts_with("linux-gate"))
+        .collect()
 }
 
 #[cfg(target_vendor = "apple")]
@@ -206,6 +229,40 @@ mod tests {
         assert_eq!(e.pid, std::process::id());
         assert!(e.started_at.ends_with('Z'));
         assert!(!e.exe_path.is_empty());
+    }
+
+    #[test]
+    fn main_program_and_vdso_are_not_libraries() {
+        // What a static musl binary reports: only itself.
+        assert!(shared_objects(vec!["/proc/self/exe".into()]).is_empty());
+        // A dynamic glibc binary: main program (""), vDSO, then real libraries.
+        assert_eq!(
+            shared_objects(vec![
+                "".into(),
+                "linux-vdso.so.1".into(),
+                "/lib/x86_64-linux-gnu/libc.so.6".into(),
+                "/lib64/ld-linux-x86-64.so.2".into(),
+            ]),
+            [
+                "/lib/x86_64-linux-gnu/libc.so.6",
+                "/lib64/ld-linux-x86-64.so.2"
+            ]
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn loaded_libraries_exclude_the_executable() {
+        let e = RuntimeEnv::collect();
+        let exe = std::fs::canonicalize(&e.exe_path).unwrap();
+        for l in &e.loaded_libraries {
+            assert_ne!(
+                std::fs::canonicalize(l).ok().as_ref(),
+                Some(&exe),
+                "the executable is listed as a library: {l}"
+            );
+        }
+        assert!(!e.loaded_libraries.iter().any(|l| l == "/proc/self/exe"));
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]

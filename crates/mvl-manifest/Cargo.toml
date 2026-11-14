@@ -11,9 +11,9 @@ readme = "README.md"
 [features]
 default = []
 # Startup logging through the `log` facade, plus runtime-environment collection.
-log = ["dep:log", "dep:libc"]
+log = ["dep:log", "dep:libc", "dep:sha2"]
 # sha256 of the running executable in the runtime-environment record (evidence only).
-exe-digest = ["log", "dep:sha2"]
+exe-digest = ["log"]
 # The build.rs generator: `mvl_manifest::build::generate()`.
 build = ["dep:serde_json", "dep:toml", "dep:sha2"]
 

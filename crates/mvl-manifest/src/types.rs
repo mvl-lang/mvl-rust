@@ -60,7 +60,10 @@ pub enum PackageSource {
         url: &'static str,
         commit: &'static str,
     },
+    /// A path dependency outside the app's workspace.
     Path,
+    /// A member of the app's own workspace (covered by `source_digest`).
+    Workspace,
 }
 
 impl PackageSource {
@@ -69,6 +72,7 @@ impl PackageSource {
             PackageSource::Registry { .. } => "registry",
             PackageSource::Git { .. } => "git",
             PackageSource::Path => "path",
+            PackageSource::Workspace => "workspace",
         }
     }
 
@@ -78,6 +82,7 @@ impl PackageSource {
             PackageSource::Registry { url } => format!("registry+{url}"),
             PackageSource::Git { url, commit } => format!("git+{url}#{commit}"),
             PackageSource::Path => "path".to_string(),
+            PackageSource::Workspace => "workspace".to_string(),
         }
     }
 }

@@ -14,6 +14,7 @@ pub enum OwnedSource {
     Registry { url: String },
     Git { url: String, commit: String },
     Path,
+    Workspace,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -349,12 +350,21 @@ pub fn classify(
     }
 
     let checksums = lock_checksums(lock);
+    let members: BTreeSet<&str> = meta["workspace_members"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m.as_str())
+        .collect();
     let to_pkg = |id: &str, kind: &'static str| -> Option<OwnedPackage> {
         let p = pkgs.get(id)?;
         let name = p["name"].as_str()?.to_string();
         let version = p["version"].as_str()?.to_string();
         let raw = p["source"].as_str();
-        let source = parse_source(raw);
+        let source = match parse_source(raw) {
+            OwnedSource::Path if members.contains(id) => OwnedSource::Workspace,
+            other => other,
+        };
         let checksum = checksums
             .get(&(name.clone(), version.clone(), raw.unwrap_or("").to_string()))
             .cloned()
