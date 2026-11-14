@@ -93,7 +93,7 @@ jobs:
           exit $fail
 
       # The end-to-end tests need cargo-auditable (installed above) and cosign.
-      - uses: sigstore/cosign-installer@v3
+      - uses: sigstore/cosign-installer@v4
         with:
           cosign-release: v3.1.4
       - name: mvl-attest tests, including the end-to-end tests
@@ -112,7 +112,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: sigstore/cosign-installer@v3
+      - uses: sigstore/cosign-installer@v4
         with:
           cosign-release: v3.1.4
       - name: install cargo-auditable
