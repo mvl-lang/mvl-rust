@@ -92,6 +92,73 @@ jobs:
             --ref "refs/tags/does-not-exist" --source .
           exit $fail
 
-      # The end-to-end test needs cargo-auditable, installed above.
-      - name: mvl-attest tests, including the cargo-auditable end-to-end test
+      # The end-to-end tests need cargo-auditable (installed above) and cosign.
+      - uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v3.1.4
+      - name: mvl-attest tests, including the end-to-end tests
         run: cargo test --locked -p mvl-attest -- --include-ignored
+
+  # Key/KMS mode (#137): the same artifact signed with a pinned key instead of
+  # the workflow identity. A real deployment keeps the key in a KMS
+  # (tools/ci/attest-kms.yml); here an ephemeral key is generated per run, so
+  # the job exercises signing, the transparency log and verification end to
+  # end, and checks that a modified binary, a wrong key and a wrong
+  # repository fail.
+  attest-key:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v3.1.4
+      - name: install cargo-auditable
+        run: cargo install cargo-auditable --locked
+      - name: build the artifact
+        working-directory: examples/mvl-manifest-demo
+        run: |
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=/build"
+          cargo auditable build --release --locked
+      - name: build cargo-mvl
+        run: cargo build --release --locked -p cargo-mvl
+      - name: sign with a key (ephemeral here; a KMS URI in production)
+        env:
+          COSIGN_PASSWORD: ephemeral
+        run: |
+          cosign generate-key-pair --output-key-prefix "$RUNNER_TEMP/signer"
+          cosign generate-key-pair --output-key-prefix "$RUNNER_TEMP/stranger"
+          ./target/release/cargo-mvl attest --slsa > "$RUNNER_TEMP/slsa.json"
+          ./target/release/cargo-mvl attest "$BIN" --lockfile "$LOCK" > "$RUNNER_TEMP/build-env.json"
+          cosign attest-blob --yes --key "$RUNNER_TEMP/signer.key" \
+            --type https://slsa.dev/provenance/v1 --predicate "$RUNNER_TEMP/slsa.json" \
+            --bundle "$BIN.slsa.bundle" "$BIN"
+          cosign attest-blob --yes --key "$RUNNER_TEMP/signer.key" \
+            --type https://mvl-lang.org/attest/build-env/v1 --predicate "$RUNNER_TEMP/build-env.json" \
+            --bundle "$BIN.build-env.bundle" "$BIN"
+      - name: verify (must pass), including the transparency log
+        run: |
+          ./target/release/cargo-mvl verify "$BIN" --key "$RUNNER_TEMP/signer.pub" \
+            --repo "${{ github.repository }}" --workflow .github/workflows/attest.yml \
+            --ref "${{ github.ref }}" --source .
+      - name: verify fails for a modified binary, a wrong key, the wrong repo
+        run: |
+          set +e
+          cp "$BIN" "$RUNNER_TEMP/tampered"
+          printf '\x00' | dd of="$RUNNER_TEMP/tampered" bs=1 seek=4096 conv=notrunc 2>/dev/null
+          fail=0
+          expect_fail() {
+            if "$@"; then echo "::error::verification passed but must fail: $*"; fail=1; fi
+          }
+          common=(--workflow .github/workflows/attest.yml --ref "${{ github.ref }}" --source .)
+          expect_fail ./target/release/cargo-mvl verify "$RUNNER_TEMP/tampered" \
+            --key "$RUNNER_TEMP/signer.pub" --repo "${{ github.repository }}" \
+            --slsa-bundle "$BIN.slsa.bundle" --build-env-bundle "$BIN.build-env.bundle" "${common[@]}"
+          expect_fail ./target/release/cargo-mvl verify "$BIN" \
+            --key "$RUNNER_TEMP/stranger.pub" --repo "${{ github.repository }}" "${common[@]}"
+          expect_fail ./target/release/cargo-mvl verify "$BIN" \
+            --key "$RUNNER_TEMP/signer.pub" --repo octocat/hello-world "${common[@]}"
+          exit $fail

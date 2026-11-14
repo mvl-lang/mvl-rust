@@ -248,8 +248,42 @@ pub struct Options {
     /// Repository-relative lockfile path; defaults to the build-env
     /// predicate's `lockfile_path`, then `Cargo.lock`.
     pub lockfile: Option<String>,
-    /// The `gh` executable.
+    /// The `gh` executable (keyless mode, and the lockfile fetch without
+    /// `--source`).
     pub gh: PathBuf,
+    /// Key/KMS mode instead of keyless; see [`KeyMode`].
+    pub key: Option<KeyMode>,
+}
+
+/// Key/KMS mode (ADR-0014 amendment): signatures by a pinned key, verified
+/// with `cosign`, instead of keyless GitHub attestations. The identity checks
+/// then read the signed SLSA predicate, which the key holder vouches for.
+#[derive(Debug, Clone)]
+pub struct KeyMode {
+    /// A public key file or a KMS URI (`awskms://…`, `gcpkms://…`, `hashivault://…`).
+    pub key: String,
+    /// The `cosign` executable.
+    pub cosign: PathBuf,
+    /// Bundle of the SLSA provenance attestation.
+    pub slsa_bundle: PathBuf,
+    /// Bundle of the build-environment attestation.
+    pub build_env_bundle: PathBuf,
+    /// Require a transparency-log entry (the default). Off only for
+    /// air-gapped signing, where there is no log to check.
+    pub tlog: bool,
+}
+
+impl KeyMode {
+    /// Default bundle paths next to the artifact: `<artifact>.slsa.bundle`
+    /// and `<artifact>.build-env.bundle`.
+    pub fn bundles_next_to(artifact: &Path) -> (PathBuf, PathBuf) {
+        let with = |ext: &str| {
+            let mut s = artifact.as_os_str().to_owned();
+            s.push(ext);
+            PathBuf::from(s)
+        };
+        (with(".slsa.bundle"), with(".build-env.bundle"))
+    }
 }
 
 /// Gather the inputs and evaluate them.
@@ -260,9 +294,18 @@ pub fn verify(o: &Options) -> Report {
         .as_ref()
         .map(|b| crate::sha256_hex(b))
         .unwrap_or_default();
-    let attested = |pt: &str| {
-        provenance::gh_verify(&o.gh, &o.artifact, &p.repo, &p.workflow, pt)
-            .and_then(|r| provenance::select(&r, &artifact_sha256))
+    let attested = |pt: &str| match &o.key {
+        None => provenance::gh_verify(&o.gh, &o.artifact, &p.repo, &p.workflow, pt)
+            .and_then(|r| provenance::select(&r, &artifact_sha256)),
+        Some(k) => {
+            let bundle = if pt == SLSA {
+                &k.slsa_bundle
+            } else {
+                &k.build_env_bundle
+            };
+            provenance::cosign_verify(&k.cosign, &o.artifact, &k.key, bundle, pt, k.tlog)
+                .and_then(|st| provenance::from_statement(&st, None, &artifact_sha256))
+        }
     };
     let slsa = attested(SLSA);
     let build_env = attested(BUILD_ENV);
@@ -522,6 +565,51 @@ mod tests {
             f.contains(&"signature") && f.contains(&"build-env"),
             "{f:?}"
         );
+    }
+
+    #[test]
+    fn key_mode_bundles_default_next_to_the_artifact() {
+        let (s, e) = KeyMode::bundles_next_to(Path::new("dist/app"));
+        assert_eq!(s, Path::new("dist/app.slsa.bundle"));
+        assert_eq!(e, Path::new("dist/app.build-env.bundle"));
+    }
+
+    fn slsa_predicate_with_workflow(
+        repo: &str,
+        wf: &str,
+        git_ref: &str,
+        commit: &str,
+    ) -> serde_json::Value {
+        json!({"buildDefinition": {
+            "externalParameters": {"workflow": {
+                "repository": format!("https://github.com/{repo}"),
+                "path": wf,
+                "ref": git_ref,
+            }},
+            "resolvedDependencies": [{"digest": {"gitCommit": commit}}],
+        }})
+    }
+
+    #[test]
+    fn key_mode_cross_checks_are_the_same_as_keyless() {
+        // Identity from the signed SLSA predicate instead of a certificate:
+        // the same evaluate() decides, so a commit mismatch fails the same way.
+        let mut i = good();
+        let st = json!({
+            "subject": [{"digest": {"sha256": SHA}}],
+            "predicate": slsa_predicate_with_workflow(REPO, WF, REF, COMMIT),
+        });
+        i.slsa = provenance::from_statement(&st, None, SHA);
+        let r = evaluate(&i, &policy());
+        assert!(r.ok(), "{:?}", r.failed());
+        let lock_digest = crate::sha256_hex(LOCK.as_bytes());
+        i.record = Ok(record(
+            "2222222222222222222222222222222222222222",
+            &lock_digest,
+            false,
+            true,
+        ));
+        assert_eq!(evaluate(&i, &policy()).failed(), ["commit"]);
     }
 
     #[test]

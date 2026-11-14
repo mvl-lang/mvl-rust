@@ -67,13 +67,21 @@ Phase 1 calls `gh`; it implements no cryptography.
 
 A binary that checks its own signature can be patched to skip the check. "Run only if it verifies" belongs to the platform: a Kubernetes admission controller, IMA/fs-verity, OS code signing, or a minimal verifying launcher. `mvl-attest` provides the verification logic those can call.
 
+**Amendment (v0.14.0, #137): key/KMS mode.** For verifiers that cannot reach GitHub or the public Sigstore instance, or policies that require a key under the organisation's control, `verify --key <public key or KMS URI>` checks both attestations with `cosign verify-blob-attestation` against cosign bundles (`<binary>.slsa.bundle`, `<binary>.build-env.bundle`). Three things differ from keyless mode:
+
+- **Who generates the SLSA provenance.** `actions/attest-build-provenance` cannot sign with a KMS key, so `cargo mvl attest --slsa` builds the predicate itself, in the same shape as GitHub's, from the GitHub Actions environment or explicit `--repo/--workflow/--ref/--commit`.
+- **Who vouches for the identity.** There is no certificate. The `repository`, `workflow` and `ref` checks read the signed SLSA predicate, so they hold only as far as the key holder is trusted: anyone with access to the key can sign any claim. Keyless mode remains the default because the CI platform, not a key holder, vouches for the workflow identity.
+- **The transparency log.** Required by default, as in keyless mode; `--no-tlog` turns it off for air-gapped signers that have no log to write to.
+
+Every other check (`clean-build`, `auditable`, `commit`, `lockfile`, `dependencies`) is the same code. `tools/ci/attest-kms.yml` is the CI template; `attest.yml` exercises key mode on every run with an ephemeral key.
+
 ## Consequences
 
 - **Release builds need a signing workflow.** `.github/workflows/attest.yml` is the template: a clean `cargo auditable build --locked` with `SOURCE_DATE_EPOCH` and `--remap-path-prefix`, both attestations, then `cargo mvl verify` (must pass) and three runs that must fail (modified binary, wrong repository, wrong ref).
 - **Apps must log their manifest** (or otherwise reference `MANIFEST.record`), or `verify` finds no record. This needs `mvl-manifest` 0.13.0 or later.
 - **`gh` is a runtime dependency of `verify`**, with network access to GitHub. Offline verification (`--bundle`, `--custom-trusted-root`) and native Sigstore verification are later work.
 - **The build-environment predicate is signed by the workflow, not measured by the platform.** Its `host_os` and `build_time` are what the workflow reports; the workflow identity vouches for them, nothing more.
-- **Later tickets:** cosign/KMS mode; native Sigstore verification without `gh`; example admission policies (Kyverno `verifyImages`, Sigstore policy-controller); a minimal verifying launcher; an automated independent rebuild-and-compare.
+- **Later tickets:** native Sigstore verification without `gh`; example admission policies (Kyverno `verifyImages`, Sigstore policy-controller); a minimal verifying launcher; an automated independent rebuild-and-compare.
 
 ## Links
 

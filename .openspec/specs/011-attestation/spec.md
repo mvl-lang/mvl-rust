@@ -118,10 +118,24 @@ The verifier MUST find the `mvl-manifest` verification record by scanning the bi
 
 **Tests:** `crates/mvl-attest/tests/end_to_end.rs::real_auditable_binary_verifies_and_a_modified_copy_does_not`, `crates/mvl-attest/src/predicate.rs::binary_without_auditable_data_has_no_predicate`, `crates/mvl-attest/src/cli.rs::parses_both_option_spellings`, `::rejects_unknown_and_valueless_options`, `::missing_arguments_are_a_usage_error`
 
+### Requirement 8: Key/KMS mode verifies with cosign [MUST]
+
+With `--key`, `verify` MUST check both attestations with `cosign verify-blob-attestation` against the given public key or KMS URI, MUST read the identity fields from the signed SLSA predicate, and MUST apply the same cross-checks as keyless mode. The transparency log MUST be required unless `--no-tlog` is given. `cargo mvl attest --slsa` MUST produce an SLSA predicate those checks can read.
+
+**Implementation:** `crates/mvl-attest/src/provenance.rs`, `crates/mvl-attest/src/verify.rs`, `crates/mvl-attest/src/predicate.rs`
+
+#### Scenario: Pinned key, real cosign
+
+- GIVEN the demo binary signed with a throwaway key pair, SLSA predicate from `attest --slsa`
+- WHEN it is verified with the signer's public key
+- THEN it passes; a modified binary or another public key fails `signature`, and a wrong repository fails `repository`
+
+**Tests:** `crates/mvl-attest/tests/end_to_end.rs::key_mode_with_real_cosign_verifies_and_rejects_tampering_wrong_key_and_wrong_repo`, `crates/mvl-attest/src/verify.rs::key_mode_cross_checks_are_the_same_as_keyless`, `::key_mode_bundles_default_next_to_the_artifact`, `crates/mvl-attest/src/provenance.rs::statement_without_certificate_takes_identity_from_slsa_predicate`, `::decodes_the_statement_in_a_cosign_bundle`, `::base64_round_trips_all_lengths`, `crates/mvl-attest/src/predicate.rs::slsa_predicate_round_trips_through_the_cross_check_reader`, `::workflow_path_from_github_workflow_ref`, `crates/mvl-attest/src/cli.rs::flags_take_no_value`, `::attest_slsa_prints_a_predicate_from_explicit_values`
+
 ---
 
 ## Known Limitations
 
 - `verify` needs `gh` and network access to GitHub; offline verification and native Sigstore verification are later work (ADR-0014).
 - The build-environment predicate is reported by the workflow, not measured by the platform.
-- cosign/KMS mode is not implemented in Phase 1.
+- In key/KMS mode the identity fields are the key holder's claim, not a CI-platform certificate (ADR-0014 amendment).
