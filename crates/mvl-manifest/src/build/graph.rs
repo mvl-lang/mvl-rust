@@ -33,6 +33,11 @@ pub struct OwnedPackage {
 pub struct LocalPackage {
     pub name: String,
     pub manifest_path: PathBuf,
+    /// A member of the app's workspace (the app itself included). Only
+    /// members are listed with `cargo package --list`: for a path dependency
+    /// in another workspace, that would resolve the other workspace's whole
+    /// graph, which the outer build never fetched.
+    pub member: bool,
 }
 
 #[derive(Debug, Default)]
@@ -421,6 +426,7 @@ pub fn classify(
                 LocalPackage {
                     name,
                     manifest_path: PathBuf::from(p["manifest_path"].as_str().unwrap_or("")),
+                    member: *id == root_id || members.contains(id.as_str()),
                 },
             );
         }
@@ -512,8 +518,13 @@ mod tests {
             names(&g.build_packages),
             [("cc", "build"), ("derive", "proc-macro"), ("syn", "build")]
         );
-        let local: Vec<&str> = g.local_packages.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(local, ["app", "derive"]);
+        let local: Vec<(&str, bool)> = g
+            .local_packages
+            .iter()
+            .map(|p| (p.name.as_str(), p.member))
+            .collect();
+        // The fixture declares no workspace members: only the app is one.
+        assert_eq!(local, [("app", true), ("derive", false)]);
     }
 
     #[test]
