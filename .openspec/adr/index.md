@@ -14,4 +14,4 @@
 | [0010](0010-loop-termination-marker-macro.md) | Loop Termination via a Marker Macro, Not an Attribute | Accepted |
 | [0011](0011-resolved-pure-closure-licence.md) | A Sound Purity Licence for the "Resolved-Pure Closure" Subset | Accepted |
 | [0012](0012-mandatory-total-or-partial-declaration.md) | `mvl-total` Requires an Explicit `#[mvl::total]` or `#[mvl::partial]` Declaration, Whole-File | Accepted |
-| [0013](0013-runtime-manifest.md) | `mvl-manifest` — Log Bound Packages and Build Provenance at Startup | Proposed |
+| [0013](0013-runtime-manifest.md) | `mvl-manifest` — Log Bound Packages and Build Provenance at Startup | Accepted |
