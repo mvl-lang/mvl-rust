@@ -1,0 +1,13 @@
+[package]
+name = "mvl-manifest-demo"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Logs the runtime manifest (ADR-0013) at startup. No logger is installed, so
+# the records go to stderr: the manifest never disappears silently.
+[dependencies]
+mvl-manifest = { path = "../../crates/mvl-manifest", features = ["log"] }
+
+[build-dependencies]
+mvl-manifest = { path = "../../crates/mvl-manifest", features = ["build"] }
